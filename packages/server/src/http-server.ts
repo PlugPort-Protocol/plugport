@@ -25,13 +25,15 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
 
     const app = Fastify({
         bodyLimit: 52428800, // 50MB limit for bulk operations
-        logger: {
-            level: 'info',
-            transport: {
-                target: 'pino-pretty',
-                options: { colorize: true, translateTime: 'HH:MM:ss' },
+        logger: process.env.NODE_ENV === 'production'
+            ? { level: 'info' } // JSON logs for production (Railway, Docker, etc.)
+            : {
+                level: 'info',
+                transport: {
+                    target: 'pino-pretty',
+                    options: { colorize: true, translateTime: 'HH:MM:ss' },
+                },
             },
-        },
     });
 
     // Security Middleware
