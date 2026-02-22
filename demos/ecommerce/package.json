@@ -1,0 +1,23 @@
+{
+    "name": "@plugport/demo-ecommerce",
+    "version": "1.0.0",
+    "private": true,
+    "type": "module",
+    "scripts": {
+        "dev": "tsx src/index.ts",
+        "build": "tsc",
+        "seed": "tsx src/seed.ts"
+    },
+    "dependencies": {
+        "@plugport/sdk": "workspace:*",
+        "express": "^4.21.0",
+        "cors": "^2.8.5"
+    },
+    "devDependencies": {
+        "tsx": "^4.19.0",
+        "typescript": "^5.7.0",
+        "@types/express": "^5.0.0",
+        "@types/cors": "^2.8.17",
+        "@types/node": "^22.0.0"
+    }
+}

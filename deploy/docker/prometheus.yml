@@ -1,0 +1,10 @@
+global:
+  scrape_interval: 10s
+  evaluation_interval: 10s
+
+scrape_configs:
+  - job_name: 'plugport-server'
+    static_configs:
+      - targets: ['plugport-server:8080']
+    metrics_path: '/metrics'
+    scrape_interval: 5s
