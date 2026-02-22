@@ -74,10 +74,10 @@ function Sidebar({ activeTab, setActiveTab, health }: {
         <nav className="sidebar">
             <div className="sidebar-brand">
                 <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                    <img src="/logo.png" alt="PlugPort Logo" width={32} height={32} style={{ borderRadius: 6 }} />
-                    <h1>PlugPort</h1>
+                    <img src="/logo-with-text.png" alt="PlugPort Logo" width={200} height={50} style={{ borderRadius: 6 }} />
+                   
                 </div>
-                <p>MonadDb Document Store</p>
+                <p>MonadDb Store</p>
             </div>
             <div className="sidebar-nav">
                 {sections.map(section => (
@@ -112,8 +112,8 @@ function OverviewTab({ collections, metrics }: { collections: CollectionInfo[]; 
     const totalIndexes = collections.reduce((s, c) => s + c.indexCount, 0);
 
     return (
-        <div className="fade-in">
-            <div className="stats-grid">
+        <div className="fade-in ">
+            <div className="stats-grid ">
                 <div className="stat-card">
                     <div className="stat-label">Collections</div>
                     <div className="stat-value">{collections.length}</div>
@@ -287,11 +287,52 @@ function CollectionsTab({ collections, onRefresh }: { collections: CollectionInf
             )}
 
             {collections.length === 0 ? (
-                <div className="card">
-                    <div className="empty-state">
-                        <Icon name="database" size={48} />
-                        <div className="empty-state-title">No Collections</div>
-                        <div className="empty-state-text">Collections are automatically created when you insert your first document. Try inserting one above!</div>
+                <div className="card" style={{ padding: '64px 32px', textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                    <div className="relative group mb-8" style={{ position: 'relative' }}>
+                        <div style={{ 
+                            width: 80, 
+                            height: 80, 
+                            background: 'var(--bg-tertiary)', 
+                            borderRadius: '24px', 
+                            display: 'flex', 
+                            alignItems: 'center', 
+                            justifyContent: 'center',
+                            position: 'relative'
+                        }}>
+                            {/* <span className="material-icons-outlined" style={{ fontSize: 40, color: 'var(--text-tertiary)' }}>database</span> */}
+                            <Icon name="database" size={48} />
+                            <div style={{ 
+                                position: 'absolute',
+                                bottom: -8,
+                                right: -16,
+                                background: 'var(--bg-secondary)',
+                                color: 'var(--text-primary)',
+                                padding: '8px',
+                                borderRadius: '12px',
+                                boxShadow: 'var(--shadow-md)',
+                                transform: 'rotate(-6deg)',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center'
+                            }}>
+                                <span className="material-icons-outlined" style={{ fontSize: 20, fontWeight: 'bold' }}>add</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <h3 style={{ fontSize: '24px', fontWeight: 800, color: 'var(--text-primary)', marginBottom: '12px' }}>No Collections Yet</h3>
+                    <p style={{ color: 'var(--text-secondary)', maxWidth: '420px', margin: '0 auto 32px', lineHeight: 1.6 }}>
+                        Collections are automatically created when you insert your first document. Ready to start building your database?
+                    </p>
+
+                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '16px' }}>
+                        <button className="btn btn-secondary" style={{ borderRadius: '100px', padding: '12px 32px' }} onClick={() => setShowInsert(true)}>
+                            <span>Try inserting one now</span>
+                            <span className="material-icons-outlined" style={{ fontSize: 16 }}>arrow_forward</span>
+                        </button>
+                        <a href="#" style={{ fontSize: '14px', color: 'var(--text-tertiary)', textDecoration: 'underline', textUnderlineOffset: '4px' }}>
+                            Read documentation about Collections
+                        </a>
                     </div>
                 </div>
             ) : (
