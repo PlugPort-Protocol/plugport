@@ -2,13 +2,13 @@
 
 :root {
   /* Color System - Dark Premium */
-  --bg-primary: #0a0b0f;
-  --bg-secondary: #111318;
+  --bg-primary: #ffffff;
+  --bg-secondary: #f5f6f7;
   --bg-tertiary: #181b22;
-  --bg-card: rgba(22, 25, 35, 0.7);
+  --bg-card: rgba(231, 231, 234, 0.7);
   --bg-card-hover: rgba(28, 32, 45, 0.8);
-  --bg-glass: rgba(15, 17, 25, 0.65);
-  --bg-input: rgba(20, 22, 32, 0.9);
+  --bg-glass: rgba(245, 245, 247, 0.65);
+  --bg-input: rgba(232, 234, 244, 0.9);
 
   /* Accent Colors - Monad Brand */
   --accent-primary: #836ef9;
@@ -30,7 +30,7 @@
   --gradient-hero: linear-gradient(180deg, rgba(131, 110, 249, 0.1) 0%, transparent 40%);
 
   /* Text */
-  --text-primary: #f0f0f5;
+  --text-primary: #09090a;
   --text-secondary: #a0a3b1;
   --text-tertiary: #6b6f80;
   --text-accent: #836ef9;
@@ -355,7 +355,7 @@ body {
 }
 
 .btn-primary {
-  background: var(--gradient-primary);
+  background: black;
   color: white;
   box-shadow: 0 2px 12px rgba(131, 110, 249, 0.3);
 }
@@ -366,8 +366,8 @@ body {
 }
 
 .btn-secondary {
-  background: var(--bg-tertiary);
-  color: var(--text-primary);
+  background: blue;
+  color: white;
   border: 1px solid var(--border-primary);
 }
 
