@@ -1,0 +1,7 @@
+packages:
+  - "packages/*"
+  - "contracts"
+  - "demos/*"
+  - "sdks/*"
+  - "tests/*"
+  - "tests/integration"

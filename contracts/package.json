@@ -1,0 +1,20 @@
+{
+    "name": "@plugport/contracts",
+    "version": "1.0.0",
+    "private": true,
+    "description": "PlugPort Solidity smart contracts for Monad testnet",
+    "type": "module",
+    "scripts": {
+        "compile": "tsx compile.ts",
+        "deploy": "tsx deploy.ts",
+        "deploy:testnet": "tsx deploy.ts --network testnet"
+    },
+    "dependencies": {
+        "ethers": "^6.13.0",
+        "solc": "^0.8.28"
+    },
+    "devDependencies": {
+        "tsx": "^4.19.0",
+        "typescript": "^5.7.0"
+    }
+}

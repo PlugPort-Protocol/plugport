@@ -1,0 +1,171 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: plugport
+  labels:
+    app.kubernetes.io/name: plugport
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: plugport-config
+  namespace: plugport
+data:
+  HTTP_PORT: "8080"
+  WIRE_PORT: "27017"
+  LOG_LEVEL: "info"
+  METRICS_ENABLED: "true"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: plugport-server
+  namespace: plugport
+  labels:
+    app: plugport-server
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: plugport-server
+  template:
+    metadata:
+      labels:
+        app: plugport-server
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+        - name: plugport-server
+          image: plugport/server:latest
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: wire
+              containerPort: 27017
+          envFrom:
+            - configMapRef:
+                name: plugport-config
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 20
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: plugport-server
+  namespace: plugport
+spec:
+  selector:
+    app: plugport-server
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+    - name: wire
+      port: 27017
+      targetPort: 27017
+  type: ClusterIP
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: plugport-ingress
+  namespace: plugport
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  rules:
+    - host: api.plugport.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: plugport-server
+                port:
+                  number: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: plugport-dashboard
+  namespace: plugport
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: plugport-dashboard
+  template:
+    metadata:
+      labels:
+        app: plugport-dashboard
+    spec:
+      containers:
+        - name: dashboard
+          image: plugport/dashboard:latest
+          ports:
+            - containerPort: 3000
+          env:
+            - name: NEXT_PUBLIC_API_URL
+              value: "http://plugport-server:8080"
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: plugport-dashboard
+  namespace: plugport
+spec:
+  selector:
+    app: plugport-dashboard
+  ports:
+    - port: 3000
+      targetPort: 3000
+  type: ClusterIP
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: plugport-server-hpa
+  namespace: plugport
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: plugport-server
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70

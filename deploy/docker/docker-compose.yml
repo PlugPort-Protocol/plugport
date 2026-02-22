@@ -1,0 +1,88 @@
+# PlugPort Docker Compose - Full Stack
+version: '3.9'
+
+services:
+  # ---- Core Server ----
+  plugport-server:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    container_name: plugport-server
+    ports:
+      - "8080:8080" # HTTP API
+      - "27017:27017" # Wire Protocol
+    environment:
+      - HTTP_PORT=8080
+      - WIRE_PORT=27017
+      - LOG_LEVEL=info
+      - METRICS_ENABLED=true
+      # - API_KEY=your-secret-key
+    healthcheck:
+      test: wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - plugport-net
+    labels:
+      - "com.plugport.service=server"
+
+  # ---- Dashboard ----
+  plugport-dashboard:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.dashboard
+    container_name: plugport-dashboard
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://plugport-server:8080
+    depends_on:
+      plugport-server:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - plugport-net
+
+  # ---- Prometheus ----
+  prometheus:
+    image: prom/prometheus:v2.54.0
+    container_name: plugport-prometheus
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    depends_on:
+      - plugport-server
+    restart: unless-stopped
+    networks:
+      - plugport-net
+
+  # ---- Grafana ----
+  grafana:
+    image: grafana/grafana:11.3.0
+    container_name: plugport-grafana
+    ports:
+      - "3001:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=plugport
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+    networks:
+      - plugport-net
+
+networks:
+  plugport-net:
+    driver: bridge
+
+volumes:
+  prometheus-data:
+  grafana-data:

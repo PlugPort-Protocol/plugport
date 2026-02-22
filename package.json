@@ -1,0 +1,24 @@
+{
+    "name": "plugport",
+    "version": "1.0.0",
+    "private": true,
+    "description": "MongoDB-compatible document store powered by MonadDb's Merkle Patricia Trie",
+    "scripts": {
+        "dev": "pnpm --filter @plugport/server dev",
+        "dev:dashboard": "pnpm --filter @plugport/dashboard dev",
+        "dev:all": "pnpm run --parallel dev dev:dashboard",
+        "build": "pnpm -r build",
+        "test": "pnpm -r test",
+        "test:unit": "pnpm --filter @plugport/server test",
+        "test:integration": "pnpm --filter @plugport/tests test",
+        "test:load": "pnpm --filter @plugport/load-tests test",
+        "lint": "pnpm -r lint",
+        "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md}\"",
+        "clean": "pnpm -r clean"
+    },
+    "engines": {
+        "node": ">=20.0.0",
+        "pnpm": ">=9.0.0"
+    },
+    "packageManager": "pnpm@9.15.0"
+}

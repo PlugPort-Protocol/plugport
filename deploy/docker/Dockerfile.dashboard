@@ -1,0 +1,35 @@
+# Multi-stage build for PlugPort Dashboard
+FROM node:22-alpine AS builder
+
+WORKDIR /app
+
+RUN corepack enable && corepack prepare pnpm@9.15.0 --activate
+
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml* ./
+COPY tsconfig.json ./
+COPY packages/shared/package.json packages/shared/
+COPY packages/dashboard/package.json packages/dashboard/
+
+RUN pnpm install --frozen-lockfile || pnpm install
+
+COPY packages/shared/ packages/shared/
+COPY packages/dashboard/ packages/dashboard/
+
+RUN pnpm --filter @plugport/shared build
+RUN pnpm --filter @plugport/dashboard build
+
+# ---- Production ----
+FROM node:22-alpine AS runner
+WORKDIR /app
+
+COPY --from=builder /app/packages/dashboard/.next/standalone ./
+COPY --from=builder /app/packages/dashboard/.next/static ./.next/static
+COPY --from=builder /app/packages/dashboard/public ./public
+
+ENV NODE_ENV=production
+ENV PORT=3000
+ENV HOSTNAME="0.0.0.0"
+
+EXPOSE 3000
+
+CMD ["node", "server.js"]
