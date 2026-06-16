@@ -18,6 +18,13 @@ export interface HttpServerOptions {
     store: DocumentStore;
     metrics: MetricsCollector;
     kvStore: KVAdapter & { getKeyCount(): number; getEstimatedSizeBytes(): number };
+    protocolManager?: {
+        getStatus(): Array<{ name: string; enabled: boolean; port: number; connections: number; connectionString: string }>;
+        enableProtocol(name: string): Promise<void>;
+        disableProtocol(name: string): Promise<void>;
+    };
+    storageMode?: string;
+    whitelistAddresses?: string[];
 }
 
 export async function createHttpServer(options: HttpServerOptions): Promise<FastifyInstance> {
@@ -68,7 +75,7 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
     // ---- Health & Metrics Endpoints ----
 
     app.get('/health', async () => {
-        return {
+        const result: Record<string, unknown> = {
             status: 'ok',
             uptime: process.uptime(),
             version: VERSION,
@@ -81,7 +88,12 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
                 httpPort: options.port,
                 wirePort: 27017,
             },
+            storageMode: options.storageMode || 'public',
         };
+        if (options.protocolManager) {
+            result.protocols = options.protocolManager.getStatus();
+        }
+        return result;
     });
 
     app.get('/metrics', async (_req, reply) => {
@@ -326,6 +338,72 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
         } catch (err) {
             return handleError(err, reply);
         }
+    });
+
+    // ---- Protocol Management Endpoints ----
+
+    app.get('/api/v1/protocols', async () => {
+        if (!options.protocolManager) {
+            return { protocols: [], ok: 1 };
+        }
+        return { protocols: options.protocolManager.getStatus(), ok: 1 };
+    });
+
+    app.post('/api/v1/protocols/:name/enable', async (
+        req: FastifyRequest<{ Params: { name: string } }>,
+        reply: FastifyReply,
+    ) => {
+        if (!options.protocolManager) {
+            return reply.status(501).send({ ok: 0, errmsg: 'Protocol manager not available' });
+        }
+        try {
+            await options.protocolManager.enableProtocol(req.params.name);
+            return { ok: 1, protocol: req.params.name, enabled: true };
+        } catch (err) {
+            return reply.status(400).send({ ok: 0, errmsg: err instanceof Error ? err.message : 'Failed' });
+        }
+    });
+
+    app.post('/api/v1/protocols/:name/disable', async (
+        req: FastifyRequest<{ Params: { name: string } }>,
+        reply: FastifyReply,
+    ) => {
+        if (!options.protocolManager) {
+            return reply.status(501).send({ ok: 0, errmsg: 'Protocol manager not available' });
+        }
+        try {
+            await options.protocolManager.disableProtocol(req.params.name);
+            return { ok: 1, protocol: req.params.name, enabled: false };
+        } catch (err) {
+            return reply.status(400).send({ ok: 0, errmsg: err instanceof Error ? err.message : 'Failed' });
+        }
+    });
+
+    // ---- Whitelist Management ----
+
+    app.get('/api/v1/whitelist', async () => {
+        return { addresses: options.whitelistAddresses || [], ok: 1 };
+    });
+
+    app.post('/api/v1/whitelist', async (
+        req: FastifyRequest<{ Body: { address: string; action: 'add' | 'remove' } }>,
+        reply: FastifyReply,
+    ) => {
+        const body = req.body as { address: string; action: string };
+        if (!body?.address) {
+            return reply.status(400).send({ ok: 0, errmsg: 'address is required' });
+        }
+        if (!options.whitelistAddresses) {
+            options.whitelistAddresses = [];
+        }
+        if (body.action === 'add') {
+            if (!options.whitelistAddresses.includes(body.address)) {
+                options.whitelistAddresses.push(body.address);
+            }
+        } else if (body.action === 'remove') {
+            options.whitelistAddresses = options.whitelistAddresses.filter(a => a !== body.address);
+        }
+        return { ok: 1, addresses: options.whitelistAddresses };
     });
 
     return app;

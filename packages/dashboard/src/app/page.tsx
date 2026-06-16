@@ -26,7 +26,7 @@ interface MetricsData {
     timestamp: number;
 }
 
-type TabId = 'overview' | 'collections' | 'query' | 'indexes' | 'metrics' | 'explorer';
+type TabId = 'overview' | 'collections' | 'query' | 'indexes' | 'metrics' | 'explorer' | 'protocols' | 'privacy';
 
 // ---- Icons (inline SVG for zero dependency) ----
 const Icon = ({ name, size = 20 }: { name: string; size?: number }) => {
@@ -45,6 +45,8 @@ const Icon = ({ name, size = 20 }: { name: string; size?: number }) => {
         zap: 'M13 10V3L4 14h7v7l9-11h-7z',
         server: 'M5 12H3l9-9 9 9h-2M5 12v7a2 2 0 002 2h10a2 2 0 002-2v-7',
         eye: 'M15 12a3 3 0 11-6 0 3 3 0 016 0z M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z',
+        plug: 'M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z',
+        lock: 'M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z',
     };
     return (
         <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="nav-icon">
@@ -62,10 +64,12 @@ function Sidebar({ activeTab, setActiveTab, health }: {
     const navItems: { id: TabId; label: string; icon: string; section: string }[] = [
         { id: 'overview', label: 'Overview', icon: 'home', section: 'General' },
         { id: 'collections', label: 'Collections', icon: 'database', section: 'General' },
+        { id: 'protocols', label: 'Protocols', icon: 'plug', section: 'General' },
         { id: 'query', label: 'Query Builder', icon: 'search', section: 'Data' },
         { id: 'explorer', label: 'Document Explorer', icon: 'eye', section: 'Data' },
         { id: 'indexes', label: 'Index Manager', icon: 'index', section: 'Performance' },
         { id: 'metrics', label: 'Metrics', icon: 'chart', section: 'Performance' },
+        { id: 'privacy', label: 'Privacy & ACL', icon: 'lock', section: 'Security' },
     ];
 
     const sections = [...new Set(navItems.map(i => i.section))];
@@ -826,6 +830,315 @@ function MetricsTab({ metrics }: { metrics: MetricsData | null }) {
     );
 }
 
+// ---- Protocols Tab ----
+interface ProtocolInfo {
+    name: string;
+    enabled: boolean;
+    port: number;
+    connections: number;
+    connectionString: string;
+}
+
+function ProtocolsTab() {
+    const [protocols, setProtocols] = useState<ProtocolInfo[]>([]);
+    const [loading, setLoading] = useState(true);
+    const [toggling, setToggling] = useState<string | null>(null);
+    const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+    const colorMap: Record<string, string> = {
+        mongodb: '#00ed64',
+        postgresql: '#336791',
+        mysql: '#f29111',
+        redis: '#dc382d',
+        http: '#00d4aa',
+    };
+
+    const descMap: Record<string, string> = {
+        mongodb: 'MongoDB Wire Protocol — Connect with mongosh, Mongoose, native drivers',
+        postgresql: 'PostgreSQL v3 Wire Protocol — Connect with psql, Prisma, Sequelize, Knex',
+        mysql: 'MySQL Text Protocol — Connect with mysql-cli, mysql2, TypeORM',
+        redis: 'Redis RESP Protocol — Connect with redis-cli, ioredis. Pub/Sub via Monad events',
+        http: 'HTTP REST API — Always enabled. JSON endpoints for all operations',
+    };
+
+    const loadProtocols = useCallback(async () => {
+        try {
+            const res = await apiGet<{ protocols: ProtocolInfo[] }>('/api/v1/protocols');
+            setProtocols(res.protocols || []);
+        } catch {
+            // Fallback: use health endpoint
+            try {
+                const health = await apiGet<{ protocols?: ProtocolInfo[] }>('/health');
+                setProtocols(health.protocols || []);
+            } catch { /* ignore */ }
+        }
+        setLoading(false);
+    }, []);
+
+    useEffect(() => { loadProtocols(); }, [loadProtocols]);
+
+    const toggleProtocol = async (name: string, currentlyEnabled: boolean) => {
+        if (name === 'http') return; // Can't disable HTTP
+        setToggling(name);
+        setMessage(null);
+        try {
+            const action = currentlyEnabled ? 'disable' : 'enable';
+            await apiPost(`/api/v1/protocols/${name}/${action}`, {});
+            setMessage({ type: 'success', text: `${name} ${action}d successfully` });
+            await loadProtocols();
+        } catch (err) {
+            setMessage({ type: 'error', text: err instanceof Error ? err.message : 'Failed' });
+        } finally {
+            setToggling(null);
+        }
+    };
+
+    if (loading) return <div className="loading-center"><div className="spinner" /></div>;
+
+    return (
+        <div className="fade-in">
+            {message && <div className={`alert alert-${message.type}`}>{message.text}</div>}
+
+            <div style={{ display: 'grid', gap: 16 }}>
+                {protocols.map(p => (
+                    <div key={p.name} className="card" style={{
+                        borderLeft: `4px solid ${colorMap[p.name] || 'var(--border-primary)'}`,
+                        opacity: p.enabled ? 1 : 0.6,
+                        transition: 'opacity 0.3s',
+                    }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <div>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 6 }}>
+                                    <span style={{ fontSize: 18, fontWeight: 700, color: 'var(--text-primary)', textTransform: 'capitalize' }}>
+                                        {p.name}
+                                    </span>
+                                    <span className={`badge ${p.enabled ? 'badge-success' : 'badge-warning'}`}>
+                                        {p.enabled ? 'ENABLED' : 'DISABLED'}
+                                    </span>
+                                    {p.enabled && p.connections > 0 && (
+                                        <span className="badge badge-primary">{p.connections} connections</span>
+                                    )}
+                                </div>
+                                <div style={{ fontSize: 13, color: 'var(--text-tertiary)', marginBottom: 8 }}>
+                                    {descMap[p.name] || 'Custom protocol'}
+                                </div>
+                                {p.enabled && (
+                                    <div style={{
+                                        display: 'inline-block',
+                                        padding: '6px 12px',
+                                        background: 'var(--bg-tertiary)',
+                                        borderRadius: 'var(--radius-sm)',
+                                        fontFamily: 'JetBrains Mono',
+                                        fontSize: 12,
+                                        color: 'var(--text-secondary)',
+                                    }}>
+                                        {p.connectionString}
+                                    </div>
+                                )}
+                            </div>
+                            <div>
+                                {p.name !== 'http' && (
+                                    <button
+                                        className={`btn ${p.enabled ? 'btn-danger' : 'btn-primary'} btn-sm`}
+                                        onClick={() => toggleProtocol(p.name, p.enabled)}
+                                        disabled={toggling === p.name}
+                                        style={{ minWidth: 90 }}
+                                    >
+                                        {toggling === p.name
+                                            ? <div className="spinner" style={{ width: 14, height: 14 }} />
+                                            : p.enabled ? 'Disable' : 'Enable'}
+                                    </button>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+                ))}
+            </div>
+
+            <div className="card" style={{ marginTop: 24 }}>
+                <div className="card-header">
+                    <div className="card-title">Multi-Protocol Architecture</div>
+                    <span className="badge badge-primary">All Monad-backed</span>
+                </div>
+                <div style={{ fontSize: 13, color: 'var(--text-tertiary)', lineHeight: 1.7, marginTop: 8 }}>
+                    All protocols share the same DocumentStore and Monad smart contract backend.
+                    Data written via PostgreSQL is immediately readable via MongoDB, Redis, or HTTP.
+                    Enable/disable protocols at runtime — each runs on its own port.
+                </div>
+            </div>
+        </div>
+    );
+}
+
+// ---- Privacy & ACL Tab ----
+function PrivacyTab() {
+    const [storageMode, setStorageMode] = useState<string>('public');
+    const [addresses, setAddresses] = useState<string[]>([]);
+    const [newAddress, setNewAddress] = useState('');
+    const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+    const loadData = useCallback(async () => {
+        try {
+            const health = await apiGet<{ storageMode?: string }>('/health');
+            setStorageMode(health.storageMode || 'public');
+        } catch { /* ignore */ }
+
+        try {
+            const wl = await apiGet<{ addresses: string[] }>('/api/v1/whitelist');
+            setAddresses(wl.addresses || []);
+        } catch { /* ignore */ }
+    }, []);
+
+    useEffect(() => { loadData(); }, [loadData]);
+
+    const addAddress = async () => {
+        if (!newAddress || !newAddress.startsWith('0x')) {
+            setMessage({ type: 'error', text: 'Enter a valid Ethereum address (0x...)' });
+            return;
+        }
+        try {
+            await apiPost('/api/v1/whitelist', { address: newAddress, action: 'add' });
+            setMessage({ type: 'success', text: `Address ${newAddress.substring(0, 10)}... added` });
+            setNewAddress('');
+            loadData();
+        } catch (err) {
+            setMessage({ type: 'error', text: err instanceof Error ? err.message : 'Failed' });
+        }
+    };
+
+    const removeAddress = async (addr: string) => {
+        try {
+            await apiPost('/api/v1/whitelist', { address: addr, action: 'remove' });
+            setMessage({ type: 'success', text: `Address removed` });
+            loadData();
+        } catch (err) {
+            setMessage({ type: 'error', text: err instanceof Error ? err.message : 'Failed' });
+        }
+    };
+
+    return (
+        <div className="fade-in">
+            {message && <div className={`alert alert-${message.type}`}>{message.text}</div>}
+
+            {/* Storage Mode */}
+            <div className="card" style={{ marginBottom: 24 }}>
+                <div className="card-header">
+                    <div className="card-title">Storage Mode</div>
+                    <span className={`badge ${storageMode === 'private' ? 'badge-warning' : 'badge-success'}`}>
+                        {storageMode.toUpperCase()}
+                    </span>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginTop: 16 }}>
+                    <div style={{
+                        padding: 20,
+                        borderRadius: 'var(--radius-md)',
+                        border: `2px solid ${storageMode === 'public' ? 'var(--accent-secondary)' : 'var(--border-primary)'}`,
+                        background: storageMode === 'public' ? 'rgba(0,212,170,0.05)' : 'transparent',
+                        cursor: 'default',
+                    }}>
+                        <div style={{ fontWeight: 700, marginBottom: 6, color: storageMode === 'public' ? 'var(--accent-secondary)' : 'var(--text-tertiary)' }}>Public</div>
+                        <div style={{ fontSize: 13, color: 'var(--text-tertiary)', lineHeight: 1.5 }}>
+                            Data stored on-chain in plaintext. Readable by anyone. Fast and transparent.
+                        </div>
+                    </div>
+                    <div style={{
+                        padding: 20,
+                        borderRadius: 'var(--radius-md)',
+                        border: `2px solid ${storageMode === 'private' ? 'var(--accent-tertiary)' : 'var(--border-primary)'}`,
+                        background: storageMode === 'private' ? 'rgba(255,107,157,0.05)' : 'transparent',
+                        cursor: 'default',
+                    }}>
+                        <div style={{ fontWeight: 700, marginBottom: 6, color: storageMode === 'private' ? 'var(--accent-tertiary)' : 'var(--text-tertiary)' }}>Private (Encrypted)</div>
+                        <div style={{ fontSize: 13, color: 'var(--text-tertiary)', lineHeight: 1.5 }}>
+                            AES-256-GCM encrypted. Only owner + whitelisted addresses can access. Keys shared via ECDH.
+                        </div>
+                    </div>
+                </div>
+                <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginTop: 12 }}>
+                    Storage mode is set via <code style={{ background: 'var(--bg-tertiary)', padding: '2px 6px', borderRadius: 4 }}>STORAGE_MODE</code> in .env and requires server restart to change.
+                </div>
+            </div>
+
+            {/* Whitelist Management */}
+            <div className="card">
+                <div className="card-header">
+                    <div className="card-title">Address Whitelist</div>
+                    <span className="badge badge-primary">{addresses.length} addresses</span>
+                </div>
+                <div style={{ fontSize: 13, color: 'var(--text-tertiary)', marginBottom: 16 }}>
+                    Whitelisted addresses can read/write data in private storage mode.
+                    The owner address (gas station) is always authorized.
+                </div>
+
+                <div style={{ display: 'flex', gap: 12, marginBottom: 20 }}>
+                    <input
+                        className="input input-mono"
+                        style={{ flex: 1 }}
+                        value={newAddress}
+                        onChange={e => setNewAddress(e.target.value)}
+                        placeholder="0x... Ethereum address"
+                    />
+                    <button className="btn btn-primary" onClick={addAddress} disabled={!newAddress}>
+                        <Icon name="plus" size={16} /> Add
+                    </button>
+                </div>
+
+                {addresses.length === 0 ? (
+                    <div className="empty-state">
+                        <div className="empty-state-text">No addresses whitelisted yet</div>
+                    </div>
+                ) : (
+                    <div className="table-container">
+                        <table className="table">
+                            <thead>
+                                <tr>
+                                    <th>#</th>
+                                    <th>Address</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {addresses.map((addr, i) => (
+                                    <tr key={addr}>
+                                        <td>{i + 1}</td>
+                                        <td style={{ fontFamily: 'JetBrains Mono', fontSize: 13 }}>{addr}</td>
+                                        <td>
+                                            <button className="btn btn-sm btn-danger" onClick={() => removeAddress(addr)}>
+                                                <Icon name="trash" size={14} /> Remove
+                                            </button>
+                                        </td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+                )}
+            </div>
+
+            {/* Encryption Info */}
+            <div className="card" style={{ marginTop: 24 }}>
+                <div className="card-header">
+                    <div className="card-title">Encryption Details</div>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16, marginTop: 12 }}>
+                    <div style={{ padding: 16, background: 'rgba(131,110,249,0.05)', borderRadius: 'var(--radius-md)', border: '1px solid rgba(131,110,249,0.1)' }}>
+                        <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 6, color: 'var(--accent-primary-light)' }}>AES-256-GCM</div>
+                        <div style={{ fontSize: 12, color: 'var(--text-tertiary)', lineHeight: 1.5 }}>Authenticated encryption. Every value is encrypted with a unique IV. Tamper detection via auth tag.</div>
+                    </div>
+                    <div style={{ padding: 16, background: 'rgba(0,212,170,0.05)', borderRadius: 'var(--radius-md)', border: '1px solid rgba(0,212,170,0.1)' }}>
+                        <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 6, color: 'var(--accent-secondary)' }}>HKDF Key Derivation</div>
+                        <div style={{ fontSize: 12, color: 'var(--text-tertiary)', lineHeight: 1.5 }}>AES key derived from owner's Ethereum private key via HMAC-SHA256 (HKDF). Never stored on-chain.</div>
+                    </div>
+                    <div style={{ padding: 16, background: 'rgba(255,107,157,0.05)', borderRadius: 'var(--radius-md)', border: '1px solid rgba(255,107,157,0.1)' }}>
+                        <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 6, color: 'var(--accent-tertiary)' }}>ECDH Key Sharing</div>
+                        <div style={{ fontSize: 12, color: 'var(--text-tertiary)', lineHeight: 1.5 }}>AES key shared with whitelisted addresses via Elliptic Curve Diffie-Hellman. Encrypted key share stored on-chain.</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    );
+}
+
 // ---- Helpers ----
 function formatUptime(ms: number): string {
     const s = Math.floor(ms / 1000);
@@ -886,10 +1199,12 @@ export default function Dashboard() {
     const tabTitles: Record<TabId, { title: string; subtitle: string }> = {
         overview: { title: 'Dashboard Overview', subtitle: 'PlugPort server status and statistics' },
         collections: { title: 'Collections', subtitle: 'Browse and manage document collections' },
+        protocols: { title: 'Protocol Frontends', subtitle: 'Manage database protocol servers (PostgreSQL, MySQL, Redis, MongoDB)' },
         query: { title: 'Query Builder', subtitle: 'Build and execute MongoDB-compatible queries' },
         explorer: { title: 'Document Explorer', subtitle: 'Browse, edit, and delete documents' },
         indexes: { title: 'Index Manager', subtitle: 'Create and manage collection indexes' },
         metrics: { title: 'Metrics & Monitoring', subtitle: 'Server performance and health metrics' },
+        privacy: { title: 'Privacy & ACL', subtitle: 'Manage encrypted storage and address whitelist' },
     };
 
     return (
@@ -903,10 +1218,12 @@ export default function Dashboard() {
                 <div className="page-body">
                     {activeTab === 'overview' && <OverviewTab collections={collections} metrics={metrics} />}
                     {activeTab === 'collections' && <CollectionsTab collections={collections} onRefresh={loadCollections} />}
+                    {activeTab === 'protocols' && <ProtocolsTab />}
                     {activeTab === 'query' && <QueryBuilderTab collections={collections} />}
                     {activeTab === 'explorer' && <DocumentExplorerTab collections={collections} />}
                     {activeTab === 'indexes' && <IndexManagerTab collections={collections} onRefresh={loadCollections} />}
                     {activeTab === 'metrics' && <MetricsTab metrics={metrics} />}
+                    {activeTab === 'privacy' && <PrivacyTab />}
                 </div>
             </main>
         </div>

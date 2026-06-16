@@ -224,6 +224,38 @@ export interface KVAdapter {
 
 // ---- Configuration ----
 
+/** Supported protocol frontends */
+export type ProtocolType = 'mongodb' | 'postgresql' | 'mysql' | 'redis' | 'http';
+
+/** Protocol frontend configuration */
+export interface ProtocolConfig {
+    enabled: boolean;
+    port: number;
+    host?: string;
+}
+
+/** Storage mode — public (PlugPortStore) or private (PlugPortPrivateStore + encryption) */
+export type StorageMode = 'public' | 'private';
+
+/** Protocol status info for health/dashboard */
+export interface ProtocolInfo {
+    name: ProtocolType;
+    enabled: boolean;
+    port: number;
+    connections: number;
+    connectionString: string;
+}
+
+/** Diagnostic interface for adapters */
+export interface DiagnosticAdapter {
+    getKeyCount(): number;
+    getEstimatedSizeBytes(): number;
+    close?(): Promise<void>;
+}
+
+/** Combined adapter type */
+export type PlugPortAdapter = KVAdapter & DiagnosticAdapter;
+
 export interface PlugPortConfig {
     httpPort: number;
     wirePort: number;
@@ -236,6 +268,19 @@ export interface PlugPortConfig {
     maxCollections: number;
     logLevel: 'debug' | 'info' | 'warn' | 'error';
     metricsEnabled: boolean;
+    // Protocol frontends
+    protocols: Record<ProtocolType, ProtocolConfig>;
+    // Storage mode
+    storageMode: StorageMode;
+    // Private store (only when storageMode === 'private')
+    privateStoreContract?: string;
+    whitelistAddresses?: string[];
+    // Message broker (Pub/Sub)
+    messageBrokerContract?: string;
+    messageBrokerGasStation?: string;
+    monadWsUrl?: string;
+    // Relational contract (batch reads for JOINs)
+    relationalContract?: string;
 }
 
 export const DEFAULT_CONFIG: PlugPortConfig = {
@@ -247,6 +292,14 @@ export const DEFAULT_CONFIG: PlugPortConfig = {
     maxCollections: 1000,
     logLevel: 'info',
     metricsEnabled: true,
+    storageMode: 'public',
+    protocols: {
+        http: { enabled: true, port: 8080 },
+        mongodb: { enabled: true, port: 27017 },
+        postgresql: { enabled: false, port: 5432 },
+        mysql: { enabled: false, port: 3306 },
+        redis: { enabled: false, port: 6379 },
+    },
 };
 
 // ---- Error Codes (MongoDB-compatible) ----
@@ -287,3 +340,4 @@ export const WireProtocol = {
 } as const;
 
 export const VERSION = '1.0.0';
+
