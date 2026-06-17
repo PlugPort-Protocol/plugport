@@ -12,7 +12,9 @@ const PLUGPORT_URL = process.env.PLUGPORT_URL || 'http://localhost:8080';
 let client: PlugPortClient;
 
 async function init() {
-    client = await PlugPortClient.connect(PLUGPORT_URL);
+    client = await PlugPortClient.connect(PLUGPORT_URL, {
+        apiKey: process.env.PLUGPORT_API_KEY,
+    });
     const db = client.db('ecommerce');
 
     const products = db.collection('products');

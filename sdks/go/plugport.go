@@ -3,7 +3,9 @@
 //
 // Usage:
 //
-//	client, err := plugport.Connect("http://localhost:8080")
+//	client, err := plugport.Connect("http://localhost:8080", plugport.ClientOptions{
+//	    APIKey: "pp_test_1234567890abcdef...",
+//	})
 //	if err != nil {
 //	    log.Fatal(err)
 //	}

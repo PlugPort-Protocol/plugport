@@ -2,24 +2,24 @@
 PlugPort Python Client
 PyMongo-compatible shim with HTTP API transport.
 
-Usage:
-    from plugport import PlugPortClient
-
-    client = PlugPortClient("http://localhost:8080")
-    db = client["mydb"]
-    collection = db["users"]
-
-    # Insert
-    result = collection.insert_one({"name": "Alice", "email": "alice@example.com"})
-
-    # Find
-    docs = collection.find({"name": "Alice"})
-
-    # Update
-    collection.update_one({"name": "Alice"}, {"$set": {"age": 30}})
-
-    # Delete
-    collection.delete_one({"name": "Alice"})
+# Usage:
+#     from plugport import PlugPortClient
+# 
+#     client = PlugPortClient("http://localhost:8080", api_key="pp_test_1234567890abcdef...")
+#     db = client["mydb"]
+#     collection = db["users"]
+# 
+#     # Insert
+#     result = collection.insert_one({"name": "Alice", "email": "alice@example.com"})
+# 
+#     # Find
+#     docs = collection.find({"name": "Alice"})
+# 
+#     # Update
+#     collection.update_one({"name": "Alice"}, {"$set": {"age": 30}})
+# 
+#     # Delete
+#     collection.delete_one({"name": "Alice"})
 """
 
 from typing import Any, Dict, List, Optional, Union
@@ -343,7 +343,7 @@ class PlugPortClient:
     PlugPort Client - PyMongo-compatible interface.
 
     Usage:
-        client = PlugPortClient("http://localhost:8080")
+        client = PlugPortClient("http://localhost:8080", api_key="pp_test_...")
         db = client["mydb"]
         users = db["users"]
         users.insert_one({"name": "Alice"})

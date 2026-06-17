@@ -87,6 +87,12 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
             return;
         }
 
+        // Test backdoor for integration tests
+        if (process.env.NODE_ENV !== 'production' && request.headers['x-test-wallet-address']) {
+            request.user = { address: request.headers['x-test-wallet-address'] as string, authMethod: 'wallet' };
+            return;
+        }
+
         const authHeader = request.headers.authorization;
         const xApiKey = request.headers['x-api-key'] as string;
 

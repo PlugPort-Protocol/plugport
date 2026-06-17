@@ -164,7 +164,14 @@ The orchestrator that ties everything together:
 - **Coordinates** IndexManager and QueryPlanner for all CRUD operations
 - **Manages collection metadata** (index definitions, doc count, schema version)
 
-### 6. HTTP Server (`http-server.ts`)
+### 6. Privacy & Security (`privacy-manager.ts` & `encryption-layer.ts`)
+
+Granular access control and encryption at the collection level:
+- **Public/Private Modes:** Collections default to public. Setting a collection to private creates a unique AES-256-GCM key.
+- **On-Chain Gas Station:** Private collections deploy a `PlugPortPrivateStore` smart contract via the dashboard Wizard, funded by the owner to sponsor user transactions on MonadDb.
+- **Whitelists:** Owners can whitelist wallet addresses to grant read/write access to private collections.
+
+### 7. HTTP Server (`http-server.ts`)
 
 Fastify-based REST API exposing 17 endpoints:
 
@@ -187,9 +194,9 @@ GET  /api/v1/collections/:name/stats      → Collection stats
 POST /api/v1/collections/:name/drop       → Drop collection
 ```
 
-Features: CORS, API key authentication, request timing, error normalization to MongoDB error codes.
+Features: CORS, Triple-Auth Middleware (SIWE JWT Bearer -> Wallet-Linked API Key -> Legacy Key), request timing, API key analytics recording, and error normalization to MongoDB error codes.
 
-### 7. Wire Protocol Server (`wire-server.ts`)
+### 8. Wire Protocol Server (`wire-server.ts`)
 
 TCP server on port 27017 implementing MongoDB's `OP_MSG` protocol:
 

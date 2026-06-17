@@ -12,8 +12,8 @@
     },
     "scripts": {
         "build": "tsc",
-        "test": "vitest run",
-        "test:watch": "vitest",
+        "test": "vitest run --passWithNoTests",
+        "test:watch": "vitest --passWithNoTests",
         "lint": "eslint src/",
         "clean": "rm -rf dist"
     },

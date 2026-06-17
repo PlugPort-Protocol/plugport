@@ -126,21 +126,26 @@ Encryption is transparent to the protocol frontends. The `EncryptionLayer` sits 
 
 Deploy `PlugPortPrivateStore.sol` on Monad testnet with your gas station address.
 
-### 2. Configure Environment
+### 2. Configure via Dashboard
 
-```env
-STORAGE_MODE=private
-PRIVATE_STORE_CONTRACT=0x...deployed_address...
-MONAD_PRIVATE_KEY=your_gas_station_private_key
-```
+You no longer need to use `.env` files to configure privacy. Use the PlugPort Dashboard:
 
-### 3. Add Whitelisted Addresses (Optional)
+1. Open a collection.
+2. Go to the "Privacy" tab.
+3. Toggle "Private Mode" on.
+4. The Dashboard will prompt you to deploy a `PlugPortPrivateStore` via your wallet.
 
-```env
-WHITELIST_ADDRESSES=0xAlice...,0xBob...
-```
+### 3. Manage Whitelists (Dashboard or API)
 
-Or use the dashboard toggle to add addresses at runtime.
+Whitelists are managed per-collection, rather than globally:
+
+- **Dashboard:** Add/Remove addresses in the "Privacy" tab.
+- **HTTP API:**
+  ```bash
+  curl -X POST http://localhost:8080/api/v1/collections/my_private_collection/whitelist \
+    -H "Authorization: Bearer your-wallet-key" \
+    -d '{"address": "0xAlice...", "action": "add"}'
+  ```
 
 ### 4. Share Keys with Whitelisted Addresses
 

@@ -5,17 +5,17 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 
 const API_BASE = process.env.PLUGPORT_URL || 'http://localhost:8080';
 
-async function post(path: string, body: unknown) {
+async function post(path: string, body: unknown, headers: Record<string, string> = {}) {
     const res = await fetch(`${API_BASE}${path}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...headers },
         body: JSON.stringify(body),
     });
     return { status: res.status, data: await res.json() };
 }
 
-async function get(path: string) {
-    const res = await fetch(`${API_BASE}${path}`);
+async function get(path: string, headers: Record<string, string> = {}) {
+    const res = await fetch(`${API_BASE}${path}`, { headers });
     return { status: res.status, data: await res.json() };
 }
 
@@ -195,6 +195,52 @@ describe('HTTP API Integration Tests', () => {
             expect(data.collections).toBeInstanceOf(Array);
             const names = data.collections.map((c: Record<string, unknown>) => c.name);
             expect(names).toContain(testCollection);
+        });
+    });
+
+    describe('Privacy & Whitelist', () => {
+        it('should get default privacy (null or public)', async () => {
+            const { status, data } = await get(`/api/v1/collections/${testCollection}/privacy`);
+            expect(status).toBe(200);
+            expect(data.ok).toBe(1);
+            if (data.privacy) {
+                expect(data.privacy.mode).toBe('public');
+            } else {
+                expect(data.privacy).toBeNull();
+            }
+        });
+
+        it('should require authentication to set privacy', async () => {
+            const { status, data } = await post(`/api/v1/collections/${testCollection}/privacy`, {
+                mode: 'private',
+            }, { 'x-test-wallet-address': '0xTestOwner' });
+            expect(status).toBe(200);
+            expect(data.mode).toBe('private');
+        });
+
+        it('should allow adding to whitelist', async () => {
+            const { status, data } = await post(`/api/v1/collections/${testCollection}/whitelist`, {
+                address: '0x123',
+                action: 'add',
+            }, { 'x-test-wallet-address': '0xTestOwner' });
+            expect(status).toBe(200);
+            expect(data.ok).toBe(1);
+
+            const getRes = await get(`/api/v1/collections/${testCollection}/whitelist`);
+            expect(getRes.data.addresses).toContain('0x123');
+        });
+
+        it('should allow removing from whitelist', async () => {
+            const { status, data } = await post(`/api/v1/collections/${testCollection}/whitelist`, {
+                address: '0x123',
+                action: 'remove',
+            }, { 'x-test-wallet-address': '0xTestOwner' });
+            expect(status).toBe(200);
+            expect(data.ok).toBe(1);
+
+            // Verify it was removed
+            const getRes = await get(`/api/v1/collections/${testCollection}/whitelist`);
+            expect(getRes.data.addresses).not.toContain('0x123');
         });
     });
 

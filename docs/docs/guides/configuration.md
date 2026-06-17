@@ -16,7 +16,8 @@ All PlugPort configuration is done via environment variables. No config files ar
 | `HTTP_PORT` | `number` | `8080` | HTTP API port |
 | `WIRE_PORT` | `number` | `27017` | Wire protocol port |
 | `HOST` | `string` | `0.0.0.0` | Bind address |
-| `API_KEY` | `string` | none | API key for HTTP auth (disabled if not set) |
+| `API_KEY` | `string` | none | Legacy global API key for HTTP auth. Prefer generating wallet-linked keys via Dashboard instead. |
+| `JWT_SECRET` | `string` | `default-jwt-secret...` | Secret for signing SIWE JWTs |
 | `LOG_LEVEL` | `string` | `info` | `debug`, `info`, `warn`, `error` |
 | `METRICS_ENABLED` | `boolean` | `true` | Enable Prometheus /metrics |
 | `MONADDB_ENDPOINT` | `string` | none | MonadDb RPC URL (in-memory if not set) |
@@ -73,15 +74,14 @@ docker run \
 
 ## Authentication
 
-When `API_KEY` is set, all HTTP requests must include the key:
+PlugPort uses a Triple-Auth Middleware for maximum flexibility:
 
-```bash
-# Header
-curl -H "x-api-key: your-key" http://localhost:8080/api/v1/collections
-
-# Query parameter
-curl http://localhost:8080/api/v1/collections?apiKey=your-key
-```
+1. **JWT Bearer (SIWE):** For the Dashboard, using Sign-In with Ethereum.
+2. **Wallet-Linked API Key:** Generated via the Dashboard (starts with `pp_`). Use as a Bearer token:
+   ```bash
+   curl -H "Authorization: Bearer pp_test_123..." http://localhost:8080/api/v1/collections
+   ```
+3. **Legacy API Key (`x-api-key`):** If the `API_KEY` env var is set, it can be passed via the `x-api-key` header or `?apiKey=` query parameter.
 
 Endpoints exempt from auth: `/health`, `/metrics`
 

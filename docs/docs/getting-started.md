@@ -60,7 +60,14 @@ curl -X POST http://localhost:8080/api/v1/collections/users/insertOne \
 curl -X POST http://localhost:8080/api/v1/collections/users/find \
   -H "Content-Type: application/json" \
   -d '{"filter": {"name": "Alice"}}'
-```
+## Generate an API Key
+
+PlugPort is a multi-tenant platform. To securely connect to the API, you need an API key linked to your wallet.
+
+1. Open the dashboard at `http://localhost:3000` (or the deployed URL).
+2. Click **Connect Wallet** and sign the SIWE message.
+3. Navigate to the **API Keys** tab.
+4. Click **Generate New Key** and copy the `pp_test_...` key.
 
 ## Connect with Your Language
 
@@ -73,7 +80,9 @@ npm install @plugport/sdk
 ```typescript
 import { PlugPortClient } from '@plugport/sdk';
 
-const client = await PlugPortClient.connect('http://localhost:8080');
+const client = await PlugPortClient.connect('http://localhost:8080', {
+    apiKey: 'pp_test_1234567890abcdef...',
+});
 const db = client.db('myapp');
 const users = db.collection('users');
 
@@ -93,7 +102,7 @@ pip install plugport
 ```python
 from plugport import PlugPortClient
 
-client = PlugPortClient("http://localhost:8080")
+client = PlugPortClient("http://localhost:8080", api_key="pp_test_1234567890abcdef...")
 db = client["myapp"]
 users = db["users"]
 
@@ -106,7 +115,9 @@ docs = users.find({"name": "Alice"})
 ```go
 import plugport "github.com/plugport/plugport-go"
 
-client, _ := plugport.Connect("http://localhost:8080")
+client, _ := plugport.Connect("http://localhost:8080", plugport.ClientOptions{
+    APIKey: "pp_test_1234567890abcdef...",
+})
 defer client.Close()
 
 coll := client.Database("myapp").Collection("users")

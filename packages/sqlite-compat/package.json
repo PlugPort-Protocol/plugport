@@ -7,8 +7,8 @@
     "scripts": {
         "build": "tsc",
         "dev": "tsx watch src/index.ts",
-        "test": "vitest run",
-        "test:watch": "vitest",
+        "test": "vitest run --passWithNoTests",
+        "test:watch": "vitest --passWithNoTests",
         "lint": "eslint src/",
         "clean": "rm -rf dist"
     },

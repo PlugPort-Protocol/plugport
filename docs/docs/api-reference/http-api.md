@@ -20,7 +20,13 @@ API_KEY=your-secret-key pnpm --filter @plugport/server dev
 Then include the key in requests:
 
 ```bash
-curl -H "x-api-key: your-secret-key" http://localhost:8080/api/v1/collections
+curl -H "Authorization: Bearer your-wallet-linked-key" http://localhost:8080/api/v1/collections
+```
+
+Or using legacy keys via `x-api-key`:
+
+```bash
+curl -H "x-api-key: your-legacy-key" http://localhost:8080/api/v1/collections
 ```
 
 ## System Endpoints
@@ -118,6 +124,72 @@ Get collection statistics.
     { "name": "_id_", "field": "_id", "unique": true }
   ]
 }
+```
+
+### `GET /api/v1/collections/:name/privacy`
+
+Get privacy settings for a collection.
+
+**Response:**
+```json
+{
+  "ok": 1,
+  "privacy": {
+    "mode": "private",
+    "owner": "0x123..."
+  }
+}
+```
+
+### `POST /api/v1/collections/:name/privacy`
+
+Set privacy mode for a collection (Requires Owner Auth).
+
+**Request:**
+```json
+{
+  "mode": "private"
+}
+```
+
+**Response:**
+```json
+{
+  "ok": 1,
+  "privacy": {
+    "mode": "private",
+    "owner": "0x123..."
+  }
+}
+```
+
+### `GET /api/v1/collections/:name/whitelist`
+
+Get whitelist for a private collection (Requires Owner Auth).
+
+**Response:**
+```json
+{
+  "ok": 1,
+  "whitelist": ["0xabc..."]
+}
+```
+
+### `POST /api/v1/collections/:name/whitelist`
+
+Add or remove an address from the whitelist (Requires Owner Auth).
+
+**Request:**
+```json
+{
+  "address": "0xabc...",
+  "action": "add"
+}
+```
+
+**Response:**
+```json
+{ "ok": 1 }
 ```
 
 ---

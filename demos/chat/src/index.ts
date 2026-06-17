@@ -34,7 +34,9 @@ function broadcast(roomId: string, data: unknown, excludeUser?: string) {
 }
 
 async function init() {
-    const client = await PlugPortClient.connect(PLUGPORT_URL);
+    const client = await PlugPortClient.connect(PLUGPORT_URL, {
+        apiKey: process.env.PLUGPORT_API_KEY,
+    });
     const db = client.db('chat');
     const messages = db.collection('messages');
     const roomsMeta = db.collection('rooms');
