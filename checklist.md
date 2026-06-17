@@ -105,3 +105,28 @@
 - [x] Two-phase commit for unique index checks (with self-exclusion on update)
 - [x] Metrics collector with bounded tracking (MAX_TRACKED_COMMANDS=100, MAX_TRACKED_ERRORS=100)
 - [x] `extractCommand` properly tracks all endpoints (insert/find/findOne/update/updateMany/delete/count/distinct/index)
+
+## Phase 12: V3 Multi-Protocol & Core Engines
+- [x] Multi-protocol middleware support (MongoDB, PostgreSQL, MySQL, Redis, SQLite)
+- [x] SQL Translation Layer for PostgreSQL/MySQL text protocol mapping
+- [x] JoinEngine (Hash, Left, Right, Cross joins) resolving relational operations
+- [x] `@plugport/sqlite-compat` SDK acting as drop-in replacement for better-sqlite3
+- [x] AES-256-GCM Encryption Layer with ECDH key sharing for private mode
+
+## Phase 13: V3 Smart Contracts & RBAC
+- [x] `PlugPortPrivateStore` contract for encrypted storage and Access Control Lists (ACL)
+- [x] `PlugPortMessageBroker` contract powering on-chain Pub/Sub
+- [x] `PlugPortRelational` contract enabling batchGet for O(1) JOIN resolutions
+- [x] Role-Based Access Control (RBAC) migration across HTTP endpoints and SDKs
+- [x] Go, Python, Node, and sqlite-compat SDKs updated to securely pass `x-api-key` headers and trigger `.grantRole()` operations
+- [x] Strong typings for RBAC exported via `@plugport/shared` (`RoleGrantPayload`, `CollectionPrivacy`)
+
+## Phase 14: V3 Dashboard, SSE, & Ecosystem
+- [x] Next.js Dashboard pivot to Universal Wallet Auth & API Keys
+- [x] Protocols Tab (Dialect UI toggles) and Privacy & ACL controls
+- [x] 3-way scoping metrics (Global vs Personal vs Split-View comparison)
+- [x] Server-Sent Events (SSE) implemented for real-time Pub/Sub streams
+- [x] Collection JSON import feature added to UI
+- [x] Hardcoded `.env` values (`IS_TESTNET`) removed and `.env.example` deeply audited
+- [x] CI parity achieved via `start-server-and-test`
+- [x] Comprehensive documentation/README rewrites covering Multi-Protocol & SIWE

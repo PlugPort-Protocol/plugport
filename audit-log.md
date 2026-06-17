@@ -98,6 +98,13 @@
 - [x] Add `/api/v1/collections/:name/count` HTTP endpoint in [http-server.ts](file:///Users/shankarwarang/Downloads/TrieDBX/packages/server/src/http-server.ts).
 - [x] Add `/api/v1/collections/:name/distinct` HTTP endpoint in [http-server.ts](file:///Users/shankarwarang/Downloads/TrieDBX/packages/server/src/http-server.ts).
 - [x] Update HTTP update endpoint type signatures to accept `$inc` and `$unset`.
+
+## Round 16: V3 Parity Hardening & Security
+- [x] Fix GitHub Actions CI timeouts by fully integrating `start-server-and-test` for the integration suite.
+- [x] Correct SQL AST translation mappings to natively bridge `CREATE INDEX` and `DROP INDEX` without unhandled errors.
+- [x] Export explicit typings for Role-Based Access Control (`RoleGrantPayload`, `CollectionPrivacy`) in `@plugport/shared`.
+- [x] Remove API key generation `isTestnet` hardcoding and dynamically read the `.env` state globally.
+- [x] Massive `.env.example` overhaul introducing all modern protocol port toggles and smart contract dependencies.
 - [x] Add [update_many](file:///Users/shankarwarang/Downloads/TrieDBX/sdks/python/plugport/client.py#150-162), [distinct](file:///Users/shankarwarang/Downloads/TrieDBX/packages/sdk/src/index.ts#280-291), [count_documents](file:///Users/shankarwarang/Downloads/TrieDBX/sdks/python/plugport/client.py#179-186) (server-side), [estimated_document_count](file:///Users/shankarwarang/Downloads/TrieDBX/sdks/python/plugport/client.py#187-190) to Python SDK.
 - [x] Update Node.js SDK [countDocuments](file:///Users/shankarwarang/Downloads/TrieDBX/packages/server/src/storage/document-store.ts#894-915) to use server-side `/count` endpoint.
 - [x] Add [distinct](file:///Users/shankarwarang/Downloads/TrieDBX/packages/sdk/src/index.ts#280-291) method to Node.js SDK [Collection](file:///Users/shankarwarang/Downloads/TrieDBX/sdks/python/plugport/client.py#74-228).
@@ -112,3 +119,27 @@
 - [x] Apply [sanitizeDocument](file:///Users/shankarwarang/Downloads/TrieDBX/packages/server/src/storage/document-store.ts#73-104) to `$inc`/`$unset` payloads (prototype pollution prevention).
 - [x] Add `$or` index optimization to [planQuery](file:///Users/shankarwarang/Downloads/TrieDBX/packages/server/src/storage/query-planner.ts#32-121) in [query-planner.ts](file:///Users/shankarwarang/Downloads/TrieDBX/packages/server/src/storage/query-planner.ts).
 - [x] Add [count](file:///Users/shankarwarang/Downloads/TrieDBX/packages/server/src/storage/kv-adapter.ts#105-113)/[distinct](file:///Users/shankarwarang/Downloads/TrieDBX/packages/sdk/src/index.ts#280-291)/[findOne](file:///Users/shankarwarang/Downloads/TrieDBX/packages/sdk/src/index.ts#146-160) to [extractCommand](file:///Users/shankarwarang/Downloads/TrieDBX/packages/server/src/http-server.ts#332-346) for proper metrics tracking.
+
+## Round 17: V3 Multi-Protocol Expansion & Cryptography
+- [x] Implemented `ProtocolManager` orchestrating MongoDB, PostgreSQL, MySQL, Redis, and SQLite environments.
+- [x] Deployed SQL Translation Layer mapping Postgres/MySQL text commands to DocumentStore payloads.
+- [x] Implemented `JoinEngine` performing in-memory Hash, Left, Right, and Cross joins.
+- [x] Integrated `PlugPortPrivateStore` smart contract and AES-256-GCM + ECDH `EncryptionLayer` for private scoping.
+- [x] Deployed `PlugPortMessageBroker` for real-time Pub/Sub on-chain.
+- [x] Deployed `@plugport/sqlite-compat` drop-in SDK proxying local SQLite requests to the cloud.
+
+## Round 18: V3 Dashboard, Universal Auth, & Real-Time Streams
+- [x] Pivot Next.js Dashboard to support Sign-In With Ethereum (SIWE) and API Key inputs simultaneously.
+- [x] Build Protocols Dashboard Tab allowing toggle access to SQL and RESP endpoints.
+- [x] Build Privacy & ACL Tab mapping Wallet addresses to explicit Collection permissions.
+- [x] Implement Server-Sent Events (SSE) `/api/v1/subscribe` streaming Pub/Sub payloads to UI.
+- [x] Implement JSON File Import mapping arbitrary objects directly into `InsertCommand` pipelines.
+- [x] Expose 3-way scoping metrics evaluating Global, Personal, and Split-View aggregation models.
+
+## Round 19: V3 Parity Hardening, SDK Alignment & Security
+- [x] Fix GitHub Actions CI timeouts by fully integrating `start-server-and-test` for the integration suite.
+- [x] Correct SQL AST translation mappings to natively bridge `CREATE INDEX` and `DROP INDEX` without unhandled errors.
+- [x] Align Go, Python, Node, and sqlite-compat SDKs to forward `x-api-key` headers and native `.grantRole()` methods.
+- [x] Export explicit typings for Role-Based Access Control (`RoleGrantPayload`, `CollectionPrivacy`) in `@plugport/shared`.
+- [x] Remove API key generation `isTestnet` hardcoding and dynamically read the `.env` state globally.
+- [x] Massive `.env.example` overhaul introducing all modern protocol port toggles and smart contract dependencies.

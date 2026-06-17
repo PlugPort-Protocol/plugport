@@ -67,7 +67,7 @@ export class ApiKeyManager {
     ): Promise<GenerateKeyResult> {
         const address = ownerAddress.toLowerCase();
         const rawHex = randomBytes(16).toString('hex'); // 32 hex chars
-        const isTestnet = true; // TODO: determine from chain config
+        const isTestnet = process.env.IS_TESTNET !== 'false';
         const apiKey = `pp_${isTestnet ? 'test' : 'live'}_${rawHex}`;
         const hash = this.hashKey(apiKey);
 

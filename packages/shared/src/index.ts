@@ -61,6 +61,28 @@ export interface CollectionMetadata {
     documentCount: number;
 }
 
+// ---- Privacy & RBAC ----
+
+export interface CollectionPrivacy {
+    mode: 'public' | 'private';
+    ownerAddress: string;
+    contractAddress?: string;
+    accessRoles: Record<string, number>; // lowercase address -> role (1 = read, 2 = write)
+    createdAt: number;
+    updatedAt: number;
+}
+
+export interface RoleGrantPayload {
+    action: 'grant';
+    address: string;
+    role: 1 | 2;
+}
+
+export interface RoleRevokePayload {
+    action: 'revoke';
+    address: string;
+}
+
 // ---- Command Types ----
 
 export interface InsertCommand {
