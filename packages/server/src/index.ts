@@ -12,8 +12,9 @@ import { PGServer } from './protocols/pg-server.js';
 import { MySQLServer } from './protocols/mysql-server.js';
 import { RedisServer } from './protocols/redis-server.js';
 import { EncryptionLayer } from './storage/encryption-layer.js';
+import { RoutingAdapter } from './storage/routing-adapter.js';
 import { MessageBrokerAdapter } from './storage/message-broker-adapter.js';
-import type { PlugPortConfig, KVAdapter, ProtocolType, StorageMode } from '@plugport/shared';
+import type { PlugPortConfig, KVAdapter, ProtocolType } from '@plugport/shared';
 import { DEFAULT_CONFIG } from '@plugport/shared';
 
 function getConfig(): PlugPortConfig {
@@ -37,8 +38,6 @@ function getConfig(): PlugPortConfig {
             mysql: { enabled: process.env.MYSQL_ENABLED === 'true', port: parseInt(process.env.MYSQL_PORT || '3306', 10) },
             redis: { enabled: process.env.REDIS_ENABLED === 'true', port: parseInt(process.env.REDIS_PORT || '6379', 10) },
         },
-        // Storage mode
-        storageMode: (process.env.STORAGE_MODE || 'public') as StorageMode,
         // Private store
         privateStoreContract: process.env.PRIVATE_STORE_CONTRACT || undefined,
         whitelistAddresses: process.env.WHITELIST_ADDRESSES ? process.env.WHITELIST_ADDRESSES.split(',') : undefined,
@@ -60,8 +59,8 @@ function getConfig(): PlugPortConfig {
  * Otherwise:
  *   - Returns InMemoryKVStore (development: free, data lost on restart)
  *
- * If STORAGE_MODE=private + MONAD_PRIVATE_KEY:
- *   - Wraps the adapter in EncryptionLayer (AES-256-GCM)
+ * If MONAD_PRIVATE_KEY is present:
+ *   - Wraps the adapter in RoutingAdapter + EncryptionLayer (AES-256-GCM) for parallel public/private channels
  */
 export function createStorageAdapter(config: PlugPortConfig): KVAdapter & { getKeyCount(): number; getEstimatedSizeBytes(): number } {
     const rpcUrl = config.monadRpcUrl;
@@ -97,18 +96,34 @@ export function createStorageAdapter(config: PlugPortConfig): KVAdapter & { getK
         baseAdapter = new InMemoryKVStore();
     }
 
-    // Wrap with encryption layer if private mode
-    if (config.storageMode === 'private' && privateKey) {
-        console.log('  [Storage] Encryption: ENABLED (AES-256-GCM, client-side)');
-        console.log('  [Storage] Only owner and whitelisted addresses can read data.');
-        const encrypted = new EncryptionLayer(baseAdapter, {
+    // Wrap with encryption routing layer if private key is present
+    if (privateKey) {
+        console.log('  [Storage] Cryptography: ENABLED (AES-256-GCM, client-side)');
+        console.log('  [Storage] Parallel Channels Active (Public & Private).');
+        let privateBaseAdapter = baseAdapter;
+        if (rpcUrl && privateKey && config.privateStoreContract) {
+            privateBaseAdapter = createMonadAdapter({
+                rpcUrl,
+                chainId: config.monadChainId || 10143,
+                privateKey,
+                contractAddress: config.privateStoreContract,
+            });
+            console.log(`  [Storage] Private Channel: Isolated contract (${config.privateStoreContract})`);
+        } else if (rpcUrl && privateKey) {
+            console.log('  [Storage] WARNING: PRIVATE_STORE_CONTRACT missing. Using public contract for encrypted data.');
+        }
+
+        const privateAdapter = new EncryptionLayer(privateBaseAdapter, {
             privateKey,
             enabled: true,
         });
-        // Wrap to preserve diagnostic methods
-        return Object.assign(encrypted, {
+        const routingAdapter = new RoutingAdapter(baseAdapter, privateAdapter);
+
+        // Wrap to preserve diagnostic methods and allow linking PrivacyManager
+        return Object.assign(routingAdapter, {
             getKeyCount: () => baseAdapter.getKeyCount(),
             getEstimatedSizeBytes: () => baseAdapter.getEstimatedSizeBytes(),
+            setPrivacyManager: (pm: any) => routingAdapter.setPrivacyManager(pm),
         });
     }
 
@@ -252,9 +267,6 @@ async function main() {
         }
     }
 
-    if (config.storageMode === 'private') {
-        console.log(`  Storage mode: PRIVATE (encrypted + ACL)`);
-    }
 
     console.log('');
     console.log('  Ready to accept connections.');

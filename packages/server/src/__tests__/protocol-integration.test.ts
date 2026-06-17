@@ -48,7 +48,7 @@ describe('Protocol Integration', () => {
             metrics,
             kvStore,
             protocolManager: mockProtocolManager,
-            storageMode: 'public',
+
             whitelistAddresses: ['0xAABBCC'],
         };
 
@@ -67,7 +67,7 @@ describe('Protocol Integration', () => {
 
             const body = res.json();
             expect(body.status).toBe('ok');
-            expect(body.storageMode).toBe('public');
+
             expect(body.protocols).toBeDefined();
             expect(body.protocols.length).toBe(5);
         });

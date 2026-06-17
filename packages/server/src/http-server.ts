@@ -44,7 +44,6 @@ export interface HttpServerOptions {
         enableProtocol(name: string): Promise<void>;
         disableProtocol(name: string): Promise<void>;
     };
-    storageMode?: string;
     whitelistAddresses?: string[];
     jwtSecret?: string;
 }
@@ -57,6 +56,9 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
     const apiKeyManager = new ApiKeyManager(kvStore);
     const analyticsRecorder = new AnalyticsRecorder(kvStore);
     const privacyManager = new PrivacyManager(kvStore);
+    if ('setPrivacyManager' in kvStore && typeof kvStore.setPrivacyManager === 'function') {
+        kvStore.setPrivacyManager(privacyManager);
+    }
 
     const app = Fastify({
         bodyLimit: 52428800, // 50MB limit for bulk operations
@@ -179,7 +181,7 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
                 httpPort: options.port,
                 wirePort: 27017,
             },
-            storageMode: options.storageMode || 'public',
+            cryptoEnabled: 'setPrivacyManager' in kvStore,
         };
         if (options.protocolManager) {
             result.protocols = options.protocolManager.getStatus();

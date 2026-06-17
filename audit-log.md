@@ -143,3 +143,10 @@
 - [x] Export explicit typings for Role-Based Access Control (`RoleGrantPayload`, `CollectionPrivacy`) in `@plugport/shared`.
 - [x] Remove API key generation `isTestnet` hardcoding and dynamically read the `.env` state globally.
 - [x] Massive `.env.example` overhaul introducing all modern protocol port toggles and smart contract dependencies.
+
+## Round 20: RoutingAdapter & Isolated Privacy Channels (V3 Architecture)
+- [x] Replaced global `STORAGE_MODE` environment variable with dynamic `RoutingAdapter` supporting parallel isolated channels.
+- [x] Instantiated `PrivacyManager` to evaluate collection permissions against the unified `publicAdapter` without encrypted cycle locks.
+- [x] Refactored `EncryptionLayer` into a strict AES-256-GCM proxy delegating configuration state to the `RoutingAdapter`.
+- [x] Cleaned `.env.example` files across the repo stripping legacy `STORAGE_MODE` prompts.
+- [x] Removed `-private` prompt flag logic and associated `STORAGE_MODE` mapping in `@plugport/cli`.

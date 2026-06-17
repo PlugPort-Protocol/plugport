@@ -20,14 +20,14 @@ program
     .description('Initialize a new PlugPort project with SDK setup')
     .option('-t, --template <template>', 'Project template (node, python, go)', 'node')
     .option('-d, --db <protocols>', 'Database protocols (comma-separated: mongodb,postgresql,mysql,redis)')
-    .option('--private', 'Enable private/encrypted storage mode')
+
     .action(async (options) => {
         const fs = await import('fs');
         const path = await import('path');
         const cwd = process.cwd();
 
         let selectedProtocols: string[];
-        let storageMode: string = options.private ? 'private' : 'public';
+
 
         // Interactive mode if --db flag is not provided
         if (!options.db) {
@@ -48,16 +48,7 @@ program
                     ],
                     validate: (input: string[]) => input.length > 0 ? true : 'Select at least one protocol',
                 },
-                {
-                    type: 'list',
-                    name: 'storageMode',
-                    message: 'Storage mode:',
-                    choices: [
-                        { name: `${chalk.green('Public')}  — Data stored on-chain, readable by anyone`, value: 'public' },
-                        { name: `${chalk.yellow('Private')} — Data encrypted client-side (AES-256-GCM), ACL-controlled`, value: 'private' },
-                    ],
-                    default: 'public',
-                },
+
                 {
                     type: 'input',
                     name: 'rpcUrl',
@@ -67,7 +58,7 @@ program
             ]);
 
             selectedProtocols = answers.protocols;
-            storageMode = answers.storageMode;
+
         } else {
             selectedProtocols = options.db.split(',').map((p: string) => p.trim().toLowerCase());
         }
@@ -218,12 +209,11 @@ main().catch(console.error);`,
                 `PG_ENABLED=${selectedProtocols.includes('postgresql')}`,
                 `MYSQL_ENABLED=${selectedProtocols.includes('mysql')}`,
                 `REDIS_ENABLED=${selectedProtocols.includes('redis')}`, '',
-                `# Storage Mode`,
-                `STORAGE_MODE=${storageMode}`,
+                '',
+                '# Private Store (Required for private collections)',
+                'PRIVATE_STORE_CONTRACT=',
+                'WHITELIST_ADDRESSES=',
             ];
-            if (storageMode === 'private') {
-                envLines.push('', '# Private Store', 'PRIVATE_STORE_CONTRACT=', 'WHITELIST_ADDRESSES=');
-            }
             fs.writeFileSync(path.join(cwd, '.env'), envLines.join('\n') + '\n');
 
             spinner.succeed(chalk.green('Project initialized successfully!'));
@@ -234,7 +224,7 @@ main().catch(console.error);`,
                 console.log(chalk.gray(`    ✓ ${p.padEnd(12)} → port ${ports[p] || '?'}`));
             }
             console.log('');
-            console.log(chalk.cyan('  Storage mode:'), storageMode === 'private' ? chalk.yellow('PRIVATE (encrypted)') : chalk.green('PUBLIC'));
+
             console.log('');
             console.log(chalk.cyan('  Next steps:'));
             console.log(chalk.gray('  1.'), 'npm install');
@@ -545,14 +535,11 @@ program
                 }
             }
 
-            // Show storage mode
-            const storageMode = health.storageMode as string | undefined;
-            if (storageMode) {
+            // Check if crypto is enabled
+            const cryptoEnabled = health.cryptoEnabled as boolean | undefined;
+            if (cryptoEnabled) {
                 console.log('');
-                console.log(chalk.gray('  Storage:   '),
-                    storageMode === 'private'
-                        ? chalk.yellow('PRIVATE (encrypted)')
-                        : chalk.green('PUBLIC'));
+                console.log(chalk.gray('  Cryptography:'), chalk.yellow('ENABLED (AES-256-GCM ready)'));
             }
 
             console.log('');

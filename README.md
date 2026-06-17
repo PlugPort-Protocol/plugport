@@ -106,14 +106,24 @@ docker-compose up
                     | +-------+-------+ +-------------+ |
                     |                                   |
                     | +-------+-------+                 |
-                    | |  KV Adapter   |                 |
+                    | | RoutingAdapter|                 |
                     | +-------+-------+                 |
                     +---+-----+-----+---+
                         |           |
-               In-Memory KV     MonadDb RPC
-               (dev mode)       (Smart Contracts)
-                                - PlugPortPrivateStore
-                                - PlugPortMessageBroker
+            +-----------+           +-----------+
+            |                                   |
+      +-----+-----+                       +-----+-----+
+      |Public Base|                       |Private Base|
+      |(In-Memory)|                       |(Encryption)|
+      +-----------+                       +-----------+
+            |                                   |
+            +-----------------------------------+
+                              |
+                         MonadDb RPC
+                      (Smart Contracts)
+                      - PlugPortStore.sol
+                      - PlugPortPrivateStore.sol
+                      - PlugPortMessageBroker.sol
 ```
 
 **Key Design Decisions:**

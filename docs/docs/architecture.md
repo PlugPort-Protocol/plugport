@@ -39,17 +39,21 @@ PlugPort bridges MongoDB's document model with MonadDb's Merkle Patricia Trie st
                     │   └──────┬──────┘   │
                     │          │          │
                     │   ┌──────┴──────┐   │
-                    │   │ KV Adapter  │   │
-                    │   │ (interface) │   │
+                    │   │RoutingAdapter│  │
                     │   └──────┬──────┘   │
                     └──────────┼──────────┘
                                │
-                  ┌────────────┼────────────┐
-                  │                         │
-           ┌──────┴──────┐          ┌───────┴───────┐
-           │InMemoryKV   │          │  MonadDb RPC  │
-           │(dev mode)   │          │  (production) │
-           └─────────────┘          └───────────────┘
+            ┌──────────────────┴──────────────────┐
+            │                                     │
+      ┌─────┴─────┐                         ┌─────┴─────┐
+      │Public Base│                         │Private Base│
+      │(In-Memory)│                         │(Encryption)│
+      └───────────┘                         └───────────┘
+            │                                     │
+            └─────────────────────────────────────┘
+                               │
+                          MonadDb RPC
+                       (Smart Contracts)
 ```
 
 ## Core Components

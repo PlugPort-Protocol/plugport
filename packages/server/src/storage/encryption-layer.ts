@@ -1,6 +1,6 @@
 // PlugPort Encryption Layer
 // Client-side AES-256-GCM encryption/decryption that wraps any KVAdapter.
-// OPTIONAL: Only active when STORAGE_MODE=private.
+// Active when wrapped around the private routing adapter channel.
 //
 // Security properties:
 //   - All data encrypted before reaching the contract (contract never sees plaintext)
@@ -139,8 +139,6 @@ export class EncryptionLayer implements KVAdapter {
     private aesKey: Buffer;
     private innerAdapter: KVAdapter;
     private enabled: boolean;
-    private collectionConfig: Map<string, CollectionEncryptionConfig> = new Map();
-
     constructor(innerAdapter: KVAdapter, config: EncryptionConfig) {
         this.innerAdapter = innerAdapter;
         this.enabled = config.enabled;
@@ -160,66 +158,9 @@ export class EncryptionLayer implements KVAdapter {
     }
 
     /**
-     * Set per-collection encryption override.
-     * When set, this overrides the global `enabled` flag for keys in that collection.
-     * @param collectionName The collection name
-     * @param enabled Whether encryption is enabled for this collection
-     * @param key Optional per-collection AES key (defaults to global key)
-     */
-    setCollectionEncryption(collectionName: string, enabled: boolean, key?: Buffer): void {
-        this.collectionConfig.set(collectionName, { enabled, key });
-    }
-
-    /**
-     * Remove per-collection encryption override (falls back to global setting).
-     */
-    removeCollectionEncryption(collectionName: string): void {
-        this.collectionConfig.delete(collectionName);
-    }
-
-    /**
-     * Check if a collection is encrypted (considering per-collection overrides).
-     */
-    isCollectionEncrypted(collectionName: string): boolean {
-        const config = this.collectionConfig.get(collectionName);
-        if (config) return config.enabled;
-        return this.enabled;
-    }
-
-    /**
-     * Extract collection name from a key.
-     * PlugPort keys follow the format: `col:<collectionName>:doc:<id>` or `col:<collectionName>:idx:<name>`
-     * Falls back to null if the key doesn't match collection patterns.
-     */
-    private extractCollection(key: string): string | null {
-        if (key.startsWith('col:')) {
-            const parts = key.split(':');
-            return parts[1] || null;
-        }
-        return null;
-    }
-
-    /**
-     * Get the effective AES key for a given KV key (considers per-collection config).
-     */
-    private getKeyForEntry(key: string): Buffer {
-        const collection = this.extractCollection(key);
-        if (collection) {
-            const config = this.collectionConfig.get(collection);
-            if (config?.key) return config.key;
-        }
-        return this.aesKey;
-    }
-
-    /**
      * Check if encryption is active for a given KV key.
      */
     private isEncryptionActive(key: string): boolean {
-        const collection = this.extractCollection(key);
-        if (collection) {
-            const config = this.collectionConfig.get(collection);
-            if (config) return config.enabled;
-        }
         // Metadata keys (meta:*, analytics:*) are never encrypted
         if (key.startsWith('meta:') || key.startsWith('analytics:')) return false;
         return this.enabled;
@@ -233,7 +174,7 @@ export class EncryptionLayer implements KVAdapter {
         if (!this.isEncryptionActive(key)) return encrypted;
 
         // Decrypt will throw if the auth tag is invalid or key is wrong.
-        return this.decrypt(encrypted, this.getKeyForEntry(key));
+        return this.decrypt(encrypted, this.aesKey);
     }
 
     async put(key: string, value: Buffer | Uint8Array): Promise<void> {
@@ -242,7 +183,7 @@ export class EncryptionLayer implements KVAdapter {
             return this.innerAdapter.put(key, buf);
         }
 
-        const encrypted = this.encrypt(buf, this.getKeyForEntry(key));
+        const encrypted = this.encrypt(buf, this.aesKey);
         return this.innerAdapter.put(key, encrypted);
     }
 
@@ -259,7 +200,7 @@ export class EncryptionLayer implements KVAdapter {
             try {
                 return {
                     key: entry.key,
-                    value: this.decrypt(Buffer.from(entry.value), this.getKeyForEntry(entry.key)),
+                    value: this.decrypt(Buffer.from(entry.value), this.aesKey),
                 };
             } catch {
                 return entry; // Return raw if decryption fails
@@ -289,7 +230,7 @@ export class EncryptionLayer implements KVAdapter {
             if (!this.isEncryptionActive(key)) return { key, value: buf };
             return {
                 key,
-                value: this.encrypt(buf, this.getKeyForEntry(key)),
+                value: this.encrypt(buf, this.aesKey),
             };
         });
 

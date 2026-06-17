@@ -130,3 +130,9 @@
 - [x] Hardcoded `.env` values (`IS_TESTNET`) removed and `.env.example` deeply audited
 - [x] CI parity achieved via `start-server-and-test`
 - [x] Comprehensive documentation/README rewrites covering Multi-Protocol & SIWE
+
+## Phase 15: V3 Isolated Privacy Channels
+- [x] Implemented `RoutingAdapter` proxying real-time traffic to parallel public and private storage channels
+- [x] Cleaned up `EncryptionLayer` strictly handling AES-256-GCM logic without circular dependencies
+- [x] Discarded global `STORAGE_MODE` config enabling granular dynamic per-collection privacy configurations
+- [x] Cleaned `.env.example`s across the entire stack ensuring precise `PRIVATE_STORE_CONTRACT` onboarding

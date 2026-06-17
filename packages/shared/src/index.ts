@@ -258,8 +258,7 @@ export interface ProtocolConfig {
     host?: string;
 }
 
-/** Storage mode — public (PlugPortStore) or private (PlugPortPrivateStore + encryption) */
-export type StorageMode = 'public' | 'private';
+
 
 /** Protocol status info for health/dashboard */
 export interface ProtocolInfo {
@@ -294,9 +293,9 @@ export interface PlugPortConfig {
     metricsEnabled: boolean;
     // Protocol frontends
     protocols: Record<ProtocolType, ProtocolConfig>;
-    // Storage mode
-    storageMode: StorageMode;
-    // Private store (only when storageMode === 'private')
+
+
+    // Private store contract address (for private collections)
     privateStoreContract?: string;
     whitelistAddresses?: string[];
     // Message broker (Pub/Sub)
@@ -316,7 +315,6 @@ export const DEFAULT_CONFIG: PlugPortConfig = {
     maxCollections: 1000,
     logLevel: 'info',
     metricsEnabled: true,
-    storageMode: 'public',
     protocols: {
         http: { enabled: true, port: 8080 },
         mongodb: { enabled: true, port: 27017 },

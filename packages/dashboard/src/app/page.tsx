@@ -1426,10 +1426,12 @@ function PrivacyTab({ collections }: { collections: CollectionInfo[] }) {
             setStorageMode(privacy.privacy?.mode || 'public');
             setRoles(privacy.privacy?.accessRoles || {});
         } catch {
-            // Fallback: try global health endpoint
+            // Fallback: use global crypto configuration if available
             try {
-                const health = await apiGet<{ storageMode?: string }>('/health');
-                setStorageMode(health.storageMode || 'public');
+                const health = await apiGet<{ cryptoEnabled?: boolean }>('/health');
+                if (!health.cryptoEnabled) {
+                    setStorageMode('public');
+                }
             } catch { /* ignore */ }
         }
     }, [selectedCollection]);
