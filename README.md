@@ -1,7 +1,7 @@
 <p align="center">
   <h1 align="center">PlugPort</h1>
   <p align="center">
-    <strong>MongoDB-Compatible Document Store on MonadDb</strong>
+    <strong>Multi-Protocol Document, SQL & Key-Value Store on MonadDb</strong>
   </p>
   <p align="center">
     <a href="#features">Features</a> |
@@ -16,22 +16,21 @@
 
 ---
 
-PlugPort bridges the developer experience of MongoDB with the verifiable storage guarantees of MonadDb's Merkle Patricia Trie. Use familiar MongoDB drivers, queries, and tooling while your data is backed by blockchain-grade cryptographic proofs.
+PlugPort bridges the developer experience of MongoDB, SQL (PostgreSQL/MySQL/SQLite), and Redis with the verifiable storage guarantees of MonadDb's Merkle Patricia Trie. Use familiar drivers, queries, and tooling while your data is backed by blockchain-grade cryptographic proofs. All protocols interact with the same underlying document store using a unified translation layer.
 
 ## Features
 
 | Feature | Description |
 |---------|-------------|
-| **Wire Protocol** | Connect with `mongosh`, Node.js, Python, and Go MongoDB drivers |
-| **HTTP API** | RESTful CRUD endpoints with JSON, API key auth, CORS |
-| **Document Model** | BSON/JSON documents, auto-generated ObjectId, nested fields |
-| **Indexing** | Single-field indexes with unique constraints, retroactive building |
-| **Query Engine** | Filter ($gt, $gte, $lt, $lte, $eq, $ne, $in, $and), sort, projection, skip/limit |
-| **Metrics** | Prometheus-compatible /metrics endpoint, JSON snapshot API |
-| **Dashboard** | Next.js 15 UI with collection browser, query builder, index manager |
-| **CLI** | `plugport init`, `plugport dev`, `plugport playground` for rapid development |
-| **SDKs** | Node.js, Python (PyMongo shim), Go (mongo-go-driver compatible) |
-| **Free Tier** | Deployable on Vercel, Railway, Render, Docker Hub |
+| **Multi-Protocol** | Connect with `mongosh`, `psql`, `mysql`, `redis-cli`, and their respective Node.js/Python/Go drivers |
+| **HTTP API** | RESTful CRUD endpoints for all protocols (e.g. `/api/v1/sql`, `/api/v1/redis`) |
+| **Pub/Sub SSE** | Real-time messaging via Redis Pub/Sub mapping to HTTP Server-Sent Events (`/api/v1/redis/stream`) |
+| **Web3 Native Auth** | SIWE (Sign-In With Ethereum) authentication and granular API key management (Generation, Rotation, Revocation) |
+| **Smart Contract RBAC** | On-chain Role-Based Access Control (`PlugPortPrivateStore`) for granular read/write permissions |
+| **Encryption** | AES-256-GCM encryption with ECDH key sharing for private collections |
+| **Join Engine** | Hash, Left, Right, and Cross joins for SQL and NoSQL aggregations |
+| **Dashboard** | Next.js 15 UI with universal protocol pivot, 3-way scoped metrics (Global/Personal/Comparison), query builder, and privacy toggles |
+| **CLI & SDKs** | Node.js, Python, Go clients plus a developer-friendly `plugport` CLI |
 
 ## Quick Start
 
@@ -50,8 +49,10 @@ pnpm --filter @plugport/server dev
 ```
 
 Server starts on:
-- **HTTP API**: `http://localhost:8080`
-- **Wire Protocol**: `mongodb://localhost:27017`
+- **HTTP API**: `http://localhost:8080` (Includes `/api/v1/sql`, `/api/v1/redis`, `/api/v1/redis/stream`)
+- **Mongo Wire Protocol**: `mongodb://localhost:27017`
+- **Postgres Wire Protocol**: `postgresql://localhost:5432`
+- **Redis Protocol**: `redis://localhost:6379`
 - **Health**: `http://localhost:8080/health`
 
 ### Using the CLI
@@ -80,44 +81,47 @@ docker-compose up
 
 ## Architecture
 
-```
-                    +-------------------+
-                    |    Client Apps     |
-                    +---+-----------+---+
-                        |           |
-              Wire Protocol     HTTP API
-              (port 27017)    (port 8080)
-                        |           |
-                    +---+-----------+---+
-                    |   PlugPort Core    |
-                    |                   |
-                    | +---------------+ |
-                    | | Document Store| |
-                    | +-------+-------+ |
-                    |         |         |
-                    | +-------+-------+ |
-                    | | Query Planner | |
-                    | | Index Manager | |
-                    | +-------+-------+ |
-                    |         |         |
-                    | +-------+-------+ |
-                    | |  Key Encoding | |
-                    | +-------+-------+ |
-                    |         |         |
-                    | +-------+-------+ |
-                    | |  KV Adapter   | |
-                    | +-------+-------+ |
+```text
+                    +-----------------------------------+
+                    |           Client Apps             |
+                    +---+-------+-------+-------+-------+
+                        |       |       |       |       |
+                      Mongo   PG/MySQL Redis   HTTP    SSE
+                        |       |       |       |       |
+                    +---+-------+-------+-------+-------+
+                    |        PlugPort Protocol Hub       |
+                    |  (SIWE Auth, API Keys, Routing)    |
+                    +-----------------------------------+
+                    |         Translation Layer          |
+                    | (SQL/Redis/Mongo -> Monad Query)   |
+                    +-----------------------------------+
+                    |          PlugPort Core             |
+                    |                                   |
+                    | +---------------+ +-------------+ |
+                    | | Document Store| | Join Engine | |
+                    | +-------+-------+ +-------------+ |
+                    |         |                         |
+                    | +-------+-------+ +-------------+ |
+                    | | Index Manager | | Crypto Layer| |
+                    | +-------+-------+ +-------------+ |
+                    |                                   |
+                    | +-------+-------+                 |
+                    | |  KV Adapter   |                 |
+                    | +-------+-------+                 |
                     +---+-----+-----+---+
                         |           |
-              In-Memory KV    MonadDb RPC
-              (dev mode)      (production)
+               In-Memory KV     MonadDb RPC
+               (dev mode)       (Smart Contracts)
+                                - PlugPortPrivateStore
+                                - PlugPortMessageBroker
 ```
 
 **Key Design Decisions:**
-- **Sort-preserving key encoding** using IEEE 754 bit manipulation for numbers
-- **Pluggable KV adapter** - swap in-memory for MonadDb without code changes
-- **Retroactive index building** - create indexes on existing collections
-- **MongoDB error codes** - E11000 duplicate key, namespace errors, etc.
+- **Unified Translation Layer**: Maps SQL, Redis, and Mongo commands into a universal DocumentStore AST.
+- **Triple-Auth Strategy**: Connect securely via Web3 Wallets (SIWE), rotating API keys, or legacy IP whitelists.
+- **Smart Contract RBAC**: Granular on-chain rules (`accessRoles`) dictate read/write access per collection/user via `PlugPortPrivateStore.sol`.
+- **Pluggable KV adapter** - swap in-memory for MonadDb without code changes.
+- **Join Engine** - Executes fast cross-collection joins for relational queries.
 
 ## SDKs
 
@@ -199,12 +203,12 @@ mongosh mongodb://localhost:27017
 
 The built-in Next.js dashboard provides:
 
-- **Overview** - Server status, collection stats, performance metrics, MonadDb architecture
-- **Collection Browser** - Browse all collections, insert documents, view stats
-- **Query Builder** - Visual query construction with filter, projection, sort, limit
-- **Document Explorer** - Browse, edit, and delete individual documents
-- **Index Manager** - Create and drop indexes, view index definitions
-- **Metrics** - Real-time QPS, latency percentiles, protocol distribution, storage
+- **Universal Pivot**: Toggle seamlessly between "All Collections" and "My Collections" (filtered by your SIWE wallet).
+- **3-Way Scoped Metrics**: Compare Global vs Personal vs Side-by-Side metrics for QPS, latency, and distribution.
+- **API Key Management**: Generate, rotate, and revoke scoped API keys.
+- **Privacy & ACL**: Toggle public/private modes and manage granular roles (Read/Write) stored on-chain.
+- **Multi-Protocol Queries**: Run queries in MongoDB, PostgreSQL, Redis, or SQLite dialects via the Query Builder.
+- **Document Explorer**: Browse, edit, delete, import, and export individual documents.
 
 ```bash
 # Start dashboard
