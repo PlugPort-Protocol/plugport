@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useApi, apiPost, apiGet, apiDelete, apiPut, setServerUrl as setApiServerUrl, setAuthToken } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { ConnectButton } from '@rainbow-me/rainbowkit';
@@ -467,6 +467,7 @@ function CollectionsTab({ collections, onRefresh }: { collections: CollectionInf
     const [insertCollection, setInsertCollection] = useState('');
     const [insertDoc, setInsertDoc] = useState('{\n  "name": "Alice",\n  "email": "alice@example.com"\n}');
     const [insertResult, setInsertResult] = useState<string | null>(null);
+    const fileInputRef = useRef<HTMLInputElement>(null);
 
     const handleInsert = async () => {
         try {
@@ -477,6 +478,27 @@ function CollectionsTab({ collections, onRefresh }: { collections: CollectionInf
         } catch (err) {
             setInsertResult(`Error: ${err instanceof Error ? err.message : 'Unknown'}`);
         }
+    };
+
+    const handleImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        const colName = prompt('Enter collection name to import into:', 'users');
+        if (!colName) return;
+        const reader = new FileReader();
+        reader.onload = async (ev) => {
+            try {
+                const arr = JSON.parse(ev.target?.result as string);
+                if (!Array.isArray(arr)) throw new Error('File must be a JSON array');
+                const result = await apiPost(`/api/v1/collections/${colName}/insertMany`, { documents: arr });
+                setInsertResult(JSON.stringify(result, null, 2));
+                setShowInsert(true);
+                onRefresh();
+            } catch (err) {
+                alert('Import failed: ' + (err instanceof Error ? err.message : 'Unknown'));
+            }
+        };
+        reader.readAsText(file);
     };
 
     const visibleCollections = scope === 'my' && isAuthenticated
@@ -493,6 +515,10 @@ function CollectionsTab({ collections, onRefresh }: { collections: CollectionInf
                     <button className="btn btn-secondary" onClick={onRefresh}>
                         <Icon name="refresh" size={16} /> Refresh
                     </button>
+                    <button className="btn btn-secondary" onClick={() => fileInputRef.current?.click()}>
+                        <Icon name="download" size={16} /> Import JSON
+                    </button>
+                    <input type="file" accept=".json" ref={fileInputRef} style={{ display: 'none' }} onChange={handleImport} />
                 </div>
                 {isAuthenticated && <ScopeToggle scope={scope} setScope={setScope} />}
             </div>
@@ -590,35 +616,88 @@ function CollectionsTab({ collections, onRefresh }: { collections: CollectionInf
 
 // ---- Query Builder Tab ----
 function QueryBuilderTab({ collections }: { collections: CollectionInfo[] }) {
+    const [dialect, setDialect] = useState<'mongo' | 'sql' | 'redis'>('mongo');
     const [collection, setCollection] = useState(collections[0]?.name || '');
     const [filter, setFilter] = useState('{}');
     const [projection, setProjection] = useState('');
     const [sort, setSort] = useState('');
     const [limit, setLimit] = useState('50');
+    const [sqlQuery, setSqlQuery] = useState('');
+    const [redisCmd, setRedisCmd] = useState('');
     const [results, setResults] = useState<Record<string, unknown>[] | null>(null);
+    const [sseMessages, setSseMessages] = useState<string[]>([]);
+    const [sseActive, setSseActive] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [loading, setLoading] = useState(false);
     const [execTime, setExecTime] = useState(0);
+    const sseRef = useRef<EventSource | null>(null);
+
+    useEffect(() => {
+        return () => stopSse();
+    }, []);
+
+    const stopSse = () => {
+        if (sseRef.current) {
+            sseRef.current.close();
+            sseRef.current = null;
+        }
+        setSseActive(false);
+    };
 
     const executeQuery = async () => {
+        stopSse();
         setLoading(true);
         setError(null);
+        setResults(null);
+        setSseMessages([]);
         const start = Date.now();
         try {
-            const body: Record<string, unknown> = { filter: JSON.parse(filter) };
-            if (projection) body.projection = JSON.parse(projection);
-            if (sort) body.sort = JSON.parse(sort);
-            if (limit) body.limit = parseInt(limit);
+            if (dialect === 'mongo') {
+                const body: Record<string, unknown> = { filter: JSON.parse(filter || '{}') };
+                if (projection) body.projection = JSON.parse(projection);
+                if (sort) body.sort = JSON.parse(sort);
+                if (limit) body.limit = parseInt(limit);
 
-            const result = await apiPost<{ cursor: { firstBatch: Record<string, unknown>[] } }>(
-                `/api/v1/collections/${collection}/find`, body
-            );
-            setResults(result.cursor.firstBatch);
+                const result = await apiPost<{ cursor: { firstBatch: Record<string, unknown>[] } }>(
+                    `/api/v1/collections/${collection}/find`, body
+                );
+                setResults(result.cursor.firstBatch);
+            } else if (dialect === 'sql') {
+                const result = await apiPost<{ result: Record<string, unknown>[] }>(`/api/v1/sql`, { query: sqlQuery });
+                setResults(result.result || []);
+            } else if (dialect === 'redis') {
+                if (redisCmd.toUpperCase().startsWith('SUBSCRIBE')) {
+                    const channel = redisCmd.split(' ')[1];
+                    if (!channel) throw new Error('Specify a channel (e.g. SUBSCRIBE ch1)');
+                    const token = localStorage.getItem('auth_token') || '';
+                    const url = new URL(window.location.origin);
+                    url.pathname = '/api/v1/redis/stream';
+                    url.searchParams.set('channels', channel);
+                    if (token) url.searchParams.set('token', token);
+                    
+                    const es = new EventSource(url.toString());
+                    sseRef.current = es;
+                    setSseActive(true);
+                    es.onmessage = (e) => {
+                        setSseMessages(prev => [...prev, e.data]);
+                    };
+                    es.onerror = () => {
+                        es.close();
+                        setSseActive(false);
+                    };
+                    setLoading(false);
+                    return;
+                }
+                const result = await apiPost<{ result: unknown }>(`/api/v1/redis`, { command: redisCmd });
+                setResults([{ value: result.result }]);
+            }
             setExecTime(Date.now() - start);
         } catch (err) {
             setError(err instanceof Error ? err.message : 'Query failed');
         } finally {
-            setLoading(false);
+            if (dialect !== 'redis' || !redisCmd.toUpperCase().startsWith('SUBSCRIBE')) {
+                setLoading(false);
+            }
         }
     };
 
@@ -628,7 +707,7 @@ function QueryBuilderTab({ collections }: { collections: CollectionInfo[] }) {
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = `${collection}_export.json`;
+        a.download = `${dialect}_export.json`;
         a.click();
         URL.revokeObjectURL(url);
     };
@@ -637,46 +716,87 @@ function QueryBuilderTab({ collections }: { collections: CollectionInfo[] }) {
         <div className="fade-in">
             <div className="card" style={{ marginBottom: 24 }}>
                 <div className="card-header">
-                    <div className="card-title">Query Builder</div>
+                    <div className="card-title" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                        Query Builder
+                        <div style={{ display: 'flex', background: 'var(--bg-tertiary)', borderRadius: 6, padding: 2 }}>
+                            {['mongo', 'sql', 'redis'].map(d => (
+                                <button
+                                    key={d}
+                                    style={{
+                                        border: 'none', background: dialect === d ? 'var(--bg-primary)' : 'transparent',
+                                        color: dialect === d ? 'var(--text-primary)' : 'var(--text-tertiary)',
+                                        padding: '4px 12px', fontSize: 12, fontWeight: 600, borderRadius: 4, cursor: 'pointer',
+                                        textTransform: 'uppercase'
+                                    }}
+                                    onClick={() => { setDialect(d as any); setResults(null); setError(null); stopSse(); }}
+                                >
+                                    {d}
+                                </button>
+                            ))}
+                        </div>
+                    </div>
                     {results && <span className="badge badge-success">{results.length} results in {execTime}ms</span>}
+                    {sseActive && <span className="badge badge-warning blink">Live Stream Active</span>}
                 </div>
 
-                <div className="grid-2" style={{ marginBottom: 16 }}>
-                    <div className="input-group">
-                        <label className="label">Collection</label>
-                        <select className="select" value={collection} onChange={e => setCollection(e.target.value)}>
-                            {collections.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
-                            <option value="">-- enter manually --</option>
-                        </select>
-                    </div>
-                    <div className="input-group">
-                        <label className="label">Limit</label>
-                        <input className="input" type="number" value={limit} onChange={e => setLimit(e.target.value)} />
-                    </div>
-                </div>
+                {dialect === 'mongo' && (
+                    <>
+                        <div className="grid-2" style={{ marginBottom: 16 }}>
+                            <div className="input-group">
+                                <label className="label">Collection</label>
+                                <select className="select" value={collection} onChange={e => setCollection(e.target.value)}>
+                                    {collections.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
+                                    <option value="">-- enter manually --</option>
+                                </select>
+                            </div>
+                            <div className="input-group">
+                                <label className="label">Limit</label>
+                                <input className="input" type="number" value={limit} onChange={e => setLimit(e.target.value)} />
+                            </div>
+                        </div>
+                        <div className="input-group">
+                            <label className="label">Filter (JSON)</label>
+                            <textarea className="textarea" value={filter} onChange={e => setFilter(e.target.value)} rows={3} placeholder='{"field": "value"}' />
+                        </div>
+                        <div className="grid-2">
+                            <div className="input-group">
+                                <label className="label">Projection (optional)</label>
+                                <input className="input input-mono" value={projection} onChange={e => setProjection(e.target.value)} placeholder='{"password": 0}' />
+                            </div>
+                            <div className="input-group">
+                                <label className="label">Sort (optional)</label>
+                                <input className="input input-mono" value={sort} onChange={e => setSort(e.target.value)} placeholder='{"createdAt": -1}' />
+                            </div>
+                        </div>
+                    </>
+                )}
 
-                <div className="input-group">
-                    <label className="label">Filter (JSON)</label>
-                    <textarea className="textarea" value={filter} onChange={e => setFilter(e.target.value)} rows={3} placeholder='{"field": "value"}' />
-                </div>
+                {dialect === 'sql' && (
+                    <div className="input-group">
+                        <label className="label">SQL Query</label>
+                        <textarea className="textarea input-mono" value={sqlQuery} onChange={e => setSqlQuery(e.target.value)} rows={4} placeholder="SELECT * FROM users WHERE age > 18" />
+                    </div>
+                )}
 
-                <div className="grid-2">
+                {dialect === 'redis' && (
                     <div className="input-group">
-                        <label className="label">Projection (optional)</label>
-                        <input className="input input-mono" value={projection} onChange={e => setProjection(e.target.value)} placeholder='{"password": 0}' />
+                        <label className="label">Redis Command</label>
+                        <input className="input input-mono" value={redisCmd} onChange={e => setRedisCmd(e.target.value)} placeholder="GET mykey or SUBSCRIBE channel1" />
                     </div>
-                    <div className="input-group">
-                        <label className="label">Sort (optional)</label>
-                        <input className="input input-mono" value={sort} onChange={e => setSort(e.target.value)} placeholder='{"createdAt": -1}' />
-                    </div>
-                </div>
+                )}
 
                 <div style={{ display: 'flex', gap: 12 }}>
-                    <button className="btn btn-primary" onClick={executeQuery} disabled={loading || !collection}>
-                        {loading ? <div className="spinner" style={{ width: 16, height: 16 }} /> : <Icon name="play" size={16} />}
-                        Execute
-                    </button>
-                    {results && (
+                    {!sseActive ? (
+                        <button className="btn btn-primary" onClick={executeQuery} disabled={loading || (dialect === 'mongo' && !collection)}>
+                            {loading ? <div className="spinner" style={{ width: 16, height: 16 }} /> : <Icon name="play" size={16} />}
+                            Execute
+                        </button>
+                    ) : (
+                        <button className="btn btn-danger" onClick={stopSse}>
+                            Stop Stream
+                        </button>
+                    )}
+                    {results && !sseActive && (
                         <button className="btn btn-secondary" onClick={exportJSON}>
                             <Icon name="download" size={16} /> Export JSON
                         </button>
@@ -686,28 +806,40 @@ function QueryBuilderTab({ collections }: { collections: CollectionInfo[] }) {
                 {error && <div className="alert alert-error" style={{ marginTop: 16 }}>{error}</div>}
             </div>
 
-            {results && (
+            {sseActive || sseMessages.length > 0 ? (
+                <div className="card">
+                    <div className="card-header">
+                        <div className="card-title">Pub/Sub Stream ({sseMessages.length} events)</div>
+                    </div>
+                    <div className="terminal-window" style={{ background: '#1e1e1e', color: '#00ff00', padding: 16, borderRadius: 8, height: 300, overflow: 'auto', fontFamily: 'JetBrains Mono, monospace', fontSize: 12 }}>
+                        {sseMessages.map((msg, i) => (
+                            <div key={i}>{msg}</div>
+                        ))}
+                        {sseActive && <div className="blink" style={{ marginTop: 8 }}>_</div>}
+                    </div>
+                </div>
+            ) : results ? (
                 <div className="card">
                     <div className="card-header">
                         <div className="card-title">Results ({results.length} documents)</div>
                     </div>
                     {results.length === 0 ? (
                         <div className="empty-state">
-                            <div className="empty-state-title">No documents found</div>
-                            <div className="empty-state-text">Try adjusting your filter criteria</div>
+                            <div className="empty-state-title">No results found</div>
+                            <div className="empty-state-text">Try adjusting your query</div>
                         </div>
                     ) : (
                         <div className="table-container" style={{ maxHeight: 500, overflow: 'auto' }}>
                             <table className="table">
                                 <thead>
                                     <tr>
-                                        {Object.keys(results[0]).map(key => <th key={key}>{key}</th>)}
+                                        {Object.keys(results[0] || {}).map(key => <th key={key}>{key}</th>)}
                                     </tr>
                                 </thead>
                                 <tbody>
                                     {results.map((doc, i) => (
                                         <tr key={i}>
-                                            {Object.values(doc).map((val, j) => (
+                                            {Object.values(doc || {}).map((val, j) => (
                                                 <td key={j} style={{ fontFamily: 'JetBrains Mono', fontSize: 12 }}>
                                                     {typeof val === 'object' ? JSON.stringify(val) : String(val)}
                                                 </td>
@@ -724,7 +856,7 @@ function QueryBuilderTab({ collections }: { collections: CollectionInfo[] }) {
                         </pre>
                     )}
                 </div>
-            )}
+            ) : null}
         </div>
     );
 }
@@ -1281,17 +1413,18 @@ function ProtocolsTab() {
 function PrivacyTab({ collections }: { collections: CollectionInfo[] }) {
     const [selectedCollection, setSelectedCollection] = useState(collections[0]?.name || '');
     const [storageMode, setStorageMode] = useState<string>('public');
-    const [addresses, setAddresses] = useState<string[]>([]);
+    const [roles, setRoles] = useState<Record<string, number>>({});
     const [newAddress, setNewAddress] = useState('');
+    const [newRole, setNewRole] = useState<number>(1);
     const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
     const [switching, setSwitching] = useState(false);
 
     const loadData = useCallback(async () => {
         if (!selectedCollection) return;
         try {
-            const privacy = await apiGet<{ privacy: { mode: string; whitelistedAddresses: string[] } | null }>(`/api/v1/collections/${selectedCollection}/privacy`);
+            const privacy = await apiGet<{ privacy: { mode: string; accessRoles: Record<string, number> } | null }>(`/api/v1/collections/${selectedCollection}/privacy`);
             setStorageMode(privacy.privacy?.mode || 'public');
-            setAddresses(privacy.privacy?.whitelistedAddresses || []);
+            setRoles(privacy.privacy?.accessRoles || {});
         } catch {
             // Fallback: try global health endpoint
             try {
@@ -1323,8 +1456,8 @@ function PrivacyTab({ collections }: { collections: CollectionInfo[] }) {
             return;
         }
         try {
-            await apiPost(`/api/v1/collections/${selectedCollection}/whitelist`, { address: newAddress, action: 'add' });
-            setMessage({ type: 'success', text: `Address ${newAddress.substring(0, 10)}... added to ${selectedCollection}` });
+            await apiPost(`/api/v1/collections/${selectedCollection}/roles`, { address: newAddress, action: 'grant', role: newRole });
+            setMessage({ type: 'success', text: `Address ${newAddress.substring(0, 10)}... granted ${newRole === 1 ? 'Read' : 'Write'} access to ${selectedCollection}` });
             setNewAddress('');
             loadData();
         } catch (err) {
@@ -1334,8 +1467,8 @@ function PrivacyTab({ collections }: { collections: CollectionInfo[] }) {
 
     const removeAddress = async (addr: string) => {
         try {
-            await apiPost(`/api/v1/collections/${selectedCollection}/whitelist`, { address: addr, action: 'remove' });
-            setMessage({ type: 'success', text: `Address removed from ${selectedCollection}` });
+            await apiPost(`/api/v1/collections/${selectedCollection}/roles`, { address: addr, action: 'revoke' });
+            setMessage({ type: 'success', text: `Address access revoked from ${selectedCollection}` });
             loadData();
         } catch (err) {
             setMessage({ type: 'error', text: err instanceof Error ? err.message : 'Failed' });
@@ -1400,12 +1533,12 @@ function PrivacyTab({ collections }: { collections: CollectionInfo[] }) {
             {/* Whitelist Management */}
             <div className="card">
                 <div className="card-header">
-                    <div className="card-title">Whitelist for &ldquo;{selectedCollection}&rdquo;</div>
-                    <span className="badge badge-primary">{addresses.length} addresses</span>
+                    <div className="card-title">Access Control for &ldquo;{selectedCollection}&rdquo;</div>
+                    <span className="badge badge-primary">{Object.keys(roles).length} addresses</span>
                 </div>
                 <div style={{ fontSize: 13, color: 'var(--text-tertiary)', marginBottom: 16 }}>
-                    Whitelisted addresses can read/write data in this private collection.
-                    The owner address (gas station) is always authorized.
+                    Granted addresses can read/write data in this private collection based on their role.
+                    The owner address (gas station) is always fully authorized.
                 </div>
 
                 <div style={{ display: 'flex', gap: 12, marginBottom: 20 }}>
@@ -1416,14 +1549,18 @@ function PrivacyTab({ collections }: { collections: CollectionInfo[] }) {
                         onChange={e => setNewAddress(e.target.value)}
                         placeholder="0x... Ethereum address"
                     />
+                    <select className="select" style={{ width: 120 }} value={newRole} onChange={e => setNewRole(Number(e.target.value))}>
+                        <option value={1}>Read Only</option>
+                        <option value={2}>Read / Write</option>
+                    </select>
                     <button className="btn btn-primary" onClick={addAddress} disabled={!newAddress}>
-                        <Icon name="plus" size={16} /> Add
+                        <Icon name="plus" size={16} /> Grant
                     </button>
                 </div>
 
-                {addresses.length === 0 ? (
+                {Object.keys(roles).length === 0 ? (
                     <div className="empty-state">
-                        <div className="empty-state-text">No addresses whitelisted yet</div>
+                        <div className="empty-state-text">No addresses granted access yet</div>
                     </div>
                 ) : (
                     <div className="table-container">
@@ -1432,17 +1569,23 @@ function PrivacyTab({ collections }: { collections: CollectionInfo[] }) {
                                 <tr>
                                     <th>#</th>
                                     <th>Address</th>
+                                    <th>Role</th>
                                     <th>Actions</th>
                                 </tr>
                             </thead>
                             <tbody>
-                                {addresses.map((addr, i) => (
+                                {Object.entries(roles).map(([addr, role], i) => (
                                     <tr key={addr}>
                                         <td>{i + 1}</td>
                                         <td style={{ fontFamily: 'JetBrains Mono', fontSize: 13 }}>{addr}</td>
                                         <td>
+                                            <span className={`badge ${role >= 2 ? 'badge-warning' : 'badge-primary'}`}>
+                                                {role >= 2 ? 'WRITE' : 'READ'}
+                                            </span>
+                                        </td>
+                                        <td>
                                             <button className="btn btn-sm btn-danger" onClick={() => removeAddress(addr)}>
-                                                <Icon name="trash" size={14} /> Remove
+                                                <Icon name="trash" size={14} /> Revoke
                                             </button>
                                         </td>
                                     </tr>

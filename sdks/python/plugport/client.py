@@ -176,6 +176,20 @@ class Collection:
         )
         return DeleteResult(result)
 
+    def grant_role(self, address: str, role: int) -> dict:
+        """Grant an access role to an address (1 = Read, 2 = Write)."""
+        return self._transport.post(
+            f"/api/v1/collections/{self._name}/roles",
+            {"address": address, "action": "grant", "role": role},
+        )
+
+    def revoke_role(self, address: str) -> dict:
+        """Revoke access for an address."""
+        return self._transport.post(
+            f"/api/v1/collections/{self._name}/roles",
+            {"address": address, "action": "revoke"},
+        )
+
     def count_documents(self, filter: Optional[dict] = None) -> int:
         """Count documents matching a filter (server-side)."""
         result = self._transport.post(
@@ -279,7 +293,7 @@ class HttpTransport:
         self._session = requests.Session()
         self._session.headers.update({"Content-Type": "application/json"})
         if api_key:
-            self._session.headers.update({"Authorization": f"Bearer {api_key}"})
+            self._session.headers.update({"x-api-key": api_key})
         self._timeout = 30  # Default 30s timeout to prevent infinite blocking
 
     def get(self, path: str) -> dict:

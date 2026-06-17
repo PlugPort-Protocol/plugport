@@ -130,7 +130,9 @@ docker-compose up
 ```typescript
 import { PlugPortClient } from '@plugport/sdk';
 
-const client = await PlugPortClient.connect('http://localhost:8080');
+const client = await PlugPortClient.connect('http://localhost:8080', {
+    apiKey: 'pp_test_1234567890abcdef',
+});
 const db = client.db('myapp');
 const users = db.collection('users');
 
@@ -142,6 +144,10 @@ const admins = await users.find({ role: 'admin', age: { $gte: 21 } });
 
 // Update
 await users.updateOne({ name: 'Alice' }, { $set: { age: 31 } });
+
+// Role-Based Access Control (RBAC)
+await users.grantRole('0x123...', 2); // 1 = Read, 2 = Write
+await users.revokeRole('0x123...');
 
 // Index
 await users.createIndex('email', { unique: true });
@@ -155,7 +161,7 @@ await client.close();
 from plugport import PlugPortClient
 
 # PyMongo-compatible API
-client = PlugPortClient("http://localhost:8080")
+client = PlugPortClient("http://localhost:8080", api_key="pp_test_1234567890abcdef")
 db = client["myapp"]
 users = db["users"]
 
@@ -165,8 +171,11 @@ result = users.insert_one({"name": "Alice", "email": "alice@example.com"})
 # Find
 docs = users.find({"name": "Alice"})
 
+# RBAC
+users.grant_role("0x123...", 2)
+
 # Context manager support
-with PlugPortClient("http://localhost:8080") as client:
+with PlugPortClient("http://localhost:8080", api_key="pp_...") as client:
     db = client["myapp"]
 ```
 

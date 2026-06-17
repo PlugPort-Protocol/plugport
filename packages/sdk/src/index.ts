@@ -29,7 +29,7 @@ class HttpTransport {
         };
 
         if (this.apiKey) {
-            headers['Authorization'] = `Bearer ${this.apiKey}`;
+            headers['x-api-key'] = this.apiKey;
         }
 
         const maxRetries = 3;
@@ -242,6 +242,28 @@ export class Collection<TDoc extends Document = Document> {
         return this.transport.request(
             'GET',
             `/api/v1/collections/${this.collectionName}/indexes`,
+        );
+    }
+
+    /**
+     * Grant an access role to an address (1 = Read, 2 = Write).
+     */
+    async grantRole(address: string, role: 1 | 2): Promise<{ ok: number }> {
+        return this.transport.request(
+            'POST',
+            `/api/v1/collections/${this.collectionName}/roles`,
+            { address, action: 'grant', role }
+        );
+    }
+
+    /**
+     * Revoke access for an address.
+     */
+    async revokeRole(address: string): Promise<{ ok: number }> {
+        return this.transport.request(
+            'POST',
+            `/api/v1/collections/${this.collectionName}/roles`,
+            { address, action: 'revoke' }
         );
     }
 
