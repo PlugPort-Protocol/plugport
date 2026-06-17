@@ -197,15 +197,18 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
 
     app.get('/api/v1/collections', async () => {
         const collections = await store.listCollections();
-        return {
-            collections: collections.map((c) => ({
+        const mappedCollections = await Promise.all(collections.map(async (c) => {
+            const privacy = await privacyManager.getCollectionPrivacy(c.name);
+            return {
                 name: c.name,
                 documentCount: c.documentCount,
                 indexCount: c.indexes.length,
                 createdAt: c.options.createdAt,
-            })),
-            ok: 1,
-        };
+                ownerAddress: privacy?.ownerAddress,
+                mode: privacy?.mode || 'public',
+            };
+        }));
+        return { collections: mappedCollections, ok: 1 };
     });
 
     app.post('/api/v1/collections/:name/drop', async (req: FastifyRequest<{ Params: { name: string } }>) => {

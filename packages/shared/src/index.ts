@@ -166,6 +166,8 @@ export interface CollectionListResult {
         documentCount: number;
         indexCount: number;
         createdAt: number;
+        ownerAddress?: string;
+        mode?: 'public' | 'private';
     }>;
     ok: number;
 }

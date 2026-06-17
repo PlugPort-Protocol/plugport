@@ -95,7 +95,7 @@ List all collections with stats.
 ```json
 {
   "collections": [
-    { "name": "users", "documentCount": 100, "indexCount": 3, "createdAt": 1708300000 }
+    { "name": "users", "documentCount": 100, "indexCount": 3, "createdAt": 1708300000, "ownerAddress": "0x123...", "mode": "public" }
   ],
   "ok": 1
 }

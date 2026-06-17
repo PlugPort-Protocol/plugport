@@ -193,6 +193,11 @@ describe('HTTP API Integration Tests', () => {
         it('should list collections', async () => {
             const { data } = await get('/api/v1/collections');
             expect(data.collections).toBeInstanceOf(Array);
+            expect(data.collections.length).toBeGreaterThan(0);
+            
+            const firstCollection = data.collections[0];
+            expect(firstCollection.mode).toBeDefined();
+
             const names = data.collections.map((c: Record<string, unknown>) => c.name);
             expect(names).toContain(testCollection);
         });

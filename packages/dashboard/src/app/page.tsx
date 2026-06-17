@@ -13,6 +13,8 @@ interface CollectionInfo {
     documentCount: number;
     indexCount: number;
     createdAt: number;
+    ownerAddress?: string;
+    mode?: string;
 }
 
 interface IndexInfo {
@@ -69,7 +71,8 @@ interface UserMetrics {
 type TabId = 'overview' | 'collections' | 'query' | 'indexes' | 'metrics' | 'explorer' | 'protocols' | 'privacy' | 'apikeys' | 'deploy';
 
 // ---- Reusable Scope Toggle ----
-function ScopeToggle({ scope, setScope }: { scope: 'my' | 'all'; setScope: (s: 'my' | 'all') => void }) {
+type ScopeState = 'my' | 'all' | 'both';
+function ScopeToggle({ scope, setScope, allowBoth = false }: { scope: ScopeState; setScope: (s: ScopeState) => void; allowBoth?: boolean }) {
     return (
         <div className="scope-toggle">
             <button
@@ -78,11 +81,19 @@ function ScopeToggle({ scope, setScope }: { scope: 'my' | 'all'; setScope: (s: '
             >
                 My Data
             </button>
+            {allowBoth && (
+                <button
+                    className={`scope-toggle-btn ${scope === 'both' ? 'active' : ''}`}
+                    onClick={() => setScope('both')}
+                >
+                    Comparison
+                </button>
+            )}
             <button
                 className={`scope-toggle-btn ${scope === 'all' ? 'active' : ''}`}
                 onClick={() => setScope('all')}
             >
-                All Data
+                Global
             </button>
         </div>
     );
@@ -450,6 +461,8 @@ function OverviewTab({ collections, metrics }: { collections: CollectionInfo[]; 
 
 // ---- Collections Tab ----
 function CollectionsTab({ collections, onRefresh }: { collections: CollectionInfo[]; onRefresh: () => void }) {
+    const { address, isAuthenticated } = useAuth();
+    const [scope, setScope] = useState<ScopeState>(isAuthenticated ? 'my' : 'all');
     const [showInsert, setShowInsert] = useState(false);
     const [insertCollection, setInsertCollection] = useState('');
     const [insertDoc, setInsertDoc] = useState('{\n  "name": "Alice",\n  "email": "alice@example.com"\n}');
@@ -466,15 +479,22 @@ function CollectionsTab({ collections, onRefresh }: { collections: CollectionInf
         }
     };
 
+    const visibleCollections = scope === 'my' && isAuthenticated
+        ? collections.filter(c => c.ownerAddress === address)
+        : collections;
+
     return (
         <div className="fade-in">
             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 20 }}>
-                <button className="btn btn-primary" onClick={() => setShowInsert(!showInsert)}>
-                    <Icon name="plus" size={16} /> Insert Document
-                </button>
-                <button className="btn btn-secondary" onClick={onRefresh}>
-                    <Icon name="refresh" size={16} /> Refresh
-                </button>
+                <div style={{ display: 'flex', gap: 12 }}>
+                    <button className="btn btn-primary" onClick={() => setShowInsert(!showInsert)}>
+                        <Icon name="plus" size={16} /> Insert Document
+                    </button>
+                    <button className="btn btn-secondary" onClick={onRefresh}>
+                        <Icon name="refresh" size={16} /> Refresh
+                    </button>
+                </div>
+                {isAuthenticated && <ScopeToggle scope={scope} setScope={setScope} />}
             </div>
 
             {showInsert && (
@@ -500,7 +520,7 @@ function CollectionsTab({ collections, onRefresh }: { collections: CollectionInf
                 </div>
             )}
 
-            {collections.length === 0 ? (
+            {visibleCollections.length === 0 ? (
                 <div className="card" style={{ padding: '64px 32px', textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
                     <div className="relative group mb-8" style={{ position: 'relative' }}>
                         <div style={{ 
@@ -551,13 +571,14 @@ function CollectionsTab({ collections, onRefresh }: { collections: CollectionInf
                 </div>
             ) : (
                 <div className="collection-grid">
-                    {collections.map(c => (
+                    {visibleCollections.map(c => (
                         <div className="collection-card" key={c.name}>
                             <div className="collection-name">{c.name}</div>
                             <div className="collection-meta">
                                 <span>{c.documentCount.toLocaleString()} docs</span>
                                 <span>{c.indexCount} indexes</span>
                                 <span>Created {new Date(c.createdAt).toLocaleDateString()}</span>
+                                {c.mode && <span style={{ color: c.mode === 'private' ? 'var(--accent-tertiary)' : 'var(--accent-secondary)' }}>{c.mode}</span>}
                             </div>
                         </div>
                     ))}
@@ -711,8 +732,7 @@ function QueryBuilderTab({ collections }: { collections: CollectionInfo[] }) {
 // ---- Document Explorer Tab ----
 function DocumentExplorerTab({ collections }: { collections: CollectionInfo[] }) {
     const { address, isAuthenticated } = useAuth();
-    const [scope, setScope] = useState<'my' | 'all'>(isAuthenticated ? 'my' : 'all');
-    const [userCollections, setUserCollections] = useState<string[]>([]);
+    const [scope, setScope] = useState<ScopeState>(isAuthenticated ? 'my' : 'all');
     const [collection, setCollection] = useState(collections[0]?.name || '');
     const [documents, setDocuments] = useState<Record<string, unknown>[]>([]);
     const [selectedDoc, setSelectedDoc] = useState<Record<string, unknown> | null>(null);
@@ -720,17 +740,8 @@ function DocumentExplorerTab({ collections }: { collections: CollectionInfo[] })
     const [editJson, setEditJson] = useState('');
     const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
-    // Load user's owned collections for scoping
-    useEffect(() => {
-        if (isAuthenticated && address) {
-            apiGet<{ collections: Array<{ name: string }> }>(`/api/v1/user/${address}/collections`)
-                .then(res => setUserCollections(res.collections.map(c => c.name)))
-                .catch(() => {});
-        }
-    }, [isAuthenticated, address]);
-
     const visibleCollections = scope === 'my' && isAuthenticated
-        ? collections.filter(c => userCollections.includes(c.name))
+        ? collections.filter(c => c.ownerAddress === address)
         : collections;
 
     // Reset collection selection when scope changes
@@ -863,24 +874,15 @@ function DocumentExplorerTab({ collections }: { collections: CollectionInfo[] })
 // ---- Index Manager Tab ----
 function IndexManagerTab({ collections, onRefresh }: { collections: CollectionInfo[]; onRefresh: () => void }) {
     const { address, isAuthenticated } = useAuth();
-    const [scope, setScope] = useState<'my' | 'all'>(isAuthenticated ? 'my' : 'all');
-    const [userCollections, setUserCollections] = useState<string[]>([]);
+    const [scope, setScope] = useState<ScopeState>(isAuthenticated ? 'my' : 'all');
     const [collection, setCollection] = useState(collections[0]?.name || '');
     const [indexes, setIndexes] = useState<IndexInfo[]>([]);
     const [newField, setNewField] = useState('');
     const [unique, setUnique] = useState(false);
     const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
-    useEffect(() => {
-        if (isAuthenticated && address) {
-            apiGet<{ collections: Array<{ name: string }> }>(`/api/v1/user/${address}/collections`)
-                .then(res => setUserCollections(res.collections.map(c => c.name)))
-                .catch(() => {});
-        }
-    }, [isAuthenticated, address]);
-
     const visibleCollections = scope === 'my' && isAuthenticated
-        ? collections.filter(c => userCollections.includes(c.name))
+        ? collections.filter(c => c.ownerAddress === address)
         : collections;
 
     useEffect(() => {
@@ -996,6 +998,7 @@ function IndexManagerTab({ collections, onRefresh }: { collections: CollectionIn
 // ---- Metrics Tab ----
 function MetricsTab({ metrics }: { metrics: MetricsData | null }) {
     const { address, isAuthenticated } = useAuth();
+    const [scope, setScope] = useState<ScopeState>(isAuthenticated ? 'both' : 'all');
     const [userMetrics, setUserMetrics] = useState<UserMetrics | null>(null);
 
     useEffect(() => {
@@ -1011,8 +1014,14 @@ function MetricsTab({ metrics }: { metrics: MetricsData | null }) {
 
     return (
         <div className="fade-in">
+            {isAuthenticated && (
+                <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 24 }}>
+                    <ScopeToggle scope={scope} setScope={setScope} allowBoth={true} />
+                </div>
+            )}
+
             {/* User-scoped metrics */}
-            {isAuthenticated && userMetrics && (
+            {isAuthenticated && userMetrics && (scope === 'my' || scope === 'both') && (
                 <div style={{ marginBottom: 24 }}>
                     <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--accent-primary-light)', marginBottom: 10, textTransform: 'uppercase', letterSpacing: 1 }}>My Metrics</div>
                     <div className="stats-grid" style={{ gridTemplateColumns: 'repeat(4, 1fr)' }}>
@@ -1036,7 +1045,9 @@ function MetricsTab({ metrics }: { metrics: MetricsData | null }) {
                 </div>
             )}
 
-            <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-tertiary)', marginBottom: 10, textTransform: 'uppercase', letterSpacing: 1 }}>Global Metrics</div>
+            {(scope === 'all' || scope === 'both') && (
+                <>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-tertiary)', marginBottom: 10, textTransform: 'uppercase', letterSpacing: 1 }}>Global Metrics</div>
             <div className="stats-grid">
                 <div className="stat-card">
                     <div className="stat-label">Total Requests</div>
@@ -1120,6 +1131,8 @@ function MetricsTab({ metrics }: { metrics: MetricsData | null }) {
                     </div>
                 </div>
             </div>
+            </>
+            )}
         </div>
     );
 }
