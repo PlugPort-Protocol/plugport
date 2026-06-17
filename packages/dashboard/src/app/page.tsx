@@ -190,7 +190,6 @@ function WalletSidebarFooter({ health }: { health: Record<string, unknown> | nul
     const { data: balance } = useBalance({ address: address as `0x${string}` | undefined });
     const [showSettings, setShowSettings] = useState(false);
     const [customUrl, setCustomUrl] = useState(serverUrl || '');
-    const [signingIn, setSigningIn] = useState(false);
 
     // Sync auth token to API client
     useEffect(() => {
@@ -200,17 +199,6 @@ function WalletSidebarFooter({ health }: { health: Record<string, unknown> | nul
     useEffect(() => {
         setApiServerUrl(serverUrl);
     }, [serverUrl]);
-
-    const handleSignIn = async () => {
-        setSigningIn(true);
-        try {
-            await signIn();
-        } catch (err) {
-            console.error('Sign-in failed:', err);
-        } finally {
-            setSigningIn(false);
-        }
-    };
 
     const handleSaveUrl = () => {
         const url = customUrl.trim();
@@ -247,14 +235,9 @@ function WalletSidebarFooter({ health }: { health: Record<string, unknown> | nul
                             </button>
                         </div>
                     ) : (
-                        <button
-                            className="btn btn-primary btn-sm"
-                            style={{ width: '100%', fontSize: 12 }}
-                            onClick={handleSignIn}
-                            disabled={signingIn}
-                        >
-                            {signingIn ? <div className="spinner" style={{ width: 14, height: 14 }} /> : 'Sign In (SIWE)'}
-                        </button>
+                        <div style={{ padding: '8px 0', textAlign: 'center', color: 'var(--text-tertiary)', fontSize: 11, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, background: 'rgba(255,255,255,0.03)', borderRadius: 6 }}>
+                            <div className="spinner" style={{ width: 12, height: 12, borderWidth: 2 }} /> Awaiting Signature...
+                        </div>
                     )}
                 </div>
             ) : (

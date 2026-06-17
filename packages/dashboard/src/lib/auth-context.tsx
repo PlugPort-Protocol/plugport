@@ -6,9 +6,10 @@ import {
     useState,
     useCallback,
     useEffect,
+    useRef,
     type ReactNode,
 } from 'react';
-import { useAccount, useDisconnect } from 'wagmi';
+import { useAccount, useDisconnect, useSignMessage } from 'wagmi';
 
 // ---- Types ----
 
@@ -59,9 +60,11 @@ function getApiBase(serverUrl: string | null): string {
 export function AuthProvider({ children }: { children: ReactNode }) {
     const { address: walletAddress, isConnected } = useAccount();
     const { disconnect } = useDisconnect();
+    const { signMessageAsync } = useSignMessage();
 
     const [jwt, setJwtState] = useState<string | null>(null);
     const [serverUrl, setServerUrlState] = useState<string | null>(null);
+    const isSigningInRef = useRef(false);
 
     // Load persisted state from localStorage
     useEffect(() => {
@@ -100,7 +103,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     const signIn = useCallback(async () => {
         if (!walletAddress || !isConnected) return;
+        if (isSigningInRef.current) return;
 
+        isSigningInRef.current = true;
         const apiBase = getApiBase(serverUrl);
 
         try {
@@ -129,16 +134,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                 `Issued At: ${new Date().toISOString()}`,
             ].join('\n');
 
-            // Step 3: Request wallet signature (via wagmi/window.ethereum)
-            let signature: string;
-            if (typeof window !== 'undefined' && (window as any).ethereum) {
-                signature = await (window as any).ethereum.request({
-                    method: 'personal_sign',
-                    params: [message, walletAddress],
-                });
-            } else {
-                throw new Error('No wallet provider found');
-            }
+            // Step 3: Request wallet signature (via wagmi)
+            const signature = await signMessageAsync({ message });
 
             // Step 4: Verify on server
             const verifyRes = await fetch(`${apiBase}/api/v1/auth/verify`, {
@@ -153,8 +150,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         } catch (err) {
             console.error('SIWE sign-in failed:', err);
             throw err;
+        } finally {
+            isSigningInRef.current = false;
         }
-    }, [walletAddress, isConnected, serverUrl, setJwt]);
+    }, [walletAddress, isConnected, serverUrl, setJwt, signMessageAsync]);
 
     const signOut = useCallback(() => {
         setJwt(null);
@@ -170,6 +169,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     const isAuthenticated = authMethod !== 'none';
     const address = isConnected && walletAddress ? walletAddress.toLowerCase() : null;
+
+    // Auto sign-in when wallet connects
+    useEffect(() => {
+        if (isConnected && walletAddress && !jwt) {
+            signIn().catch((err) => {
+                console.error('Auto sign-in failed', err);
+                disconnect(); // Disconnect wallet if they reject the signature
+            });
+        }
+    }, [isConnected, walletAddress, jwt, signIn, disconnect]);
 
     return (
         <AuthContext.Provider
