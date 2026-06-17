@@ -113,7 +113,7 @@ func (c *Client) doPost(ctx context.Context, path string, body interface{}) (map
 
 func (c *Client) doRequest(req *http.Request) (map[string]interface{}, error) {
 	if c.apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+		req.Header.Set("x-api-key", c.apiKey)
 	}
 
 	resp, err := c.httpClient.Do(req)
@@ -375,6 +375,21 @@ func (c *Collection) CreateIndex(ctx context.Context, field string, unique bool)
 }
 
 // Drop drops this collection.
+func (c *Collection) GrantRole(ctx context.Context, address string, role int) (map[string]interface{}, error) {
+	return c.db.client.doPost(ctx, fmt.Sprintf("/api/v1/collections/%s/roles", c.name), map[string]interface{}{
+		"address": address,
+		"action":  "grant",
+		"role":    role,
+	})
+}
+
+func (c *Collection) RevokeRole(ctx context.Context, address string) (map[string]interface{}, error) {
+	return c.db.client.doPost(ctx, fmt.Sprintf("/api/v1/collections/%s/roles", c.name), map[string]interface{}{
+		"address": address,
+		"action":  "revoke",
+	})
+}
+
 func (c *Collection) Drop(ctx context.Context) error {
 	_, err := c.db.client.doPost(ctx, fmt.Sprintf("/api/v1/collections/%s/drop", c.name), map[string]interface{}{})
 	return err

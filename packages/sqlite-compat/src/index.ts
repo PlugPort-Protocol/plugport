@@ -122,6 +122,32 @@ export class Database {
     }
 
     /**
+     * Grant an access role to an address for a specific table (collection).
+     * @param table The table (collection) name
+     * @param address The address to grant access to
+     * @param role 1 = Read, 2 = Write
+     */
+    grantRole(table: string, address: string, role: 1 | 2): void {
+        this.httpRequest('POST', `/api/v1/collections/${table}/roles`, {
+            address,
+            action: 'grant',
+            role,
+        });
+    }
+
+    /**
+     * Revoke access for an address from a specific table (collection).
+     * @param table The table (collection) name
+     * @param address The address to revoke access from
+     */
+    revokeRole(table: string, address: string): void {
+        this.httpRequest('POST', `/api/v1/collections/${table}/roles`, {
+            address,
+            action: 'revoke',
+        });
+    }
+
+    /**
      * Execute one or more SQL statements (no return value).
      * Used for CREATE TABLE, DROP TABLE, etc.
      */
