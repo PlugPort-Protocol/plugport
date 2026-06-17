@@ -818,3 +818,260 @@ body {
   justify-content: flex-end;
   margin-top: 24px;
 }
+
+/* ═══════════════════════════════════════════
+   Scope Toggle (My Data / All Data)
+   ═══════════════════════════════════════════ */
+
+.scope-toggle {
+  display: inline-flex;
+  background: var(--bg-input);
+  border-radius: var(--radius-md);
+  padding: 3px;
+  gap: 2px;
+  border: 1px solid var(--border-primary);
+  flex-shrink: 0;
+}
+
+.scope-toggle-btn {
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: 'Inter', sans-serif;
+  border: none;
+  border-radius: calc(var(--radius-md) - 2px);
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+  letter-spacing: 0.3px;
+}
+
+.scope-toggle-btn:hover {
+  color: var(--text-primary);
+  background: rgba(131, 110, 249, 0.05);
+}
+
+.scope-toggle-btn.active {
+  background: var(--accent-primary);
+  color: #fff;
+  box-shadow: 0 2px 8px rgba(131, 110, 249, 0.3);
+}
+
+/* ═══════════════════════════════════════════
+   Gas Station Panel
+   ═══════════════════════════════════════════ */
+
+.gas-station-panel {
+  transition: all 0.3s ease;
+}
+
+.gas-station-panel:hover {
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
+}
+
+/* ═══════════════════════════════════════════
+   Deploy Tab — Step Indicators
+   ═══════════════════════════════════════════ */
+
+.deploy-step {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-primary);
+  background: var(--bg-card);
+  margin-bottom: 8px;
+  transition: all 0.3s ease;
+}
+
+.deploy-step.active {
+  border-color: var(--accent-primary);
+  background: rgba(131, 110, 249, 0.05);
+}
+
+.deploy-step.completed {
+  border-color: var(--accent-success);
+  background: rgba(0, 212, 170, 0.05);
+}
+
+.deploy-step-number {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 700;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.deploy-step.active .deploy-step-number {
+  background: var(--accent-primary);
+  color: #fff;
+}
+
+.deploy-step.completed .deploy-step-number {
+  background: var(--accent-success);
+  color: #fff;
+}
+
+/* ═══════════════════════════════════════════
+   API Key Cards — Enhanced
+   ═══════════════════════════════════════════ */
+
+.api-key-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-lg);
+  padding: 20px;
+  margin-bottom: 16px;
+  transition: all 0.3s ease;
+}
+
+.api-key-card:hover {
+  border-color: var(--border-hover);
+  box-shadow: 0 4px 20px rgba(131, 110, 249, 0.08);
+}
+
+.api-key-card .key-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.api-key-card .key-hash {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px;
+  color: var(--accent-primary-light);
+  letter-spacing: 0.5px;
+}
+
+.api-key-card .key-label {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.api-key-card .key-meta {
+  display: flex;
+  gap: 16px;
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+/* Analytics sparkline containers */
+.analytics-chart {
+  height: 60px;
+  margin: 12px 0;
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+}
+
+.analytics-bar {
+  flex: 1;
+  background: var(--gradient-primary);
+  border-radius: 2px 2px 0 0;
+  min-height: 2px;
+  transition: height 0.3s ease;
+}
+
+/* ═══════════════════════════════════════════
+   User-Scoped Section Headers
+   ═══════════════════════════════════════════ */
+
+.section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.section-label {
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--text-tertiary);
+}
+
+.section-label.user {
+  color: var(--accent-primary-light);
+}
+
+/* ═══════════════════════════════════════════
+   Wallet Connect Sidebar
+   ═══════════════════════════════════════════ */
+
+.wallet-address {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  color: var(--accent-primary-light);
+  padding: 4px 8px;
+  background: rgba(131, 110, 249, 0.08);
+  border-radius: var(--radius-sm);
+  word-break: break-all;
+}
+
+.wallet-balance {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.wallet-balance-unit {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  font-weight: 500;
+  margin-left: 4px;
+}
+
+/* ═══════════════════════════════════════════
+   Low Balance Warning
+   ═══════════════════════════════════════════ */
+
+.low-balance-warning {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: rgba(255, 107, 157, 0.08);
+  border: 1px solid rgba(255, 107, 157, 0.2);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  color: var(--accent-tertiary);
+  animation: pulse-gentle 2s ease-in-out infinite;
+}
+
+@keyframes pulse-gentle {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+
+/* ═══════════════════════════════════════════
+   Responsive adjustments
+   ═══════════════════════════════════════════ */
+
+@media (max-width: 768px) {
+  .scope-toggle {
+    width: 100%;
+    justify-content: center;
+  }
+  
+  .scope-toggle-btn {
+    flex: 1;
+    text-align: center;
+  }
+  
+  .gas-station-panel > div:last-child {
+    grid-template-columns: 1fr !important;
+  }
+}

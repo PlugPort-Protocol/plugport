@@ -1,7 +1,11 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { useApi, apiPost, apiGet } from '@/lib/api';
+import { useApi, apiPost, apiGet, apiDelete, apiPut, setServerUrl as setApiServerUrl, setAuthToken } from '@/lib/api';
+import { useAuth } from '@/lib/auth-context';
+import { ConnectButton } from '@rainbow-me/rainbowkit';
+import { useAccount, useBalance } from 'wagmi';
+import { useContractDeployer, type DeploymentState, type GasStationInfo } from '@/lib/contract-deployer';
 
 // ---- Types ----
 interface CollectionInfo {
@@ -26,7 +30,63 @@ interface MetricsData {
     timestamp: number;
 }
 
-type TabId = 'overview' | 'collections' | 'query' | 'indexes' | 'metrics' | 'explorer' | 'protocols' | 'privacy';
+interface ProtocolInfo {
+    name: string;
+    enabled: boolean;
+    port: number;
+    connections: number;
+    connectionString: string;
+}
+
+interface ApiKeyInfo {
+    hash: string;
+    ownerAddress: string;
+    label: string;
+    createdAt: number;
+    permissions: string[];
+    rateLimit: number;
+    active: boolean;
+}
+
+interface KeyAnalytics {
+    keyHash: string;
+    totalRequests: number;
+    firstSeen: number;
+    lastSeen: number;
+    daily: Array<{ date: string; requests: number; errors: number; avgLatencyMs: number; errorRate: number }>;
+    operations: Record<string, number>;
+    collections: Record<string, number>;
+}
+
+interface UserMetrics {
+    address: string;
+    collections: number;
+    documents: number;
+    apiKeys: number;
+    totalRequests: number;
+}
+
+type TabId = 'overview' | 'collections' | 'query' | 'indexes' | 'metrics' | 'explorer' | 'protocols' | 'privacy' | 'apikeys' | 'deploy';
+
+// ---- Reusable Scope Toggle ----
+function ScopeToggle({ scope, setScope }: { scope: 'my' | 'all'; setScope: (s: 'my' | 'all') => void }) {
+    return (
+        <div className="scope-toggle">
+            <button
+                className={`scope-toggle-btn ${scope === 'my' ? 'active' : ''}`}
+                onClick={() => setScope('my')}
+            >
+                My Data
+            </button>
+            <button
+                className={`scope-toggle-btn ${scope === 'all' ? 'active' : ''}`}
+                onClick={() => setScope('all')}
+            >
+                All Data
+            </button>
+        </div>
+    );
+}
 
 // ---- Icons (inline SVG for zero dependency) ----
 const Icon = ({ name, size = 20 }: { name: string; size?: number }) => {
@@ -47,6 +107,9 @@ const Icon = ({ name, size = 20 }: { name: string; size?: number }) => {
         eye: 'M15 12a3 3 0 11-6 0 3 3 0 016 0z M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z',
         plug: 'M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z',
         lock: 'M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z',
+        key: 'M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z',
+        wallet: 'M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z',
+        settings: 'M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z M15 12a3 3 0 11-6 0 3 3 0 016 0z',
     };
     return (
         <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="nav-icon">
@@ -69,7 +132,9 @@ function Sidebar({ activeTab, setActiveTab, health }: {
         { id: 'explorer', label: 'Document Explorer', icon: 'eye', section: 'Data' },
         { id: 'indexes', label: 'Index Manager', icon: 'index', section: 'Performance' },
         { id: 'metrics', label: 'Metrics', icon: 'chart', section: 'Performance' },
+        { id: 'deploy', label: 'Deploy & Gas', icon: 'zap', section: 'Infrastructure' },
         { id: 'privacy', label: 'Privacy & ACL', icon: 'lock', section: 'Security' },
+        { id: 'apikeys', label: 'API Keys', icon: 'key', section: 'Security' },
     ];
 
     const sections = [...new Set(navItems.map(i => i.section))];
@@ -101,22 +166,167 @@ function Sidebar({ activeTab, setActiveTab, health }: {
                 ))}
             </div>
             <div className="sidebar-footer">
-                <div className="status-text">
-                    <span className="status-dot" style={{ background: health ? '#00d4aa' : '#ff4757' }} />
-                    {health ? 'Connected' : 'Disconnected'}
-                </div>
+                <WalletSidebarFooter health={health} />
             </div>
         </nav>
     );
 }
 
+// ---- Wallet Sidebar Footer ----
+function WalletSidebarFooter({ health }: { health: Record<string, unknown> | null }) {
+    const { address, isAuthenticated, jwt, signIn, signOut, serverUrl, setServerUrl: setAuthServerUrl } = useAuth();
+    const { isConnected } = useAccount();
+    const { data: balance } = useBalance({ address: address as `0x${string}` | undefined });
+    const [showSettings, setShowSettings] = useState(false);
+    const [customUrl, setCustomUrl] = useState(serverUrl || '');
+    const [signingIn, setSigningIn] = useState(false);
+
+    // Sync auth token to API client
+    useEffect(() => {
+        setAuthToken(jwt);
+    }, [jwt]);
+
+    useEffect(() => {
+        setApiServerUrl(serverUrl);
+    }, [serverUrl]);
+
+    const handleSignIn = async () => {
+        setSigningIn(true);
+        try {
+            await signIn();
+        } catch (err) {
+            console.error('Sign-in failed:', err);
+        } finally {
+            setSigningIn(false);
+        }
+    };
+
+    const handleSaveUrl = () => {
+        const url = customUrl.trim();
+        setAuthServerUrl(url || null);
+        setShowSettings(false);
+    };
+
+    return (
+        <div>
+            {/* Connection status */}
+            <div className="status-text" style={{ marginBottom: 12 }}>
+                <span className="status-dot" style={{ background: health ? '#00d4aa' : '#ff4757' }} />
+                {health ? 'Server Connected' : 'Server Disconnected'}
+            </div>
+
+            {/* Wallet connection */}
+            {isConnected ? (
+                <div>
+                    {isAuthenticated ? (
+                        <div style={{ fontSize: 12 }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+                                <span className="status-dot" style={{ background: '#836ef9' }} />
+                                <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>
+                                    {address?.slice(0, 6)}...{address?.slice(-4)}
+                                </span>
+                            </div>
+                            {balance && (
+                                <div style={{ color: 'var(--text-tertiary)', marginBottom: 8, fontFamily: 'JetBrains Mono', fontSize: 11 }}>
+                                    {parseFloat(balance.formatted).toFixed(4)} {balance.symbol}
+                                </div>
+                            )}
+                            <button className="btn btn-sm" style={{ width: '100%', background: 'rgba(255,71,87,0.1)', color: 'var(--accent-error)', border: '1px solid rgba(255,71,87,0.2)', fontSize: 11 }} onClick={signOut}>
+                                Disconnect
+                            </button>
+                        </div>
+                    ) : (
+                        <button
+                            className="btn btn-primary btn-sm"
+                            style={{ width: '100%', fontSize: 12 }}
+                            onClick={handleSignIn}
+                            disabled={signingIn}
+                        >
+                            {signingIn ? <div className="spinner" style={{ width: 14, height: 14 }} /> : 'Sign In (SIWE)'}
+                        </button>
+                    )}
+                </div>
+            ) : (
+                <ConnectButton.Custom>
+                    {({ openConnectModal }) => (
+                        <button
+                            className="btn btn-primary btn-sm"
+                            style={{ width: '100%', fontSize: 12, background: 'var(--gradient-primary)', border: 'none' }}
+                            onClick={openConnectModal}
+                        >
+                            <Icon name="wallet" size={14} /> Connect Wallet
+                        </button>
+                    )}
+                </ConnectButton.Custom>
+            )}
+
+            {/* Settings toggle */}
+            <button
+                onClick={() => setShowSettings(!showSettings)}
+                style={{ marginTop: 8, width: '100%', background: 'none', border: 'none', cursor: 'pointer', fontSize: 11, color: 'var(--text-tertiary)', display: 'flex', alignItems: 'center', gap: 4, justifyContent: 'center', padding: '4px 0' }}
+            >
+                <Icon name="settings" size={12} /> Server Settings
+            </button>
+
+            {showSettings && (
+                <div style={{ marginTop: 8 }}>
+                    <input
+                        className="input input-mono"
+                        style={{ fontSize: 11, padding: '6px 8px' }}
+                        value={customUrl}
+                        onChange={e => setCustomUrl(e.target.value)}
+                        placeholder="http://localhost:8080"
+                    />
+                    <button className="btn btn-sm btn-secondary" style={{ width: '100%', marginTop: 4, fontSize: 11 }} onClick={handleSaveUrl}>
+                        Save
+                    </button>
+                </div>
+            )}
+        </div>
+    );
+}
+
 // ---- Overview Tab ----
 function OverviewTab({ collections, metrics }: { collections: CollectionInfo[]; metrics: MetricsData | null }) {
+    const { address, isAuthenticated } = useAuth();
+    const [userMetrics, setUserMetrics] = useState<UserMetrics | null>(null);
     const totalDocs = collections.reduce((s, c) => s + c.documentCount, 0);
     const totalIndexes = collections.reduce((s, c) => s + c.indexCount, 0);
 
+    useEffect(() => {
+        if (isAuthenticated && address) {
+            apiGet<UserMetrics>(`/api/v1/user/${address}/metrics`).then(setUserMetrics).catch(() => {});
+        }
+    }, [isAuthenticated, address]);
+
     return (
         <div className="fade-in ">
+            {/* User-scoped stats (when wallet connected) */}
+            {isAuthenticated && userMetrics && (
+                <div style={{ marginBottom: 24 }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--accent-primary-light)', marginBottom: 10, textTransform: 'uppercase', letterSpacing: 1 }}>My Account</div>
+                    <div className="stats-grid" style={{ gridTemplateColumns: 'repeat(4, 1fr)' }}>
+                        <div className="stat-card" style={{ borderLeft: '3px solid var(--accent-primary)' }}>
+                            <div className="stat-label">My Collections</div>
+                            <div className="stat-value">{userMetrics.collections}</div>
+                        </div>
+                        <div className="stat-card" style={{ borderLeft: '3px solid var(--accent-secondary)' }}>
+                            <div className="stat-label">My Documents</div>
+                            <div className="stat-value">{userMetrics.documents.toLocaleString()}</div>
+                        </div>
+                        <div className="stat-card" style={{ borderLeft: '3px solid var(--accent-tertiary)' }}>
+                            <div className="stat-label">API Keys</div>
+                            <div className="stat-value">{userMetrics.apiKeys}</div>
+                        </div>
+                        <div className="stat-card" style={{ borderLeft: '3px solid var(--accent-info)' }}>
+                            <div className="stat-label">My Requests</div>
+                            <div className="stat-value">{userMetrics.totalRequests.toLocaleString()}</div>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-tertiary)', marginBottom: 10, textTransform: 'uppercase', letterSpacing: 1 }}>Global Stats</div>
             <div className="stats-grid ">
                 <div className="stat-card">
                     <div className="stat-label">Collections</div>
@@ -500,12 +710,35 @@ function QueryBuilderTab({ collections }: { collections: CollectionInfo[] }) {
 
 // ---- Document Explorer Tab ----
 function DocumentExplorerTab({ collections }: { collections: CollectionInfo[] }) {
+    const { address, isAuthenticated } = useAuth();
+    const [scope, setScope] = useState<'my' | 'all'>(isAuthenticated ? 'my' : 'all');
+    const [userCollections, setUserCollections] = useState<string[]>([]);
     const [collection, setCollection] = useState(collections[0]?.name || '');
     const [documents, setDocuments] = useState<Record<string, unknown>[]>([]);
     const [selectedDoc, setSelectedDoc] = useState<Record<string, unknown> | null>(null);
     const [editMode, setEditMode] = useState(false);
     const [editJson, setEditJson] = useState('');
     const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+    // Load user's owned collections for scoping
+    useEffect(() => {
+        if (isAuthenticated && address) {
+            apiGet<{ collections: Array<{ name: string }> }>(`/api/v1/user/${address}/collections`)
+                .then(res => setUserCollections(res.collections.map(c => c.name)))
+                .catch(() => {});
+        }
+    }, [isAuthenticated, address]);
+
+    const visibleCollections = scope === 'my' && isAuthenticated
+        ? collections.filter(c => userCollections.includes(c.name))
+        : collections;
+
+    // Reset collection selection when scope changes
+    useEffect(() => {
+        if (visibleCollections.length > 0 && !visibleCollections.find(c => c.name === collection)) {
+            setCollection(visibleCollections[0].name);
+        }
+    }, [scope, visibleCollections, collection]);
 
     const loadDocuments = useCallback(async () => {
         if (!collection) return;
@@ -533,14 +766,14 @@ function DocumentExplorerTab({ collections }: { collections: CollectionInfo[] })
             setEditMode(false);
             loadDocuments();
         } catch (err) {
-            setMessage({ type: 'error', text: err instanceof Error ? err.message : 'Update failed' });
+            setMessage({ type: 'error', text: err instanceof Error ? err.message : 'Failed' });
         }
     };
 
-    const handleDelete = async (docId: string) => {
+    const handleDelete = async (id: string) => {
         if (!collection) return;
         try {
-            await apiPost(`/api/v1/collections/${collection}/deleteOne`, { filter: { _id: docId } });
+            await apiPost(`/api/v1/collections/${collection}/deleteOne`, { filter: { _id: id } });
             setMessage({ type: 'success', text: 'Document deleted' });
             setSelectedDoc(null);
             loadDocuments();
@@ -554,11 +787,14 @@ function DocumentExplorerTab({ collections }: { collections: CollectionInfo[] })
             {message && <div className={`alert alert-${message.type}`}>{message.text}</div>}
 
             <div className="card" style={{ marginBottom: 24 }}>
-                <div className="input-group">
-                    <label className="label">Collection</label>
-                    <select className="select" value={collection} onChange={e => { setCollection(e.target.value); setSelectedDoc(null); }}>
-                        {collections.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
-                    </select>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                    <div className="input-group" style={{ flex: 1, marginBottom: 0, marginRight: 16 }}>
+                        <label className="label">Collection</label>
+                        <select className="select" value={collection} onChange={e => { setCollection(e.target.value); setSelectedDoc(null); }}>
+                            {visibleCollections.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
+                        </select>
+                    </div>
+                    {isAuthenticated && <ScopeToggle scope={scope} setScope={setScope} />}
                 </div>
             </div>
 
@@ -626,11 +862,32 @@ function DocumentExplorerTab({ collections }: { collections: CollectionInfo[] })
 
 // ---- Index Manager Tab ----
 function IndexManagerTab({ collections, onRefresh }: { collections: CollectionInfo[]; onRefresh: () => void }) {
+    const { address, isAuthenticated } = useAuth();
+    const [scope, setScope] = useState<'my' | 'all'>(isAuthenticated ? 'my' : 'all');
+    const [userCollections, setUserCollections] = useState<string[]>([]);
     const [collection, setCollection] = useState(collections[0]?.name || '');
     const [indexes, setIndexes] = useState<IndexInfo[]>([]);
     const [newField, setNewField] = useState('');
     const [unique, setUnique] = useState(false);
     const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+    useEffect(() => {
+        if (isAuthenticated && address) {
+            apiGet<{ collections: Array<{ name: string }> }>(`/api/v1/user/${address}/collections`)
+                .then(res => setUserCollections(res.collections.map(c => c.name)))
+                .catch(() => {});
+        }
+    }, [isAuthenticated, address]);
+
+    const visibleCollections = scope === 'my' && isAuthenticated
+        ? collections.filter(c => userCollections.includes(c.name))
+        : collections;
+
+    useEffect(() => {
+        if (visibleCollections.length > 0 && !visibleCollections.find(c => c.name === collection)) {
+            setCollection(visibleCollections[0].name);
+        }
+    }, [scope, visibleCollections, collection]);
 
     const loadIndexes = useCallback(async () => {
         if (!collection) return;
@@ -673,12 +930,15 @@ function IndexManagerTab({ collections, onRefresh }: { collections: CollectionIn
             {message && <div className={`alert alert-${message.type}`}>{message.text}</div>}
 
             <div className="card" style={{ marginBottom: 24 }}>
-                <div className="card-title" style={{ marginBottom: 16 }}>Create Index</div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+                    <div className="card-title">Create Index</div>
+                    {isAuthenticated && <ScopeToggle scope={scope} setScope={setScope} />}
+                </div>
                 <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap' }}>
                     <div className="input-group" style={{ flex: 1, marginBottom: 0 }}>
                         <label className="label">Collection</label>
                         <select className="select" value={collection} onChange={e => setCollection(e.target.value)}>
-                            {collections.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
+                            {visibleCollections.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
                         </select>
                     </div>
                     <div className="input-group" style={{ flex: 1, marginBottom: 0 }}>
@@ -735,6 +995,14 @@ function IndexManagerTab({ collections, onRefresh }: { collections: CollectionIn
 
 // ---- Metrics Tab ----
 function MetricsTab({ metrics }: { metrics: MetricsData | null }) {
+    const { address, isAuthenticated } = useAuth();
+    const [userMetrics, setUserMetrics] = useState<UserMetrics | null>(null);
+
+    useEffect(() => {
+        if (isAuthenticated && address) {
+            apiGet<UserMetrics>(`/api/v1/user/${address}/metrics`).then(setUserMetrics).catch(() => {});
+        }
+    }, [isAuthenticated, address]);
     if (!metrics) {
         return <div className="loading-center"><div className="spinner" /></div>;
     }
@@ -743,6 +1011,32 @@ function MetricsTab({ metrics }: { metrics: MetricsData | null }) {
 
     return (
         <div className="fade-in">
+            {/* User-scoped metrics */}
+            {isAuthenticated && userMetrics && (
+                <div style={{ marginBottom: 24 }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--accent-primary-light)', marginBottom: 10, textTransform: 'uppercase', letterSpacing: 1 }}>My Metrics</div>
+                    <div className="stats-grid" style={{ gridTemplateColumns: 'repeat(4, 1fr)' }}>
+                        <div className="stat-card" style={{ borderLeft: '3px solid var(--accent-primary)' }}>
+                            <div className="stat-label">My Collections</div>
+                            <div className="stat-value">{userMetrics.collections}</div>
+                        </div>
+                        <div className="stat-card" style={{ borderLeft: '3px solid var(--accent-secondary)' }}>
+                            <div className="stat-label">My Documents</div>
+                            <div className="stat-value">{userMetrics.documents.toLocaleString()}</div>
+                        </div>
+                        <div className="stat-card" style={{ borderLeft: '3px solid var(--accent-tertiary)' }}>
+                            <div className="stat-label">My Requests</div>
+                            <div className="stat-value">{userMetrics.totalRequests.toLocaleString()}</div>
+                        </div>
+                        <div className="stat-card" style={{ borderLeft: '3px solid var(--accent-info)' }}>
+                            <div className="stat-label">API Keys</div>
+                            <div className="stat-value">{userMetrics.apiKeys}</div>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-tertiary)', marginBottom: 10, textTransform: 'uppercase', letterSpacing: 1 }}>Global Metrics</div>
             <div className="stats-grid">
                 <div className="stat-card">
                     <div className="stat-label">Total Requests</div>
@@ -971,25 +1265,44 @@ function ProtocolsTab() {
 }
 
 // ---- Privacy & ACL Tab ----
-function PrivacyTab() {
+function PrivacyTab({ collections }: { collections: CollectionInfo[] }) {
+    const [selectedCollection, setSelectedCollection] = useState(collections[0]?.name || '');
     const [storageMode, setStorageMode] = useState<string>('public');
     const [addresses, setAddresses] = useState<string[]>([]);
     const [newAddress, setNewAddress] = useState('');
     const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+    const [switching, setSwitching] = useState(false);
 
     const loadData = useCallback(async () => {
+        if (!selectedCollection) return;
         try {
-            const health = await apiGet<{ storageMode?: string }>('/health');
-            setStorageMode(health.storageMode || 'public');
-        } catch { /* ignore */ }
-
-        try {
-            const wl = await apiGet<{ addresses: string[] }>('/api/v1/whitelist');
-            setAddresses(wl.addresses || []);
-        } catch { /* ignore */ }
-    }, []);
+            const privacy = await apiGet<{ privacy: { mode: string; whitelistedAddresses: string[] } | null }>(`/api/v1/collections/${selectedCollection}/privacy`);
+            setStorageMode(privacy.privacy?.mode || 'public');
+            setAddresses(privacy.privacy?.whitelistedAddresses || []);
+        } catch {
+            // Fallback: try global health endpoint
+            try {
+                const health = await apiGet<{ storageMode?: string }>('/health');
+                setStorageMode(health.storageMode || 'public');
+            } catch { /* ignore */ }
+        }
+    }, [selectedCollection]);
 
     useEffect(() => { loadData(); }, [loadData]);
+
+    const handleModeSwitch = async (mode: string) => {
+        if (!selectedCollection || mode === storageMode) return;
+        setSwitching(true);
+        try {
+            await apiPost(`/api/v1/collections/${selectedCollection}/privacy`, { mode });
+            setMessage({ type: 'success', text: `${selectedCollection} switched to ${mode}` });
+            setStorageMode(mode);
+        } catch (err) {
+            setMessage({ type: 'error', text: err instanceof Error ? err.message : 'Failed to switch' });
+        } finally {
+            setSwitching(false);
+        }
+    };
 
     const addAddress = async () => {
         if (!newAddress || !newAddress.startsWith('0x')) {
@@ -997,8 +1310,8 @@ function PrivacyTab() {
             return;
         }
         try {
-            await apiPost('/api/v1/whitelist', { address: newAddress, action: 'add' });
-            setMessage({ type: 'success', text: `Address ${newAddress.substring(0, 10)}... added` });
+            await apiPost(`/api/v1/collections/${selectedCollection}/whitelist`, { address: newAddress, action: 'add' });
+            setMessage({ type: 'success', text: `Address ${newAddress.substring(0, 10)}... added to ${selectedCollection}` });
             setNewAddress('');
             loadData();
         } catch (err) {
@@ -1008,8 +1321,8 @@ function PrivacyTab() {
 
     const removeAddress = async (addr: string) => {
         try {
-            await apiPost('/api/v1/whitelist', { address: addr, action: 'remove' });
-            setMessage({ type: 'success', text: `Address removed` });
+            await apiPost(`/api/v1/collections/${selectedCollection}/whitelist`, { address: addr, action: 'remove' });
+            setMessage({ type: 'success', text: `Address removed from ${selectedCollection}` });
             loadData();
         } catch (err) {
             setMessage({ type: 'error', text: err instanceof Error ? err.message : 'Failed' });
@@ -1023,10 +1336,18 @@ function PrivacyTab() {
             {/* Storage Mode */}
             <div className="card" style={{ marginBottom: 24 }}>
                 <div className="card-header">
-                    <div className="card-title">Storage Mode</div>
+                    <div className="card-title">Collection Privacy</div>
                     <span className={`badge ${storageMode === 'private' ? 'badge-warning' : 'badge-success'}`}>
                         {storageMode.toUpperCase()}
                     </span>
+                </div>
+
+                {/* Collection Selector */}
+                <div className="input-group" style={{ marginBottom: 16 }}>
+                    <label className="label">Select Collection</label>
+                    <select className="select" value={selectedCollection} onChange={e => setSelectedCollection(e.target.value)}>
+                        {collections.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
+                    </select>
                 </div>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginTop: 16 }}>
                     <div style={{
@@ -1034,8 +1355,10 @@ function PrivacyTab() {
                         borderRadius: 'var(--radius-md)',
                         border: `2px solid ${storageMode === 'public' ? 'var(--accent-secondary)' : 'var(--border-primary)'}`,
                         background: storageMode === 'public' ? 'rgba(0,212,170,0.05)' : 'transparent',
-                        cursor: 'default',
-                    }}>
+                        cursor: 'pointer',
+                    }}
+                    onClick={() => handleModeSwitch('public')}
+                    >
                         <div style={{ fontWeight: 700, marginBottom: 6, color: storageMode === 'public' ? 'var(--accent-secondary)' : 'var(--text-tertiary)' }}>Public</div>
                         <div style={{ fontSize: 13, color: 'var(--text-tertiary)', lineHeight: 1.5 }}>
                             Data stored on-chain in plaintext. Readable by anyone. Fast and transparent.
@@ -1046,8 +1369,10 @@ function PrivacyTab() {
                         borderRadius: 'var(--radius-md)',
                         border: `2px solid ${storageMode === 'private' ? 'var(--accent-tertiary)' : 'var(--border-primary)'}`,
                         background: storageMode === 'private' ? 'rgba(255,107,157,0.05)' : 'transparent',
-                        cursor: 'default',
-                    }}>
+                        cursor: 'pointer',
+                    }}
+                    onClick={() => handleModeSwitch('private')}
+                    >
                         <div style={{ fontWeight: 700, marginBottom: 6, color: storageMode === 'private' ? 'var(--accent-tertiary)' : 'var(--text-tertiary)' }}>Private (Encrypted)</div>
                         <div style={{ fontSize: 13, color: 'var(--text-tertiary)', lineHeight: 1.5 }}>
                             AES-256-GCM encrypted. Only owner + whitelisted addresses can access. Keys shared via ECDH.
@@ -1055,18 +1380,18 @@ function PrivacyTab() {
                     </div>
                 </div>
                 <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginTop: 12 }}>
-                    Storage mode is set via <code style={{ background: 'var(--bg-tertiary)', padding: '2px 6px', borderRadius: 4 }}>STORAGE_MODE</code> in .env and requires server restart to change.
+                    Click a mode to switch. No server restart needed — privacy is configured per-collection.
                 </div>
             </div>
 
             {/* Whitelist Management */}
             <div className="card">
                 <div className="card-header">
-                    <div className="card-title">Address Whitelist</div>
+                    <div className="card-title">Whitelist for &ldquo;{selectedCollection}&rdquo;</div>
                     <span className="badge badge-primary">{addresses.length} addresses</span>
                 </div>
                 <div style={{ fontSize: 13, color: 'var(--text-tertiary)', marginBottom: 16 }}>
-                    Whitelisted addresses can read/write data in private storage mode.
+                    Whitelisted addresses can read/write data in this private collection.
                     The owner address (gas station) is always authorized.
                 </div>
 
@@ -1139,6 +1464,248 @@ function PrivacyTab() {
     );
 }
 
+// ════════════════════════════════════════════════════════
+// Deploy & Gas Station Tab
+// ════════════════════════════════════════════════════════
+
+function DeployTab() {
+    const { address, isAuthenticated } = useAuth();
+    const { isConnected } = useAccount();
+    const factoryAddress = process.env.NEXT_PUBLIC_FACTORY_ADDRESS;
+    const { state: deployState, deployPrivateStore, getGasStationInfo, getDeployedStores, reset } = useContractDeployer(factoryAddress);
+    const [gasStationAddr, setGasStationAddr] = useState('');
+    const [gasInfo, setGasInfo] = useState<GasStationInfo | null>(null);
+    const [deployedContracts, setDeployedContracts] = useState<Array<{ contractAddress: string; contractType: string; createdAt: number }>>([]);
+    const [loadingContracts, setLoadingContracts] = useState(true);
+
+    // Load deployed contracts from server
+    useEffect(() => {
+        if (isAuthenticated && address) {
+            apiGet<{ contracts: Array<{ contractAddress: string; contractType: string; createdAt: number }> }>('/api/v1/deploy/contracts')
+                .then(res => setDeployedContracts(res.contracts))
+                .catch(() => {})
+                .finally(() => setLoadingContracts(false));
+        } else {
+            setLoadingContracts(false);
+        }
+    }, [isAuthenticated, address]);
+
+    // Load gas station info
+    const refreshGasInfo = useCallback(async (addr: string) => {
+        if (!addr) return;
+        try {
+            const res = await apiGet<GasStationInfo>(`/api/v1/deploy/gas-station/${addr}/balance`);
+            setGasInfo(res);
+        } catch {
+            // Try via the hook if server fails
+            const info = await getGasStationInfo(addr);
+            setGasInfo(info);
+        }
+    }, [getGasStationInfo]);
+
+    const handleDeploy = async () => {
+        if (!gasStationAddr) return;
+        const result = await deployPrivateStore(gasStationAddr);
+        if (result) {
+            // Refresh contracts list
+            try {
+                const res = await apiGet<{ contracts: Array<{ contractAddress: string; contractType: string; createdAt: number }> }>('/api/v1/deploy/contracts');
+                setDeployedContracts(res.contracts);
+            } catch {}
+        }
+    };
+
+    const stepLabels: Record<string, { label: string; color: string }> = {
+        idle: { label: 'Ready', color: 'var(--text-tertiary)' },
+        estimating: { label: 'Estimating gas...', color: 'var(--accent-info)' },
+        deploying: { label: 'Awaiting wallet signature...', color: 'var(--accent-warning)' },
+        confirming: { label: 'Confirming on-chain...', color: 'var(--accent-primary-light)' },
+        registering: { label: 'Registering with server...', color: 'var(--accent-primary-light)' },
+        done: { label: 'Deployed successfully!', color: 'var(--accent-success)' },
+        error: { label: 'Deployment failed', color: 'var(--accent-error)' },
+    };
+
+    if (!isAuthenticated || !isConnected) {
+        return (
+            <div className="fade-in">
+                <div className="card">
+                    <div className="empty-state">
+                        <div className="empty-state-title">Connect Wallet</div>
+                        <div className="empty-state-text">Connect your wallet and sign in to deploy contracts and manage gas stations.</div>
+                    </div>
+                </div>
+            </div>
+        );
+    }
+
+    return (
+        <div className="fade-in">
+            {/* Deployment Wizard */}
+            <div className="card" style={{ marginBottom: 24 }}>
+                <div className="card-header">
+                    <div className="card-title">Deploy Private Store</div>
+                    <span className="badge badge-primary">via Factory Contract</span>
+                </div>
+                <div style={{ fontSize: 13, color: 'var(--text-tertiary)', marginBottom: 20, lineHeight: 1.6 }}>
+                    Deploy a new <code style={{ background: 'var(--bg-tertiary)', padding: '2px 6px', borderRadius: 4 }}>PlugPortPrivateStore</code> contract
+                    for encrypted, access-controlled data. Each private collection uses its own contract instance.
+                </div>
+
+                {/* Step 1: Gas station address */}
+                <div className="input-group" style={{ marginBottom: 16 }}>
+                    <label className="label">Gas Station Address</label>
+                    <div style={{ display: 'flex', gap: 12 }}>
+                        <input
+                            className="input"
+                            value={gasStationAddr}
+                            onChange={e => setGasStationAddr(e.target.value)}
+                            placeholder="0x... (wallet that pays for gas)"
+                            style={{ flex: 1 }}
+                        />
+                        <button className="btn btn-secondary btn-sm" onClick={() => refreshGasInfo(gasStationAddr)} disabled={!gasStationAddr}>
+                            Check Balance
+                        </button>
+                    </div>
+                    <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginTop: 6 }}>
+                        The gas station is a wallet address that pays for on-chain operations. Use your own address or a dedicated gas wallet.
+                    </div>
+                </div>
+
+                {/* Gas Station Info */}
+                {gasInfo && (
+                    <div className="gas-station-panel" style={{
+                        padding: 16,
+                        borderRadius: 'var(--radius-md)',
+                        background: gasInfo.isLow ? 'rgba(255,107,157,0.05)' : 'rgba(0,212,170,0.05)',
+                        border: `1px solid ${gasInfo.isLow ? 'rgba(255,107,157,0.2)' : 'rgba(0,212,170,0.2)'}`,
+                        marginBottom: 20,
+                    }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                            <div style={{ fontSize: 14, fontWeight: 700, color: gasInfo.isLow ? 'var(--accent-tertiary)' : 'var(--accent-secondary)' }}>
+                                Gas Station Balance
+                            </div>
+                            {gasInfo.isLow && <span className="badge badge-warning">Low Balance</span>}
+                        </div>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16 }}>
+                            <div>
+                                <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginBottom: 4 }}>Balance</div>
+                                <div style={{ fontSize: 20, fontWeight: 800, fontFamily: 'JetBrains Mono', color: 'var(--text-primary)' }}>
+                                    {parseFloat(gasInfo.balance).toFixed(4)} <span style={{ fontSize: 12, opacity: 0.6 }}>MON</span>
+                                </div>
+                            </div>
+                            <div>
+                                <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginBottom: 4 }}>Est. Operations</div>
+                                <div style={{ fontSize: 20, fontWeight: 800, fontFamily: 'JetBrains Mono', color: 'var(--text-primary)' }}>
+                                    {gasInfo.estimatedOps.toLocaleString()}
+                                </div>
+                            </div>
+                            <div>
+                                <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginBottom: 4 }}>Address</div>
+                                <div style={{ fontSize: 13, fontFamily: 'JetBrains Mono', color: 'var(--text-secondary)', wordBreak: 'break-all' }}>
+                                    {gasInfo.address.substring(0, 10)}...{gasInfo.address.substring(38)}
+                                </div>
+                            </div>
+                        </div>
+                        {gasInfo.isLow && (
+                            <div style={{ fontSize: 12, color: 'var(--accent-tertiary)', marginTop: 12, padding: '8px 12px', background: 'rgba(255,107,157,0.08)', borderRadius: 'var(--radius-sm)' }}>
+                                ⚠️ Balance is below 0.1 MON. Top up your gas station to ensure uninterrupted operations.
+                            </div>
+                        )}
+                    </div>
+                )}
+
+                {/* Deploy button + status */}
+                <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+                    <button
+                        className="btn btn-primary"
+                        onClick={handleDeploy}
+                        disabled={!gasStationAddr || deployState.step === 'deploying' || deployState.step === 'confirming' || deployState.step === 'registering'}
+                    >
+                        {deployState.step === 'idle' || deployState.step === 'done' || deployState.step === 'error'
+                            ? '🚀 Deploy Contract'
+                            : '⏳ Deploying...'
+                        }
+                    </button>
+                    {deployState.step !== 'idle' && (
+                        <span style={{ fontSize: 13, color: stepLabels[deployState.step]?.color || 'var(--text-tertiary)' }}>
+                            {stepLabels[deployState.step]?.label}
+                        </span>
+                    )}
+                    {deployState.step === 'done' && (
+                        <button className="btn btn-secondary btn-sm" onClick={reset}>Deploy Another</button>
+                    )}
+                </div>
+
+                {/* Deployment result */}
+                {deployState.step === 'done' && deployState.contractAddress && (
+                    <div style={{ marginTop: 16, padding: 16, background: 'rgba(0,212,170,0.05)', borderRadius: 'var(--radius-md)', border: '1px solid rgba(0,212,170,0.2)' }}>
+                        <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--accent-success)', marginBottom: 8 }}>✅ Contract Deployed</div>
+                        <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 4 }}>
+                            <strong>Address:</strong> <code style={{ fontFamily: 'JetBrains Mono', background: 'var(--bg-tertiary)', padding: '2px 6px', borderRadius: 4 }}>{deployState.contractAddress}</code>
+                        </div>
+                        {deployState.txHash && (
+                            <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
+                                <strong>Tx Hash:</strong> <code style={{ fontFamily: 'JetBrains Mono', background: 'var(--bg-tertiary)', padding: '2px 6px', borderRadius: 4 }}>{deployState.txHash.substring(0, 20)}...</code>
+                            </div>
+                        )}
+                    </div>
+                )}
+
+                {deployState.step === 'error' && deployState.error && (
+                    <div className="alert alert-error" style={{ marginTop: 16 }}>{deployState.error}</div>
+                )}
+            </div>
+
+            {/* Deployed Contracts */}
+            <div className="card">
+                <div className="card-header">
+                    <div className="card-title">My Deployed Contracts</div>
+                    <span className="badge badge-primary">{deployedContracts.length} contracts</span>
+                </div>
+                {loadingContracts ? (
+                    <div className="loading-center"><div className="spinner" /></div>
+                ) : deployedContracts.length === 0 ? (
+                    <div className="empty-state">
+                        <div className="empty-state-text">No contracts deployed yet. Use the wizard above to deploy your first private store.</div>
+                    </div>
+                ) : (
+                    <div className="table-container">
+                        <table className="table">
+                            <thead>
+                                <tr>
+                                    <th>Contract Address</th>
+                                    <th>Type</th>
+                                    <th>Deployed</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {deployedContracts.map(c => (
+                                    <tr key={c.contractAddress}>
+                                        <td style={{ fontFamily: 'JetBrains Mono', color: 'var(--text-primary)', fontSize: 12 }}>
+                                            {c.contractAddress.substring(0, 14)}...{c.contractAddress.substring(38)}
+                                        </td>
+                                        <td><span className={`badge ${c.contractType === 'privateStore' ? 'badge-warning' : 'badge-primary'}`}>{c.contractType}</span></td>
+                                        <td style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>{new Date(c.createdAt).toLocaleDateString()}</td>
+                                        <td>
+                                            <button
+                                                className="btn btn-sm btn-secondary"
+                                                onClick={() => { setGasStationAddr(c.contractAddress); refreshGasInfo(c.contractAddress); }}
+                                            >
+                                                Check Gas
+                                            </button>
+                                        </td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+                )}
+            </div>
+        </div>
+    );
+}
+
 // ---- Helpers ----
 function formatUptime(ms: number): string {
     const s = Math.floor(ms / 1000);
@@ -1204,7 +1771,9 @@ export default function Dashboard() {
         explorer: { title: 'Document Explorer', subtitle: 'Browse, edit, and delete documents' },
         indexes: { title: 'Index Manager', subtitle: 'Create and manage collection indexes' },
         metrics: { title: 'Metrics & Monitoring', subtitle: 'Server performance and health metrics' },
-        privacy: { title: 'Privacy & ACL', subtitle: 'Manage encrypted storage and address whitelist' },
+        deploy: { title: 'Deploy & Gas Station', subtitle: 'Deploy contracts and manage gas station balance' },
+        privacy: { title: 'Privacy & ACL', subtitle: 'Per-collection encryption and address whitelists' },
+        apikeys: { title: 'API Keys & Analytics', subtitle: 'Generate wallet-linked API keys and monitor usage' },
     };
 
     return (
@@ -1223,9 +1792,295 @@ export default function Dashboard() {
                     {activeTab === 'explorer' && <DocumentExplorerTab collections={collections} />}
                     {activeTab === 'indexes' && <IndexManagerTab collections={collections} onRefresh={loadCollections} />}
                     {activeTab === 'metrics' && <MetricsTab metrics={metrics} />}
-                    {activeTab === 'privacy' && <PrivacyTab />}
+                    {activeTab === 'deploy' && <DeployTab />}
+                    {activeTab === 'privacy' && <PrivacyTab collections={collections} />}
+                    {activeTab === 'apikeys' && <ApiKeysTab />}
                 </div>
             </main>
+        </div>
+    );
+}
+
+// ════════════════════════════════════════════════════════
+// API Keys & Analytics Tab
+// ════════════════════════════════════════════════════════
+
+function ApiKeysTab() {
+    const { address, isAuthenticated, authMethod } = useAuth();
+    const [keys, setKeys] = useState<ApiKeyInfo[]>([]);
+    const [loading, setLoading] = useState(true);
+    const [newLabel, setNewLabel] = useState('');
+    const [newPermissions, setNewPermissions] = useState<string[]>(['all']);
+    const [generatedKey, setGeneratedKey] = useState<string | null>(null);
+    const [expandedKey, setExpandedKey] = useState<string | null>(null);
+    const [keyAnalytics, setKeyAnalytics] = useState<KeyAnalytics | null>(null);
+    const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+    const loadKeys = useCallback(async () => {
+        try {
+            const res = await apiGet<{ keys: ApiKeyInfo[] }>('/api/v1/keys');
+            setKeys(res.keys || []);
+        } catch { /* ignore */ }
+        setLoading(false);
+    }, []);
+
+    useEffect(() => {
+        if (isAuthenticated) loadKeys();
+        else setLoading(false);
+    }, [isAuthenticated, loadKeys]);
+
+    const handleGenerate = async () => {
+        if (!newLabel.trim()) {
+            setMessage({ type: 'error', text: 'Label is required' });
+            return;
+        }
+        try {
+            const res = await apiPost<{ apiKey: string; metadata: ApiKeyInfo }>('/api/v1/keys/generate', {
+                label: newLabel,
+                permissions: newPermissions,
+            });
+            setGeneratedKey(res.apiKey);
+            setMessage({ type: 'success', text: 'API key generated! Copy it now — it won\'t be shown again.' });
+            setNewLabel('');
+            loadKeys();
+        } catch (err) {
+            setMessage({ type: 'error', text: err instanceof Error ? err.message : 'Failed' });
+        }
+    };
+
+    const handleRevoke = async (hash: string) => {
+        try {
+            await apiDelete(`/api/v1/keys/${hash}`);
+            setMessage({ type: 'success', text: 'Key revoked' });
+            loadKeys();
+        } catch (err) {
+            setMessage({ type: 'error', text: err instanceof Error ? err.message : 'Failed' });
+        }
+    };
+
+    const handleRotate = async (hash: string) => {
+        try {
+            const res = await apiPost<{ apiKey: string }>(`/api/v1/keys/${hash}/rotate`, {});
+            setGeneratedKey(res.apiKey);
+            setMessage({ type: 'success', text: 'Key rotated! Copy the new key.' });
+            loadKeys();
+        } catch (err) {
+            setMessage({ type: 'error', text: err instanceof Error ? err.message : 'Failed' });
+        }
+    };
+
+    const loadAnalytics = async (hash: string) => {
+        if (expandedKey === hash) {
+            setExpandedKey(null);
+            setKeyAnalytics(null);
+            return;
+        }
+        try {
+            const res = await apiGet<{ analytics: KeyAnalytics }>(`/api/v1/keys/${hash}/analytics?days=7`);
+            setKeyAnalytics(res.analytics);
+            setExpandedKey(hash);
+        } catch { /* ignore */ }
+    };
+
+    if (!isAuthenticated || authMethod !== 'wallet') {
+        return (
+            <div className="fade-in">
+                <div className="card">
+                    <div className="empty-state">
+                        <Icon name="wallet" size={48} />
+                        <div className="empty-state-title" style={{ marginTop: 16 }}>Connect Your Wallet</div>
+                        <div className="empty-state-text">Connect your wallet and sign in with SIWE to generate and manage API keys.</div>
+                    </div>
+                </div>
+            </div>
+        );
+    }
+
+    if (loading) return <div className="loading-center"><div className="spinner" /></div>;
+
+    return (
+        <div className="fade-in">
+            {message && <div className={`alert alert-${message.type}`}>{message.text}</div>}
+
+            {/* Generated key display */}
+            {generatedKey && (
+                <div className="alert alert-success" style={{ fontFamily: 'JetBrains Mono', fontSize: 13, flexDirection: 'column', alignItems: 'flex-start', gap: 8 }}>
+                    <div style={{ fontWeight: 700 }}>Your API Key (copy now — shown only once):</div>
+                    <div style={{ display: 'flex', gap: 8, width: '100%' }}>
+                        <code style={{ flex: 1, background: 'rgba(0,0,0,0.2)', padding: '8px 12px', borderRadius: 6, wordBreak: 'break-all' }}>
+                            {generatedKey}
+                        </code>
+                        <button className="btn btn-sm btn-secondary" onClick={() => { navigator.clipboard.writeText(generatedKey); }}>Copy</button>
+                    </div>
+                    <button className="btn btn-sm" style={{ background: 'none', border: 'none', color: 'var(--text-tertiary)', padding: 0, marginTop: 4, fontSize: 11 }} onClick={() => setGeneratedKey(null)}>Dismiss</button>
+                </div>
+            )}
+
+            {/* Generate new key */}
+            <div className="card" style={{ marginBottom: 24 }}>
+                <div className="card-header">
+                    <div className="card-title">Generate API Key</div>
+                </div>
+                <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end' }}>
+                    <div style={{ flex: 1 }}>
+                        <label className="label">Label</label>
+                        <input
+                            className="input"
+                            value={newLabel}
+                            onChange={e => setNewLabel(e.target.value)}
+                            placeholder="e.g., my-app-prod"
+                        />
+                    </div>
+                    <div style={{ minWidth: 180 }}>
+                        <label className="label">Permissions</label>
+                        <select className="select" value={newPermissions[0]} onChange={e => setNewPermissions([e.target.value])}>
+                            <option value="all">All (read + write + admin)</option>
+                            <option value="read">Read Only</option>
+                            <option value="write">Read + Write</option>
+                            <option value="admin">Admin</option>
+                        </select>
+                    </div>
+                    <button className="btn btn-primary" onClick={handleGenerate} disabled={!newLabel.trim()}>
+                        <Icon name="key" size={16} /> Generate
+                    </button>
+                </div>
+            </div>
+
+            {/* Active keys */}
+            <div style={{ display: 'grid', gap: 16 }}>
+                {keys.length === 0 ? (
+                    <div className="card">
+                        <div className="empty-state">
+                            <div className="empty-state-title">No API Keys</div>
+                            <div className="empty-state-text">Generate your first API key to start using PlugPort programmatically.</div>
+                        </div>
+                    </div>
+                ) : (
+                    keys.map(k => (
+                        <div key={k.hash} className="card">
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                                <div>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
+                                        <span style={{ fontSize: 16, fontWeight: 700, color: 'var(--text-primary)' }}>{k.label}</span>
+                                        <span className="badge badge-success">ACTIVE</span>
+                                        {k.permissions.map(p => (
+                                            <span key={p} className="badge badge-primary" style={{ fontSize: 10 }}>{p}</span>
+                                        ))}
+                                    </div>
+                                    <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+                                        Hash: <code style={{ fontFamily: 'JetBrains Mono' }}>{k.hash.substring(0, 16)}...</code>
+                                        {' · '}Created: {new Date(k.createdAt).toLocaleDateString()}
+                                    </div>
+                                </div>
+                                <div style={{ display: 'flex', gap: 8 }}>
+                                    <button className="btn btn-sm btn-secondary" onClick={() => loadAnalytics(k.hash)}>
+                                        <Icon name="chart" size={14} /> {expandedKey === k.hash ? 'Hide' : 'Analytics'}
+                                    </button>
+                                    <button className="btn btn-sm btn-secondary" onClick={() => handleRotate(k.hash)}>Rotate</button>
+                                    <button className="btn btn-sm btn-danger" onClick={() => handleRevoke(k.hash)}>Revoke</button>
+                                </div>
+                            </div>
+
+                            {/* Per-key analytics (expandable) */}
+                            {expandedKey === k.hash && keyAnalytics && (
+                                <div style={{ marginTop: 20, borderTop: '1px solid var(--border-primary)', paddingTop: 20 }}>
+                                    <div className="stats-grid" style={{ gridTemplateColumns: 'repeat(4, 1fr)' }}>
+                                        <div className="stat-card">
+                                            <div className="stat-label">Total Requests</div>
+                                            <div className="stat-value" style={{ fontSize: 24 }}>{keyAnalytics.totalRequests.toLocaleString()}</div>
+                                        </div>
+                                        <div className="stat-card">
+                                            <div className="stat-label">Avg Latency</div>
+                                            <div className="stat-value" style={{ fontSize: 24 }}>
+                                                {keyAnalytics.daily.length > 0
+                                                    ? `${(keyAnalytics.daily.reduce((s, d) => s + d.avgLatencyMs, 0) / Math.max(1, keyAnalytics.daily.filter(d => d.requests > 0).length)).toFixed(1)}ms`
+                                                    : '—'}
+                                            </div>
+                                        </div>
+                                        <div className="stat-card">
+                                            <div className="stat-label">Error Rate</div>
+                                            <div className="stat-value" style={{ fontSize: 24 }}>
+                                                {keyAnalytics.daily.length > 0
+                                                    ? `${(keyAnalytics.daily.reduce((s, d) => s + d.errorRate, 0) / Math.max(1, keyAnalytics.daily.filter(d => d.requests > 0).length) * 100).toFixed(1)}%`
+                                                    : '—'}
+                                            </div>
+                                        </div>
+                                        <div className="stat-card">
+                                            <div className="stat-label">Collections</div>
+                                            <div className="stat-value" style={{ fontSize: 24 }}>{Object.keys(keyAnalytics.collections).length}</div>
+                                        </div>
+                                    </div>
+
+                                    {/* Operation breakdown */}
+                                    {Object.keys(keyAnalytics.operations).length > 0 && (
+                                        <div style={{ marginTop: 16 }}>
+                                            <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 10, color: 'var(--text-primary)' }}>By Operation</div>
+                                            {(() => {
+                                                const maxOps = Math.max(...Object.values(keyAnalytics.operations));
+                                                return Object.entries(keyAnalytics.operations)
+                                                    .sort(([, a], [, b]) => b - a)
+                                                    .map(([op, count]) => (
+                                                        <div key={op} style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8 }}>
+                                                            <span style={{ width: 70, fontSize: 12, color: 'var(--text-tertiary)', fontFamily: 'JetBrains Mono' }}>{op}</span>
+                                                            <div style={{ flex: 1, height: 20, background: 'var(--bg-input)', borderRadius: 4, overflow: 'hidden' }}>
+                                                                <div style={{ height: '100%', width: `${(count / maxOps) * 100}%`, background: 'var(--gradient-primary)', borderRadius: 4, transition: 'width 0.5s' }} />
+                                                            </div>
+                                                            <span style={{ width: 60, textAlign: 'right', fontSize: 12, fontWeight: 600, fontFamily: 'JetBrains Mono' }}>{count.toLocaleString()}</span>
+                                                        </div>
+                                                    ));
+                                            })()}
+                                        </div>
+                                    )}
+
+                                    {/* Top collections */}
+                                    {Object.keys(keyAnalytics.collections).length > 0 && (
+                                        <div style={{ marginTop: 16 }}>
+                                            <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 10, color: 'var(--text-primary)' }}>Top Collections</div>
+                                            <div className="table-container">
+                                                <table className="table">
+                                                    <thead><tr><th>Collection</th><th>Requests</th></tr></thead>
+                                                    <tbody>
+                                                        {Object.entries(keyAnalytics.collections)
+                                                            .sort(([, a], [, b]) => b - a)
+                                                            .slice(0, 10)
+                                                            .map(([col, count]) => (
+                                                                <tr key={col}>
+                                                                    <td style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{col}</td>
+                                                                    <td style={{ fontFamily: 'JetBrains Mono' }}>{count.toLocaleString()}</td>
+                                                                </tr>
+                                                            ))}
+                                                    </tbody>
+                                                </table>
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+                        </div>
+                    ))
+                )}
+            </div>
+
+            {/* Usage instructions */}
+            <div className="card" style={{ marginTop: 24 }}>
+                <div className="card-header">
+                    <div className="card-title">Using Your API Key</div>
+                </div>
+                <div style={{ fontSize: 13, color: 'var(--text-tertiary)', lineHeight: 1.7 }}>
+                    Add your API key to your project&apos;s <code style={{ background: 'var(--bg-tertiary)', padding: '2px 6px', borderRadius: 4 }}>.env</code> file:
+                </div>
+                <pre className="json-view" style={{ marginTop: 12 }}>
+{`# .env
+PLUGPORT_API_KEY=pp_test_your_key_here
+PLUGPORT_URL=http://localhost:8080
+
+# Usage with curl:
+curl -X POST http://localhost:8080/api/v1/collections/users/find \\
+  -H "x-api-key: pp_test_your_key_here" \\
+  -H "Content-Type: application/json" \\
+  -d '{"filter": {}}'`}
+                </pre>
+            </div>
         </div>
     );
 }

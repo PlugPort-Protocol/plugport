@@ -28,8 +28,14 @@ import type { KVAdapter, KVEntry, ScanOptions } from '@plugport/shared';
 export interface EncryptionConfig {
     /** Owner's private key (hex string, no 0x prefix). Used to derive AES key. */
     privateKey: string;
-    /** Enable encryption. If false, acts as a passthrough. */
+    /** Enable encryption globally. If false, acts as a passthrough (unless per-collection overrides). */
     enabled: boolean;
+}
+
+/** Per-collection encryption override */
+interface CollectionEncryptionConfig {
+    enabled: boolean;
+    key?: Buffer; // Optional per-collection AES key (defaults to global key)
 }
 
 // ---- Key Derivation ----
@@ -133,6 +139,7 @@ export class EncryptionLayer implements KVAdapter {
     private aesKey: Buffer;
     private innerAdapter: KVAdapter;
     private enabled: boolean;
+    private collectionConfig: Map<string, CollectionEncryptionConfig> = new Map();
 
     constructor(innerAdapter: KVAdapter, config: EncryptionConfig) {
         this.innerAdapter = innerAdapter;
@@ -152,15 +159,81 @@ export class EncryptionLayer implements KVAdapter {
         return Buffer.from(this.aesKey);
     }
 
+    /**
+     * Set per-collection encryption override.
+     * When set, this overrides the global `enabled` flag for keys in that collection.
+     * @param collectionName The collection name
+     * @param enabled Whether encryption is enabled for this collection
+     * @param key Optional per-collection AES key (defaults to global key)
+     */
+    setCollectionEncryption(collectionName: string, enabled: boolean, key?: Buffer): void {
+        this.collectionConfig.set(collectionName, { enabled, key });
+    }
+
+    /**
+     * Remove per-collection encryption override (falls back to global setting).
+     */
+    removeCollectionEncryption(collectionName: string): void {
+        this.collectionConfig.delete(collectionName);
+    }
+
+    /**
+     * Check if a collection is encrypted (considering per-collection overrides).
+     */
+    isCollectionEncrypted(collectionName: string): boolean {
+        const config = this.collectionConfig.get(collectionName);
+        if (config) return config.enabled;
+        return this.enabled;
+    }
+
+    /**
+     * Extract collection name from a key.
+     * PlugPort keys follow the format: `col:<collectionName>:doc:<id>` or `col:<collectionName>:idx:<name>`
+     * Falls back to null if the key doesn't match collection patterns.
+     */
+    private extractCollection(key: string): string | null {
+        if (key.startsWith('col:')) {
+            const parts = key.split(':');
+            return parts[1] || null;
+        }
+        return null;
+    }
+
+    /**
+     * Get the effective AES key for a given KV key (considers per-collection config).
+     */
+    private getKeyForEntry(key: string): Buffer {
+        const collection = this.extractCollection(key);
+        if (collection) {
+            const config = this.collectionConfig.get(collection);
+            if (config?.key) return config.key;
+        }
+        return this.aesKey;
+    }
+
+    /**
+     * Check if encryption is active for a given KV key.
+     */
+    private isEncryptionActive(key: string): boolean {
+        const collection = this.extractCollection(key);
+        if (collection) {
+            const config = this.collectionConfig.get(collection);
+            if (config) return config.enabled;
+        }
+        // Metadata keys (meta:*, analytics:*) are never encrypted
+        if (key.startsWith('meta:') || key.startsWith('analytics:')) return false;
+        return this.enabled;
+    }
+
     // ---- KVAdapter Implementation ----
 
     async get(key: string): Promise<Buffer | null> {
         const encrypted = await this.innerAdapter.get(key);
         if (!encrypted) return null;
-        if (!this.enabled) return encrypted;
+        if (!this.isEncryptionActive(key)) return encrypted;
 
         try {
-            return this.decrypt(encrypted);
+            return this.decrypt(encrypted, this.getKeyForEntry(key));
         } catch {
             // If decryption fails, return raw (might be unencrypted legacy data)
             return encrypted;
@@ -169,11 +242,11 @@ export class EncryptionLayer implements KVAdapter {
 
     async put(key: string, value: Buffer | Uint8Array): Promise<void> {
         const buf = Buffer.isBuffer(value) ? value : Buffer.from(value);
-        if (!this.enabled) {
+        if (!this.isEncryptionActive(key)) {
             return this.innerAdapter.put(key, buf);
         }
 
-        const encrypted = this.encrypt(buf);
+        const encrypted = this.encrypt(buf, this.getKeyForEntry(key));
         return this.innerAdapter.put(key, encrypted);
     }
 
@@ -183,14 +256,14 @@ export class EncryptionLayer implements KVAdapter {
 
     async scan(options: ScanOptions): Promise<KVEntry[]> {
         const entries = await this.innerAdapter.scan(options);
-        if (!this.enabled) return entries;
 
-        // Decrypt each value
+        // Decrypt each value based on per-key encryption status
         return entries.map(entry => {
+            if (!this.isEncryptionActive(entry.key)) return entry;
             try {
                 return {
                     key: entry.key,
-                    value: this.decrypt(Buffer.from(entry.value)),
+                    value: this.decrypt(Buffer.from(entry.value), this.getKeyForEntry(entry.key)),
                 };
             } catch {
                 return entry; // Return raw if decryption fails
@@ -214,31 +287,21 @@ export class EncryptionLayer implements KVAdapter {
         puts: { key: string; value: Buffer | Uint8Array }[],
         deletes: string[],
     ): Promise<void> {
-        if (!this.enabled) {
-            if (this.innerAdapter.batchWrite) {
-                return this.innerAdapter.batchWrite(puts, deletes);
-            }
-            // Fallback to individual operations
-            for (const { key, value } of puts) {
-                await this.innerAdapter.put(key, value);
-            }
-            for (const key of deletes) {
-                await this.innerAdapter.delete(key);
-            }
-            return;
-        }
-
-        // Encrypt all values
-        const encryptedPuts = puts.map(({ key, value }) => ({
-            key,
-            value: this.encrypt(Buffer.isBuffer(value) ? value : Buffer.from(value)),
-        }));
+        // Encrypt values based on per-key encryption status
+        const processedPuts = puts.map(({ key, value }) => {
+            const buf = Buffer.isBuffer(value) ? value : Buffer.from(value);
+            if (!this.isEncryptionActive(key)) return { key, value: buf };
+            return {
+                key,
+                value: this.encrypt(buf, this.getKeyForEntry(key)),
+            };
+        });
 
         if (this.innerAdapter.batchWrite) {
-            return this.innerAdapter.batchWrite(encryptedPuts, deletes);
+            return this.innerAdapter.batchWrite(processedPuts, deletes);
         }
 
-        for (const { key, value } of encryptedPuts) {
+        for (const { key, value } of processedPuts) {
             await this.innerAdapter.put(key, value);
         }
         for (const key of deletes) {
@@ -252,9 +315,10 @@ export class EncryptionLayer implements KVAdapter {
      * Encrypt plaintext with AES-256-GCM.
      * Output format: [12-byte IV] [16-byte auth tag] [N-byte ciphertext]
      */
-    private encrypt(plaintext: Buffer): Buffer {
+    private encrypt(plaintext: Buffer, aesKey?: Buffer): Buffer {
+        const key = aesKey || this.aesKey;
         const iv = randomBytes(12); // 96-bit IV for GCM
-        const cipher = createCipheriv('aes-256-gcm', this.aesKey, iv);
+        const cipher = createCipheriv('aes-256-gcm', key, iv);
         const encrypted = Buffer.concat([cipher.update(plaintext), cipher.final()]);
         const tag = cipher.getAuthTag(); // 16-byte authentication tag
 
@@ -265,16 +329,17 @@ export class EncryptionLayer implements KVAdapter {
      * Decrypt ciphertext with AES-256-GCM.
      * Input format: [12-byte IV] [16-byte auth tag] [N-byte ciphertext]
      */
-    private decrypt(data: Buffer): Buffer {
+    private decrypt(data: Buffer, aesKey?: Buffer): Buffer {
         if (data.length < 28) {
             throw new Error('EncryptionLayer: data too short for AES-256-GCM');
         }
 
+        const key = aesKey || this.aesKey;
         const iv = data.subarray(0, 12);
         const tag = data.subarray(12, 28);
         const ciphertext = data.subarray(28);
 
-        const decipher = createDecipheriv('aes-256-gcm', this.aesKey, iv);
+        const decipher = createDecipheriv('aes-256-gcm', key, iv);
         decipher.setAuthTag(tag);
 
         return Buffer.concat([decipher.update(ciphertext), decipher.final()]);
