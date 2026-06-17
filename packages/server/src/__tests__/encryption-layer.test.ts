@@ -9,11 +9,11 @@ import type { KVAdapter } from '@plugport/shared';
 describe('EncryptionLayer', () => {
     let baseStore: InMemoryKVStore;
     let encryptedStore: EncryptionLayer;
-    const testKey = Buffer.alloc(32, 'a'); // 32-byte AES key
+    const testConfig = { enabled: true, privateKey: '0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef' };
 
     beforeEach(() => {
         baseStore = new InMemoryKVStore();
-        encryptedStore = new EncryptionLayer(baseStore, testKey);
+        encryptedStore = new EncryptionLayer(baseStore, testConfig);
     });
 
     describe('Basic operations', () => {
@@ -88,8 +88,8 @@ describe('EncryptionLayer', () => {
             await encryptedStore.put('key1', Buffer.from('Secret'));
 
             // Create new encryption layer with different key
-            const wrongKey = Buffer.alloc(32, 'b');
-            const wrongLayer = new EncryptionLayer(baseStore, wrongKey);
+            const wrongConfig = { enabled: true, privateKey: '0x0000000000000000000000000000000000000000000000000000000000000000' };
+            const wrongLayer = new EncryptionLayer(baseStore, wrongConfig);
 
             // Should fail to decrypt
             await expect(wrongLayer.get('key1')).rejects.toThrow();

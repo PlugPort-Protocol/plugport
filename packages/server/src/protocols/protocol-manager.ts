@@ -61,6 +61,13 @@ export class ProtocolManager {
     }
 
     /**
+     * Get a registered protocol instance.
+     */
+    getProtocol(name: ProtocolType): ProtocolServerInstance | undefined {
+        return this.protocols.get(name);
+    }
+
+    /**
      * Stop a specific protocol.
      */
     async disableProtocol(name: ProtocolType): Promise<void> {

@@ -26,7 +26,7 @@ interface RESPValue {
     value: string | number | null | RESPValue[];
 }
 
-function parseRESP(data: Buffer): { value: RESPValue; bytesConsumed: number } | null {
+export function parseRESP(data: Buffer): { value: RESPValue; bytesConsumed: number } | null {
     if (data.length === 0) return null;
 
     const type = String.fromCharCode(data[0]);
@@ -225,7 +225,7 @@ export class RedisServer implements ProtocolServerInstance {
         return null;
     }
 
-    private async executeCommand(socket: net.Socket, args: string[]): Promise<void> {
+    public async executeCommand(socket: any, args: string[]): Promise<void> {
         const cmd = args[0].toUpperCase();
 
         switch (cmd) {

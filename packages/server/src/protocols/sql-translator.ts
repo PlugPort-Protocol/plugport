@@ -129,6 +129,11 @@ export class SQLTranslator {
             return { type: 'use', message: `Using database: ${useMatch[1]}` };
         }
 
+        // Handle PRAGMA (SQLite specific)
+        if (upper.startsWith('PRAGMA')) {
+            return { type: 'noop', message: 'PRAGMA ignored' };
+        }
+
         // Parse with node-sql-parser
         let ast: any;
         try {
@@ -183,6 +188,8 @@ export class SQLTranslator {
         // WHERE
         if (ast.where) {
             result.filter = this.translateWhere(ast.where);
+        } else {
+            result.filter = {};
         }
 
         // ORDER BY
@@ -213,11 +220,12 @@ export class SQLTranslator {
 
     private translateInsert(ast: any): TranslatedQuery {
         const collection = this.extractTableName(ast.table);
-        const columns: string[] = ast.columns || [];
+        const columns: string[] = ast.columns ? ast.columns.map((c: any) => c.value || c.column) : [];
         const documents: Record<string, unknown>[] = [];
 
-        if (ast.values) {
-            for (const row of ast.values) {
+        const valueRows = ast.values?.type === 'values' ? ast.values.values : ast.values;
+        if (Array.isArray(valueRows)) {
+            for (const row of valueRows) {
                 const doc: Record<string, unknown> = {};
                 const values = row.value;
                 for (let i = 0; i < values.length; i++) {
@@ -243,8 +251,7 @@ export class SQLTranslator {
 
         if (ast.set) {
             for (const item of ast.set) {
-                const field = item.column || item.column?.column;
-                const colName = typeof field === 'string' ? field : field?.column || item.column;
+                const colName = this.extractColumnName(item);
                 $set[colName] = this.extractValue(item.value);
             }
         }
@@ -272,6 +279,7 @@ export class SQLTranslator {
             type: 'delete',
             collection,
             multi: true,
+            filter: {}
         };
 
         if (ast.where) {
@@ -296,7 +304,11 @@ export class SQLTranslator {
             const indexName = ast.index || 'unnamed_index';
             const collection = this.extractTableName(ast.on || ast.table);
             const columns = ast.index_columns || [];
-            const field = columns[0]?.column || columns[0]?.expr?.column || 'unknown';
+            let field = 'unknown';
+            if (columns[0]) {
+                const col = columns[0];
+                field = typeof col === 'string' ? col : (col.column?.expr?.value || col.column?.expr?.column || col.column || col.expr?.column || 'unknown');
+            }
             const unique = ast.index_type === 'unique' || ast.constraint_type === 'unique';
 
             return {
@@ -394,7 +406,8 @@ export class SQLTranslator {
         return {
             type: 'join',
             joinPlan,
-        };
+            joinType: joinPlan.type, // add for test compat
+        } as any;
     }
 
     // ---- Aggregation ----
@@ -558,9 +571,15 @@ export class SQLTranslator {
     private extractColumnName(node: any): string {
         if (!node) return 'unknown';
         if (typeof node === 'string') return node;
-        if (node.type === 'column_ref') {
-            return node.column || 'unknown';
+        if (node.type === 'column_ref' || node.column) {
+            const col = node.column;
+            if (typeof col === 'string') return col;
+            if (col?.expr?.value) return col.expr.value;
+            if (col?.expr?.column) return col.expr.column;
+            return 'unknown';
         }
+        if (node.expr?.value) return node.expr.value;
+        if (node.expr?.column) return node.expr.column;
         return node.column || node.value || 'unknown';
     }
 
@@ -631,8 +650,8 @@ export class SQLTranslator {
     private buildSort(orderby: any[]): SortSpec {
         const sort: SortSpec = {};
         for (const item of orderby) {
-            const col = item.expr?.column || item.column;
-            if (col) {
+            const col = this.extractColumnName(item.expr || item);
+            if (col && col !== 'unknown') {
                 sort[col] = item.type === 'DESC' ? -1 : 1;
             }
         }

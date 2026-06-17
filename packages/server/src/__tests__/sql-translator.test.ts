@@ -31,8 +31,7 @@ describe('SQLTranslator', () => {
         it('should translate SELECT with WHERE AND', () => {
             const result = translator.translate("SELECT * FROM users WHERE age >= 18 AND status = 'active'");
             expect(result.type).toBe('find');
-            expect(result.filter).toHaveProperty('age');
-            expect(result.filter).toHaveProperty('status', 'active');
+            expect(result.filter).toEqual({ $and: [{ age: { $gte: 18 } }, { status: 'active' }] });
         });
 
         it('should translate SELECT with LIMIT', () => {

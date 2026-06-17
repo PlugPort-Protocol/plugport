@@ -26,8 +26,8 @@ contract PlugPortPrivateStore {
     address public owner;
     address public gasStation;
 
-    /// @dev Whitelist: address → authorized flag
-    mapping(address => bool) public whitelist;
+    /// @dev Role definitions: 0 = None, 1 = Read-Only, 2 = Read/Write
+    mapping(address => uint8) public accessRoles;
     
     /// @dev Track all whitelisted addresses for enumeration
     address[] private whitelistedAddresses;
@@ -62,10 +62,18 @@ contract PlugPortPrivateStore {
         _;
     }
 
-    modifier onlyAuthorized() {
+    modifier onlyRead() {
         require(
-            msg.sender == owner || msg.sender == gasStation || whitelist[msg.sender],
-            "PrivateStore: not authorized"
+            msg.sender == owner || msg.sender == gasStation || accessRoles[msg.sender] >= 1,
+            "PrivateStore: not authorized for read"
+        );
+        _;
+    }
+
+    modifier onlyWrite() {
+        require(
+            msg.sender == owner || msg.sender == gasStation || accessRoles[msg.sender] >= 2,
+            "PrivateStore: not authorized for write"
         );
         _;
     }
@@ -83,8 +91,8 @@ contract PlugPortPrivateStore {
         address station = _gasStation == address(0) ? msg.sender : _gasStation;
         gasStation = station;
         
-        // Owner is always whitelisted
-        whitelist[msg.sender] = true;
+        // Owner always has full read/write access
+        accessRoles[msg.sender] = 2;
         whitelistedAddresses.push(msg.sender);
         whitelistIndex[msg.sender] = 0;
         whitelistCount = 1;
@@ -97,33 +105,36 @@ contract PlugPortPrivateStore {
     // ---- Access Control ----
 
     /**
-     * @notice Add an address to the whitelist.
-     *         Only the owner can whitelist new addresses.
-     * @param account The address to authorize for read/write access.
+     * @notice Grant an access role to an address.
+     *         Only the owner can grant access.
+     * @param account The address to authorize.
+     * @param role The role to grant (1 = Read, 2 = Read/Write).
      */
-    function addToWhitelist(address account) external onlyOwner {
+    function grantAccess(address account, uint8 role) external onlyOwner {
         require(account != address(0), "PrivateStore: zero address");
-        require(!whitelist[account], "PrivateStore: already whitelisted");
+        require(role == 1 || role == 2, "PrivateStore: invalid role");
         
-        whitelist[account] = true;
-        whitelistIndex[account] = whitelistedAddresses.length;
-        whitelistedAddresses.push(account);
-        whitelistCount++;
+        if (accessRoles[account] == 0) {
+            whitelistIndex[account] = whitelistedAddresses.length;
+            whitelistedAddresses.push(account);
+            whitelistCount++;
+        }
         
+        accessRoles[account] = role;
         emit AddressWhitelisted(account);
     }
 
     /**
-     * @notice Remove an address from the whitelist.
+     * @notice Revoke access from an address.
      *         Also deletes their encrypted key share (they can no longer decrypt new data).
      *         Owner cannot be removed.
      * @param account The address to de-authorize.
      */
-    function removeFromWhitelist(address account) external onlyOwner {
+    function revokeAccess(address account) external onlyOwner {
         require(account != owner, "PrivateStore: cannot remove owner");
-        require(whitelist[account], "PrivateStore: not whitelisted");
+        require(accessRoles[account] > 0, "PrivateStore: no access to revoke");
         
-        whitelist[account] = false;
+        accessRoles[account] = 0;
         delete encryptedKeyShares[account];
         
         // Swap-and-pop from address list
@@ -142,16 +153,16 @@ contract PlugPortPrivateStore {
     }
 
     /**
-     * @notice Check if an address is whitelisted.
+     * @notice Check access role of an address.
      */
-    function isWhitelisted(address account) external view returns (bool) {
-        return whitelist[account];
+    function hasAccess(address account) external view returns (uint8) {
+        return accessRoles[account];
     }
 
     /**
-     * @notice Get all whitelisted addresses.
+     * @notice Get all addresses with any access role.
      */
-    function getWhitelistedAddresses() external view onlyAuthorized returns (address[] memory) {
+    function getWhitelistedAddresses() external view onlyRead returns (address[] memory) {
         return whitelistedAddresses;
     }
 
@@ -165,7 +176,7 @@ contract PlugPortPrivateStore {
         address recipient,
         bytes calldata encryptedKey
     ) external onlyOwner {
-        require(whitelist[recipient], "PrivateStore: recipient not whitelisted");
+        require(accessRoles[recipient] > 0, "PrivateStore: recipient has no access");
         encryptedKeyShares[recipient] = encryptedKey;
         emit KeyShareUpdated(recipient);
     }
@@ -174,7 +185,7 @@ contract PlugPortPrivateStore {
      * @notice Retrieve your encrypted key share.
      *         Decrypt with your private key to obtain the AES-256 database key.
      */
-    function getMyKeyShare() external view onlyAuthorized returns (bytes memory) {
+    function getMyKeyShare() external view onlyRead returns (bytes memory) {
         return encryptedKeyShares[msg.sender];
     }
 
@@ -186,7 +197,7 @@ contract PlugPortPrivateStore {
      * @param key The bytes32 key (keccak256 hash of the original string key)
      * @param encryptedValue The encrypted bytes value
      */
-    function put(bytes32 key, bytes calldata encryptedValue) external onlyAuthorized {
+    function put(bytes32 key, bytes calldata encryptedValue) external onlyWrite {
         store[key] = encryptedValue;
         if (!keyExists[key]) {
             keyExists[key] = true;
@@ -203,14 +214,14 @@ contract PlugPortPrivateStore {
      * @param key The bytes32 key
      * @return The encrypted bytes value
      */
-    function get(bytes32 key) external view onlyAuthorized returns (bytes memory) {
+    function get(bytes32 key) external view onlyRead returns (bytes memory) {
         return store[key];
     }
 
     /**
      * @notice Delete an encrypted key-value pair.
      */
-    function del(bytes32 key) external onlyAuthorized {
+    function del(bytes32 key) external onlyWrite {
         if (!keyExists[key]) return;
         
         delete store[key];
@@ -234,7 +245,7 @@ contract PlugPortPrivateStore {
     /**
      * @notice Check if a key exists.
      */
-    function exists(bytes32 key) external view onlyAuthorized returns (bool) {
+    function exists(bytes32 key) external view onlyRead returns (bool) {
         return keyExists[key];
     }
 
@@ -248,7 +259,7 @@ contract PlugPortPrivateStore {
         bytes32[] calldata putKeys,
         bytes[] calldata putValues,
         bytes32[] calldata deleteKeys
-    ) external onlyAuthorized {
+    ) external onlyWrite {
         require(putKeys.length == putValues.length, "PrivateStore: length mismatch");
         
         for (uint256 i = 0; i < putKeys.length; i++) {
@@ -287,7 +298,7 @@ contract PlugPortPrivateStore {
     /**
      * @notice Get a page of keys from the registry.
      */
-    function getKeys(uint256 offset, uint256 limit) external view onlyAuthorized returns (bytes32[] memory keys) {
+    function getKeys(uint256 offset, uint256 limit) external view onlyRead returns (bytes32[] memory keys) {
         uint256 registryLen = keyRegistry.length;
         if (offset >= registryLen) return new bytes32[](0);
         uint256 end = offset + limit > registryLen ? registryLen : offset + limit;
@@ -300,7 +311,7 @@ contract PlugPortPrivateStore {
     /**
      * @notice Get the total number of keys in the registry.
      */
-    function getRegistryLength() external view onlyAuthorized returns (uint256) {
+    function getRegistryLength() external view onlyRead returns (uint256) {
         return keyRegistry.length;
     }
 

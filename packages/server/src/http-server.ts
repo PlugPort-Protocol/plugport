@@ -13,6 +13,10 @@ import { SIWEHandler } from './auth/siwe-handler.js';
 import { ApiKeyManager, type ApiKeyPermission } from './auth/api-key-manager.js';
 import { AnalyticsRecorder } from './auth/analytics-recorder.js';
 import { PrivacyManager } from './storage/privacy-manager.js';
+import { SQLTranslator } from './protocols/sql-translator.js';
+import type { TranslatedQuery } from './protocols/sql-translator.js';
+import { parseRESP } from './protocols/redis-server.js';
+import type { RedisServer } from './protocols/redis-server.js';
 import { VERSION } from '@plugport/shared';
 import type { Filter, Projection, SortSpec, KVAdapter } from '@plugport/shared';
 
@@ -193,6 +197,28 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
         return metrics.getSnapshot();
     });
 
+    // ---- Access Control Helper ----
+
+    async function checkAccess(req: FastifyRequest, reply: FastifyReply, collection: string, type: 'read' | 'write'): Promise<boolean> {
+        // If no user address is known (e.g., authMethod='none' or 'legacyKey'), we allow public access 
+        // OR we can strictly enforce it if privacy mode is private. 
+        // privacyManager.hasAccess handles public/private fallback.
+        const address = req.user?.address;
+        
+        let hasAccess = false;
+        if (type === 'read') {
+            hasAccess = await privacyManager.hasReadAccess(collection, address || '');
+        } else {
+            hasAccess = await privacyManager.hasWriteAccess(collection, address || '');
+        }
+
+        if (!hasAccess) {
+            reply.status(403).send({ ok: 0, errmsg: `Access denied: insufficient ${type} privileges for collection ${collection}` });
+            return false;
+        }
+        return true;
+    }
+
     // ---- Collection Management ----
 
     app.get('/api/v1/collections', async () => {
@@ -211,7 +237,8 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
         return { collections: mappedCollections, ok: 1 };
     });
 
-    app.post('/api/v1/collections/:name/drop', async (req: FastifyRequest<{ Params: { name: string } }>) => {
+    app.post('/api/v1/collections/:name/drop', async (req: FastifyRequest<{ Params: { name: string } }>, reply: FastifyReply) => {
+        if (!(await checkAccess(req, reply, req.params.name, 'write'))) return;
         const dropped = await store.dropCollection(req.params.name);
         return { acknowledged: true, dropped, ok: 1 };
     });
@@ -222,6 +249,7 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
         req: FastifyRequest<{ Params: { name: string }; Body: { document: Record<string, unknown> } }>,
         reply: FastifyReply,
     ) => {
+        if (!(await checkAccess(req, reply, req.params.name, 'write'))) return;
         try {
             const result = await store.insert(req.params.name, [req.body.document]);
             return result;
@@ -234,6 +262,7 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
         req: FastifyRequest<{ Params: { name: string }; Body: { documents: Record<string, unknown>[] } }>,
         reply: FastifyReply,
     ) => {
+        if (!(await checkAccess(req, reply, req.params.name, 'write'))) return;
         try {
             const result = await store.insert(req.params.name, req.body.documents);
             return result;
@@ -251,6 +280,7 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
         }>,
         reply: FastifyReply,
     ) => {
+        if (!(await checkAccess(req, reply, req.params.name, 'read'))) return;
         try {
             const { filter = {}, projection, sort, limit, skip } = req.body || {};
             return store.find(req.params.name, filter, { projection, sort, limit, skip });
@@ -264,7 +294,9 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
             Params: { name: string };
             Body: { filter?: Filter; projection?: Projection };
         }>,
+        reply: FastifyReply,
     ) => {
+        if (!(await checkAccess(req, reply, req.params.name, 'read'))) return;
         const { filter = {}, projection } = req.body || {};
         const result = await store.find(req.params.name, filter, { projection, limit: 1 });
         return {
@@ -282,6 +314,7 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
         }>,
         reply: FastifyReply,
     ) => {
+        if (!(await checkAccess(req, reply, req.params.name, 'write'))) return;
         try {
             const { filter, update, upsert } = req.body;
             return store.updateOne(req.params.name, filter, update, { upsert });
@@ -297,6 +330,7 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
         }>,
         reply: FastifyReply,
     ) => {
+        if (!(await checkAccess(req, reply, req.params.name, 'write'))) return;
         try {
             const { filter, update, upsert } = req.body;
             return store.updateMany(req.params.name, filter, update, { upsert });
@@ -314,8 +348,10 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
         }>,
         reply: FastifyReply,
     ) => {
+        if (!(await checkAccess(req, reply, req.params.name, 'write'))) return;
         try {
-            return store.deleteOne(req.params.name, req.body.filter);
+            const { filter } = req.body;
+            return store.deleteOne(req.params.name, filter);
         } catch (err) {
             return handleError(err, reply);
         }
@@ -328,6 +364,7 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
         }>,
         reply: FastifyReply,
     ) => {
+        if (!(await checkAccess(req, reply, req.params.name, 'write'))) return;
         try {
             return store.deleteMany(req.params.name, req.body.filter);
         } catch (err) {
@@ -344,6 +381,7 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
         }>,
         reply: FastifyReply,
     ) => {
+        if (!(await checkAccess(req, reply, req.params.name, 'write'))) return;
         try {
             return store.createIndex(req.params.name, req.body.field, req.body.unique);
         } catch (err) {
@@ -358,6 +396,7 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
         }>,
         reply: FastifyReply,
     ) => {
+        if (!(await checkAccess(req, reply, req.params.name, 'write'))) return;
         try {
             const dropped = await store.dropIndex(req.params.name, req.body.indexName);
             return { acknowledged: true, dropped, ok: 1 };
@@ -370,6 +409,7 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
         req: FastifyRequest<{ Params: { name: string } }>,
         reply: FastifyReply,
     ) => {
+        if (!(await checkAccess(req, reply, req.params.name, 'read'))) return;
         try {
             const indexes = await store.listIndexes(req.params.name);
             return { indexes, ok: 1 };
@@ -384,6 +424,7 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
         req: FastifyRequest<{ Params: { name: string } }>,
         reply: FastifyReply,
     ) => {
+        if (!(await checkAccess(req, reply, req.params.name, 'read'))) return;
         try {
             const stats = await store.getStats(req.params.name);
             return { ...stats, ok: 1 };
@@ -437,6 +478,184 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
             return { protocols: [], ok: 1 };
         }
         return { protocols: options.protocolManager.getStatus(), ok: 1 };
+    });
+
+    // ---- SQL Endpoint ----
+
+    app.post('/api/v1/sql', async (
+        req: FastifyRequest<{ Body: { query: string; params?: any[] } }>,
+        reply: FastifyReply,
+    ) => {
+        try {
+            const { query } = req.body;
+            if (!query) return reply.status(400).send({ ok: 0, errmsg: 'query required' });
+
+            const translator = new SQLTranslator();
+            const translated = translator.translate(query) as TranslatedQuery;
+
+            if (translated.type === 'noop') {
+                return { ok: 1, message: translated.message };
+            }
+
+            if (translated.type === 'use') {
+                return { ok: 1, message: translated.message };
+            }
+
+            let result;
+            if (!translated.collection && translated.type !== 'showDatabases') {
+                return reply.status(400).send({ ok: 0, errmsg: 'collection required' });
+            }
+            const collection = translated.collection as string;
+
+            switch (translated.type) {
+                case 'find': {
+                    if (!(await checkAccess(req, reply, collection, 'read'))) return;
+                    result = await store.find(collection, translated.filter || {}, {
+                        projection: translated.projection,
+                        sort: translated.sort,
+                        limit: translated.limit,
+                        skip: translated.skip,
+                    });
+                    break;
+                }
+                case 'insert': {
+                    if (!(await checkAccess(req, reply, collection, 'write'))) return;
+                    result = await store.insert(collection, translated.documents || []);
+                    break;
+                }
+                case 'update': {
+                    if (!(await checkAccess(req, reply, collection, 'write'))) return;
+                    result = translated.multi
+                        ? await store.updateMany(collection, translated.filter || {}, translated.update || {})
+                        : await store.updateOne(collection, translated.filter || {}, translated.update || {});
+                    break;
+                }
+                case 'delete': {
+                    if (!(await checkAccess(req, reply, collection, 'write'))) return;
+                    result = translated.multi
+                        ? await store.deleteMany(collection, translated.filter || {})
+                        : await store.deleteOne(collection, translated.filter || {});
+                    break;
+                }
+                case 'createIndex': {
+                    if (!(await checkAccess(req, reply, collection, 'write'))) return;
+                    if (!translated.indexField) return reply.status(400).send({ ok: 0, errmsg: 'indexField required' });
+                    result = await store.createIndex(collection, translated.indexField, translated.indexUnique || false);
+                    break;
+                }
+                case 'dropIndex': {
+                    if (!(await checkAccess(req, reply, collection, 'write'))) return;
+                    if (!translated.indexName) return reply.status(400).send({ ok: 0, errmsg: 'indexName required' });
+                    result = await store.dropIndex(collection, translated.indexName);
+                    break;
+                }
+                default:
+                    return reply.status(400).send({ ok: 0, errmsg: `unsupported operation: ${(translated as any).type}` });
+            }
+
+            return { ok: 1, result };
+        } catch (err) {
+            return handleError(err, reply);
+        }
+    });
+
+    // ---- Redis Endpoint ----
+
+    app.post('/api/v1/redis', async (
+        req: FastifyRequest<{ Body: { command: string[] } }>,
+        reply: FastifyReply,
+    ) => {
+        try {
+            const { command } = req.body;
+            if (!command || !Array.isArray(command) || command.length === 0) {
+                return reply.status(400).send({ ok: 0, errmsg: 'command array required' });
+            }
+
+            const pm = options.protocolManager as any;
+            if (!pm) {
+                return reply.status(500).send({ ok: 0, errmsg: 'protocol manager not active' });
+            }
+
+            const redisServer = pm.getProtocol ? pm.getProtocol('redis') : null;
+            if (!redisServer) {
+                return reply.status(500).send({ ok: 0, errmsg: 'redis protocol not active' });
+            }
+            
+            let outputBuffer = Buffer.alloc(0);
+            const fakeSocket = {
+                write: (data: Buffer) => {
+                    outputBuffer = Buffer.concat([outputBuffer, data]);
+                },
+                end: () => {},
+                destroyed: false,
+            };
+
+            await redisServer.executeCommand(fakeSocket as any, command);
+
+            const parsed = parseRESP(outputBuffer);
+            
+            // Map RESPValue to standard JS
+            function mapResp(resp: any): any {
+                if (!resp) return null;
+                if (resp.type === 'error') throw new Error(resp.value);
+                if (resp.type === 'array') return resp.value.map(mapResp);
+                return resp.value;
+            }
+
+            return { ok: 1, result: parsed ? mapResp(parsed.value) : null };
+        } catch (err) {
+            return handleError(err, reply);
+        }
+    });
+
+    app.get('/api/v1/redis/stream', async (
+        req: FastifyRequest<{ Querystring: { channels: string } }>,
+        reply: FastifyReply,
+    ) => {
+        const channels = req.query.channels?.split(',') || [];
+        if (channels.length === 0) return reply.status(400).send({ ok: 0, errmsg: 'channels required' });
+
+        const pm = options.protocolManager as any;
+        const redisServer = pm?.getProtocol ? pm.getProtocol('redis') as RedisServer : null;
+        if (!redisServer) return reply.status(500).send({ ok: 0, errmsg: 'redis protocol not active' });
+
+        reply.raw.setHeader('Content-Type', 'text/event-stream');
+        reply.raw.setHeader('Cache-Control', 'no-cache');
+        reply.raw.setHeader('Connection', 'keep-alive');
+        // CORS headers
+        reply.raw.setHeader('Access-Control-Allow-Origin', '*');
+
+        let destroyed = false;
+
+        const fakeSocket = {
+            write: (data: Buffer) => {
+                if (destroyed) return;
+                try {
+                    const parsed = parseRESP(data);
+                    if (parsed && parsed.value && typeof parsed.value === 'object' && parsed.value.type === 'array') {
+                        const arr = (parsed.value.value as any[]).map(v => v.value);
+                        if (arr[0] === 'message') {
+                            reply.raw.write(`data: ${JSON.stringify({ channel: arr[1], message: arr[2] })}\n\n`);
+                        } else {
+                            reply.raw.write(`data: ${JSON.stringify({ event: arr[0], channel: arr[1], count: arr[2] })}\n\n`);
+                        }
+                    }
+                } catch (err) {
+                    // ignore parse errors for partial chunks
+                }
+            },
+            end: () => { destroyed = true; reply.raw.end(); },
+            get destroyed() { return destroyed; }
+        };
+
+        await redisServer.executeCommand(fakeSocket as any, ['SUBSCRIBE', ...channels]);
+
+        req.raw.on('close', () => {
+            destroyed = true;
+            redisServer.executeCommand(fakeSocket as any, ['UNSUBSCRIBE', ...channels]).catch(() => {});
+        });
+        
+        reply.hijack();
     });
 
     app.post('/api/v1/protocols/:name/enable', async (
@@ -674,33 +893,34 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
         return { ok: 1, collection: req.params.name, mode };
     });
 
-    app.get('/api/v1/collections/:name/whitelist', async (
+    app.get('/api/v1/collections/:name/roles', async (
         req: FastifyRequest<{ Params: { name: string } }>,
     ) => {
         const privacy = await privacyManager.getCollectionPrivacy(req.params.name);
-        return { addresses: privacy?.whitelistedAddresses || [], ok: 1 };
+        return { accessRoles: privacy?.accessRoles || {}, ok: 1 };
     });
 
-    app.post('/api/v1/collections/:name/whitelist', async (
-        req: FastifyRequest<{ Params: { name: string }; Body: { address: string; action: 'add' | 'remove' } }>,
+    app.post('/api/v1/collections/:name/roles', async (
+        req: FastifyRequest<{ Params: { name: string }; Body: { address: string; action: 'grant' | 'revoke'; role?: number } }>,
         reply: FastifyReply,
     ) => {
         if (!req.user?.address) {
             return reply.status(401).send({ ok: 0, errmsg: 'Authentication required' });
         }
-        const { address, action } = req.body || {} as { address: string; action: string };
+        const { address, action, role } = req.body || {} as any;
         if (!address?.startsWith('0x')) {
             return reply.status(400).send({ ok: 0, errmsg: 'Valid Ethereum address required' });
         }
-        if (action === 'add') {
-            await privacyManager.addWhitelist(req.params.name, address, req.user.address);
-        } else if (action === 'remove') {
-            await privacyManager.removeWhitelist(req.params.name, address, req.user.address);
+        if (action === 'grant') {
+            if (role !== 1 && role !== 2) return reply.status(400).send({ ok: 0, errmsg: 'role must be 1 (read) or 2 (write)' });
+            await privacyManager.grantAccess(req.params.name, address, role, req.user.address);
+        } else if (action === 'revoke') {
+            await privacyManager.revokeAccess(req.params.name, address, req.user.address);
         } else {
-            return reply.status(400).send({ ok: 0, errmsg: 'action must be "add" or "remove"' });
+            return reply.status(400).send({ ok: 0, errmsg: 'action must be "grant" or "revoke"' });
         }
         const privacy = await privacyManager.getCollectionPrivacy(req.params.name);
-        return { addresses: privacy?.whitelistedAddresses || [], ok: 1 };
+        return { accessRoles: privacy?.accessRoles || {}, ok: 1 };
     });
 
     // ════════════════════════════════════════════════════════

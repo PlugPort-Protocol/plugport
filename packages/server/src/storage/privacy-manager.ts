@@ -23,8 +23,8 @@ export interface CollectionPrivacy {
     ownerAddress: string;
     /** Deployed PlugPortPrivateStore contract address (for private collections) */
     contractAddress?: string;
-    /** Whitelisted addresses that can access private data */
-    whitelistedAddresses: string[];
+    /** Granular access roles: address -> role (1 = read, 2 = write) */
+    accessRoles: Record<string, number>;
     /** When privacy settings were first created */
     createdAt: number;
     /** Last update timestamp */
@@ -79,7 +79,7 @@ export class PrivacyManager {
             mode,
             ownerAddress: ownerAddress.toLowerCase(),
             contractAddress: contractAddress || existing?.contractAddress,
-            whitelistedAddresses: existing?.whitelistedAddresses || [],
+            accessRoles: existing?.accessRoles || {},
             createdAt: existing?.createdAt || now,
             updatedAt: now,
         };
@@ -89,57 +89,55 @@ export class PrivacyManager {
     }
 
     /**
-     * Add an address to a collection's whitelist.
-     * Only the collection owner can modify the whitelist.
+     * Grant an access role to an address.
+     * Only the collection owner can modify access roles.
      *
      * @param collection Collection name
-     * @param address Address to whitelist
+     * @param address Address to grant access to
+     * @param role Role (1 = read, 2 = write)
      * @param callerAddress Address of the caller (must be the owner)
      */
-    async addWhitelist(collection: string, address: string, callerAddress: string): Promise<void> {
+    async grantAccess(collection: string, address: string, role: number, callerAddress: string): Promise<void> {
         const privacy = await this.getCollectionPrivacy(collection);
         if (!privacy) {
             throw new Error(`Collection "${collection}" has no privacy settings configured`);
         }
         if (privacy.ownerAddress !== callerAddress.toLowerCase()) {
-            throw new Error('Only the collection owner can modify the whitelist');
+            throw new Error('Only the collection owner can modify access roles');
+        }
+        if (role !== 1 && role !== 2) {
+            throw new Error('Invalid role');
         }
 
         const normalized = address.toLowerCase();
-        if (!privacy.whitelistedAddresses.includes(normalized)) {
-            privacy.whitelistedAddresses.push(normalized);
-            privacy.updatedAt = Date.now();
-            await this.putPrivacy(collection, privacy);
-        }
-    }
-
-    /**
-     * Remove an address from a collection's whitelist.
-     * Only the collection owner can modify the whitelist.
-     */
-    async removeWhitelist(collection: string, address: string, callerAddress: string): Promise<void> {
-        const privacy = await this.getCollectionPrivacy(collection);
-        if (!privacy) {
-            throw new Error(`Collection "${collection}" has no privacy settings configured`);
-        }
-        if (privacy.ownerAddress !== callerAddress.toLowerCase()) {
-            throw new Error('Only the collection owner can modify the whitelist');
-        }
-
-        const normalized = address.toLowerCase();
-        privacy.whitelistedAddresses = privacy.whitelistedAddresses.filter(a => a !== normalized);
+        privacy.accessRoles[normalized] = role;
         privacy.updatedAt = Date.now();
         await this.putPrivacy(collection, privacy);
     }
 
     /**
-     * Check if an address has access to a private collection.
-     * Returns true if:
-     * - The collection is public
-     * - The address is the owner
-     * - The address is in the whitelist
+     * Revoke all access from an address.
+     * Only the collection owner can modify access roles.
      */
-    async hasAccess(collection: string, address: string): Promise<boolean> {
+    async revokeAccess(collection: string, address: string, callerAddress: string): Promise<void> {
+        const privacy = await this.getCollectionPrivacy(collection);
+        if (!privacy) {
+            throw new Error(`Collection "${collection}" has no privacy settings configured`);
+        }
+        if (privacy.ownerAddress !== callerAddress.toLowerCase()) {
+            throw new Error('Only the collection owner can modify access roles');
+        }
+
+        const normalized = address.toLowerCase();
+        delete privacy.accessRoles[normalized];
+        privacy.updatedAt = Date.now();
+        await this.putPrivacy(collection, privacy);
+    }
+
+    /**
+     * Check if an address has read access to a private collection.
+     */
+    async hasReadAccess(collection: string, address: string): Promise<boolean> {
         const privacy = await this.getCollectionPrivacy(collection);
 
         // No privacy settings = public access
@@ -150,8 +148,28 @@ export class PrivacyManager {
         // Owner always has access
         if (privacy.ownerAddress === normalized) return true;
 
-        // Check whitelist
-        return privacy.whitelistedAddresses.includes(normalized);
+        // Check granular access
+        return privacy.accessRoles[normalized] >= 1;
+    }
+
+    /**
+     * Check if an address has write access to a private collection.
+     */
+    async hasWriteAccess(collection: string, address: string): Promise<boolean> {
+        const privacy = await this.getCollectionPrivacy(collection);
+
+        // Public collections can be written to by anyone if no SIWE is enforced at router level,
+        // but typically write requires ownership or role if it's private
+        if (!privacy) return true;
+        if (privacy.mode === 'public') return true;
+
+        const normalized = address.toLowerCase();
+
+        // Owner always has access
+        if (privacy.ownerAddress === normalized) return true;
+
+        // Check granular access
+        return privacy.accessRoles[normalized] >= 2;
     }
 
     /**

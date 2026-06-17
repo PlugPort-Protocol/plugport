@@ -24,13 +24,13 @@ describe('JoinEngine', () => {
 
     describe('Hash Join (INNER JOIN)', () => {
         it('should join on matching keys', () => {
-            const result = engine.hashJoin(users, orders, '_id', 'user_id');
+            const result = engine.hashJoin(users, orders, { onCondition: { leftField: '_id', rightField: 'user_id' }, leftAlias: 'u', rightAlias: 'o', type: 'hashJoin'.replace('Join', '').toUpperCase() } as any);
             // User 1 matches o1, o2; User 2 matches o3; User 3 has no orders
             expect(result.length).toBe(3);
         });
 
         it('should include fields from both sides', () => {
-            const result = engine.hashJoin(users, orders, '_id', 'user_id');
+            const result = engine.hashJoin(users, orders, { onCondition: { leftField: '_id', rightField: 'user_id' }, leftAlias: 'u', rightAlias: 'o', type: 'hashJoin'.replace('Join', '').toUpperCase() } as any);
             const aliceOrder = result.find(r => (r as any).name === 'Alice' && (r as any).product === 'Widget');
             expect(aliceOrder).toBeTruthy();
             expect((aliceOrder as any).total).toBe(100);
@@ -40,23 +40,23 @@ describe('JoinEngine', () => {
             const noMatch: DocumentWithId[] = [
                 { _id: '999', user_id: '999', total: 0 },
             ];
-            const result = engine.hashJoin(users, noMatch, '_id', 'user_id');
+            const result = engine.hashJoin(users, noMatch, { onCondition: { leftField: '_id', rightField: 'user_id' }, leftAlias: 'u', rightAlias: 'o', type: 'hashJoin'.replace('Join', '').toUpperCase() } as any);
             expect(result.length).toBe(0);
         });
 
         it('should handle empty left side', () => {
-            const result = engine.hashJoin([], orders, '_id', 'user_id');
+            const result = engine.hashJoin([], orders, { onCondition: { leftField: '_id', rightField: 'user_id' }, leftAlias: 'u', rightAlias: 'o', type: 'hashJoin'.replace('Join', '').toUpperCase() } as any);
             expect(result.length).toBe(0);
         });
 
         it('should handle empty right side', () => {
-            const result = engine.hashJoin(users, [], '_id', 'user_id');
+            const result = engine.hashJoin(users, [], { onCondition: { leftField: '_id', rightField: 'user_id' }, leftAlias: 'u', rightAlias: 'o', type: 'hashJoin'.replace('Join', '').toUpperCase() } as any);
             expect(result.length).toBe(0);
         });
 
         it('should handle one-to-many relationships', () => {
             // Alice has 2 orders → should produce 2 rows for Alice
-            const result = engine.hashJoin(users, orders, '_id', 'user_id');
+            const result = engine.hashJoin(users, orders, { onCondition: { leftField: '_id', rightField: 'user_id' }, leftAlias: 'u', rightAlias: 'o', type: 'hashJoin'.replace('Join', '').toUpperCase() } as any);
             const aliceRows = result.filter(r => (r as any).name === 'Alice');
             expect(aliceRows.length).toBe(2);
         });
@@ -64,13 +64,13 @@ describe('JoinEngine', () => {
 
     describe('Left Join', () => {
         it('should include all left rows', () => {
-            const result = engine.leftJoin(users, orders, '_id', 'user_id');
+            const result = engine.leftJoin(users, orders, { onCondition: { leftField: '_id', rightField: 'user_id' }, leftAlias: 'u', rightAlias: 'o', type: 'leftJoin'.replace('Join', '').toUpperCase() } as any);
             // Alice: 2 orders, Bob: 1 order, Charlie: 0 orders (null)
             expect(result.length).toBe(4); // 2 + 1 + 1 (null row for Charlie)
         });
 
         it('should include null for unmatched left rows', () => {
-            const result = engine.leftJoin(users, orders, '_id', 'user_id');
+            const result = engine.leftJoin(users, orders, { onCondition: { leftField: '_id', rightField: 'user_id' }, leftAlias: 'u', rightAlias: 'o', type: 'leftJoin'.replace('Join', '').toUpperCase() } as any);
             const charlieRow = result.find(r => (r as any).name === 'Charlie');
             expect(charlieRow).toBeTruthy();
             expect((charlieRow as any).total).toBeUndefined();
@@ -79,13 +79,13 @@ describe('JoinEngine', () => {
 
     describe('Right Join', () => {
         it('should include all right rows', () => {
-            const result = engine.rightJoin(users, orders, '_id', 'user_id');
+            const result = engine.rightJoin(users, orders, { onCondition: { leftField: '_id', rightField: 'user_id' }, leftAlias: 'u', rightAlias: 'o', type: 'rightJoin'.replace('Join', '').toUpperCase() } as any);
             // Orphan order (user_id=99) should be included
             expect(result.length).toBe(4); // 2 + 1 + 1 (orphan)
         });
 
         it('should include null for unmatched right rows', () => {
-            const result = engine.rightJoin(users, orders, '_id', 'user_id');
+            const result = engine.rightJoin(users, orders, { onCondition: { leftField: '_id', rightField: 'user_id' }, leftAlias: 'u', rightAlias: 'o', type: 'rightJoin'.replace('Join', '').toUpperCase() } as any);
             const orphanRow = result.find(r => (r as any).product === 'Orphan');
             expect(orphanRow).toBeTruthy();
             expect((orphanRow as any).name).toBeUndefined();
@@ -117,8 +117,7 @@ describe('JoinEngine', () => {
                 _id: `r${i}`,
                 val: i,
             }));
-            const result = engine.crossJoin(bigLeft, bigRight);
-            expect(result.length).toBeLessThanOrEqual(10000);
+            expect(() => engine.crossJoin(bigLeft, bigRight)).toThrowError(/CROSS JOIN would produce 40,000 rows/);
         });
 
         it('should handle empty sides', () => {
@@ -129,7 +128,7 @@ describe('JoinEngine', () => {
 
     describe('Multi-table join utilities', () => {
         it('should merge row fields correctly', () => {
-            const result = engine.hashJoin(users, orders, '_id', 'user_id');
+            const result = engine.hashJoin(users, orders, { onCondition: { leftField: '_id', rightField: 'user_id' }, leftAlias: 'u', rightAlias: 'o', type: 'hashJoin'.replace('Join', '').toUpperCase() } as any);
             for (const row of result) {
                 // Each row should have fields from both tables
                 expect(row).toHaveProperty('name');

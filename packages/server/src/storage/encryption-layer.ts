@@ -232,12 +232,8 @@ export class EncryptionLayer implements KVAdapter {
         if (!encrypted) return null;
         if (!this.isEncryptionActive(key)) return encrypted;
 
-        try {
-            return this.decrypt(encrypted, this.getKeyForEntry(key));
-        } catch {
-            // If decryption fails, return raw (might be unencrypted legacy data)
-            return encrypted;
-        }
+        // Decrypt will throw if the auth tag is invalid or key is wrong.
+        return this.decrypt(encrypted, this.getKeyForEntry(key));
     }
 
     async put(key: string, value: Buffer | Uint8Array): Promise<void> {
