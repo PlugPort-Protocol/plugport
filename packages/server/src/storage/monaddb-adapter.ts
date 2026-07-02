@@ -138,7 +138,8 @@ export class MonadAdapter implements KVAdapter {
             this.keyIndex.set(key, hash);
 
             return buf;
-        } catch {
+        } catch (err) {
+            console.warn(`[MonadAdapter] RPC read failed for key "${key}":`, err instanceof Error ? err.message : 'unknown');
             return null;
         }
     }
@@ -149,7 +150,8 @@ export class MonadAdapter implements KVAdapter {
         try {
             const hash = hashKey(key);
             return await this.contract.exists(hash);
-        } catch {
+        } catch (err) {
+            console.warn(`[MonadAdapter] RPC exists check failed for key "${key}":`, err instanceof Error ? err.message : 'unknown');
             return false;
         }
     }
@@ -241,7 +243,8 @@ export class MonadAdapter implements KVAdapter {
             this.keyIndex.delete(key);
 
             return true;
-        } catch {
+        } catch (err) {
+            console.warn(`[MonadAdapter] Delete failed for key "${key}":`, err instanceof Error ? err.message : 'unknown');
             return false;
         }
     }

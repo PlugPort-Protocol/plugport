@@ -1,3 +1,7 @@
+# PlugPort Kubernetes — Base Resources
+# Apply with Kustomize overlays:
+#   kubectl apply -k deploy/k8s/overlays/testnet
+#   kubectl apply -k deploy/k8s/overlays/mainnet
 ---
 apiVersion: v1
 kind: Namespace
@@ -16,6 +20,10 @@ data:
   WIRE_PORT: "27017"
   LOG_LEVEL: "info"
   METRICS_ENABLED: "true"
+  MONGODB_ENABLED: "true"
+  PG_ENABLED: "false"
+  MYSQL_ENABLED: "false"
+  REDIS_ENABLED: "false"
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -49,6 +57,9 @@ spec:
           envFrom:
             - configMapRef:
                 name: plugport-config
+            - secretRef:
+                name: plugport-secrets
+                optional: true
           resources:
             requests:
               cpu: 100m

@@ -119,10 +119,10 @@ export function createStorageAdapter(config: PlugPortConfig): KVAdapter & { getK
         });
         const routingAdapter = new RoutingAdapter(baseAdapter, privateAdapter);
 
-        // Wrap to preserve diagnostic methods and allow linking PrivacyManager
+        // B4 fix: Report combined metrics from both public and private channels
         return Object.assign(routingAdapter, {
-            getKeyCount: () => baseAdapter.getKeyCount(),
-            getEstimatedSizeBytes: () => baseAdapter.getEstimatedSizeBytes(),
+            getKeyCount: () => baseAdapter.getKeyCount() + (privateBaseAdapter !== baseAdapter ? (privateBaseAdapter as any).getKeyCount?.() || 0 : 0),
+            getEstimatedSizeBytes: () => baseAdapter.getEstimatedSizeBytes() + (privateBaseAdapter !== baseAdapter ? (privateBaseAdapter as any).getEstimatedSizeBytes?.() || 0 : 0),
             setPrivacyManager: (pm: any) => routingAdapter.setPrivacyManager(pm),
         });
     }

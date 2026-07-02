@@ -17,11 +17,11 @@ All PlugPort configuration is done via environment variables. No config files ar
 | `WIRE_PORT` | `number` | `27017` | Wire protocol port |
 | `HOST` | `string` | `0.0.0.0` | Bind address |
 | `API_KEY` | `string` | none | Legacy global API key for HTTP auth. Prefer generating wallet-linked keys via Dashboard instead. |
-| `JWT_SECRET` | `string` | `default-jwt-secret...` | Secret for signing SIWE JWTs |
+| `DASHBOARD_URL` | `string` | none | Allowed origin for CORS credentials (required in production, e.g. `https://plugport.xyz`). In dev mode, all origins are allowed. |
 | `LOG_LEVEL` | `string` | `info` | `debug`, `info`, `warn`, `error` |
 | `METRICS_ENABLED` | `boolean` | `true` | Enable Prometheus /metrics |
 | `MONADDB_ENDPOINT` | `string` | none | MonadDb RPC URL (in-memory if not set) |
-| `MONADDB_PRIVATE_KEY` | `string` | none | Server wallet private key (64 hex chars, no 0x) |
+| `MONADDB_PRIVATE_KEY` | `string` | none | Server wallet private key (64 hex chars, no 0x). Also used to derive the session encryption key. |
 | `MAX_DOC_SIZE` | `number` | `1048576` | Max document size in bytes |
 | `MAX_COLLECTIONS` | `number` | `1000` | Max number of collections |
 
@@ -54,6 +54,7 @@ HTTP_PORT=8080 \
 WIRE_PORT=27017 \
 HOST=0.0.0.0 \
 API_KEY=your-production-key \
+DASHBOARD_URL=https://plugport.xyz \
 LOG_LEVEL=warn \
 METRICS_ENABLED=true \
 MONADDB_ENDPOINT=https://monaddb-rpc.monad.xyz/v1 \
@@ -67,6 +68,7 @@ node packages/server/dist/index.js
 docker run \
   -e HTTP_PORT=8080 \
   -e API_KEY=your-key \
+  -e DASHBOARD_URL=https://plugport.xyz \
   -e LOG_LEVEL=info \
   -p 8080:8080 \
   plugport/server
@@ -76,7 +78,7 @@ docker run \
 
 PlugPort uses a Triple-Auth Middleware for maximum flexibility:
 
-1. **JWT Bearer (SIWE):** For the Dashboard, using Sign-In with Ethereum.
+1. **Cookie Session (SIWE):** For the Dashboard, using Sign-In with Ethereum. The session is stored in an encrypted httpOnly cookie via `iron-session`. Session encryption is derived from `MONAD_PRIVATE_KEY` — no separate secret is needed.
 2. **Wallet-Linked API Key:** Generated via the Dashboard (starts with `pp_`). Use as a Bearer token:
    ```bash
    curl -H "Authorization: Bearer pp_test_123..." http://localhost:8080/api/v1/collections

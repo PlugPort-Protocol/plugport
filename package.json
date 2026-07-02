@@ -21,5 +21,10 @@
         "node": ">=20.0.0",
         "pnpm": ">=9.0.0"
     },
-    "packageManager": "pnpm@9.15.0"
+    "packageManager": "pnpm@9.15.0",
+    "devDependencies": {
+        "@eslint/js": "^10.0.1",
+        "eslint": "^9.0.0",
+        "typescript-eslint": "^8.62.1"
+    }
 }

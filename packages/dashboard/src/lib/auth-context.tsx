@@ -10,18 +10,17 @@ import {
     type ReactNode,
 } from 'react';
 import { useAccount, useDisconnect, useSignMessage } from 'wagmi';
+import { SiweMessage } from 'siwe';
 
 // ---- Types ----
 
 export type AuthMethod = 'wallet' | 'apiKey' | 'none';
 
 interface AuthState {
-    /** Authenticated wallet address (lowercase, checksummed) */
+    /** Authenticated wallet address (lowercase) */
     address: string | null;
     /** Current auth method */
     authMethod: AuthMethod;
-    /** JWT token from SIWE verification */
-    jwt: string | null;
     /** Whether user is fully authenticated */
     isAuthenticated: boolean;
     /** Custom server URL (null = default public server) */
@@ -32,20 +31,16 @@ interface AuthState {
     signOut: () => void;
     /** Set custom server URL */
     setServerUrl: (url: string | null) => void;
-    /** Set JWT after SIWE verification */
-    setJwt: (jwt: string | null) => void;
 }
 
 const AuthContext = createContext<AuthState>({
     address: null,
     authMethod: 'none',
-    jwt: null,
     isAuthenticated: false,
     serverUrl: null,
     signIn: async () => {},
     signOut: () => {},
     setServerUrl: () => {},
-    setJwt: () => {},
 });
 
 // ---- API Helpers ----
@@ -62,35 +57,39 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const { disconnect } = useDisconnect();
     const { signMessageAsync } = useSignMessage();
 
-    const [jwt, setJwtState] = useState<string | null>(null);
+    const [authenticatedAddress, setAuthenticatedAddress] = useState<string | null>(null);
     const [serverUrl, setServerUrlState] = useState<string | null>(null);
     const isSigningInRef = useRef(false);
 
     // Load persisted state from localStorage
     useEffect(() => {
         if (typeof window === 'undefined') return;
-        const savedJwt = localStorage.getItem('plugport_jwt');
         const savedUrl = localStorage.getItem('plugport_server_url');
-        if (savedJwt) setJwtState(savedJwt);
         if (savedUrl) setServerUrlState(savedUrl);
     }, []);
 
-    // Clear JWT when wallet disconnects
+    // Check session on mount (cookie-based — no local JWT to restore)
+    useEffect(() => {
+        if (typeof window === 'undefined') return;
+        const apiBase = getApiBase(serverUrl);
+        fetch(`${apiBase}/api/v1/auth/me`, { credentials: 'include' })
+            .then(async (res) => {
+                if (res.ok) {
+                    const data = await res.json();
+                    setAuthenticatedAddress(data.address);
+                } else {
+                    setAuthenticatedAddress(null);
+                }
+            })
+            .catch(() => setAuthenticatedAddress(null));
+    }, [serverUrl]);
+
+    // Clear authenticated state when wallet disconnects
     useEffect(() => {
         if (!isConnected) {
-            setJwtState(null);
-            localStorage.removeItem('plugport_jwt');
+            setAuthenticatedAddress(null);
         }
     }, [isConnected]);
-
-    const setJwt = useCallback((token: string | null) => {
-        setJwtState(token);
-        if (token) {
-            localStorage.setItem('plugport_jwt', token);
-        } else {
-            localStorage.removeItem('plugport_jwt');
-        }
-    }, []);
 
     const setServerUrl = useCallback((url: string | null) => {
         setServerUrlState(url);
@@ -109,59 +108,69 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const apiBase = getApiBase(serverUrl);
 
         try {
-            // Step 1: Get nonce
+            // Step 1: Get nonce (stored in session cookie by the server)
             const nonceRes = await fetch(`${apiBase}/api/v1/auth/nonce`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ address: walletAddress }),
+                credentials: 'include',
             });
             if (!nonceRes.ok) throw new Error('Failed to get nonce');
             const { nonce } = await nonceRes.json();
 
-            // Step 2: Create SIWE message
+            // Step 2: Create EIP-4361 SIWE message using the official package
             const domain = typeof window !== 'undefined' ? window.location.host : 'plugport.xyz';
             const origin = typeof window !== 'undefined' ? window.location.origin : 'https://plugport.xyz';
-            const message = [
-                `${domain} wants you to sign in with your Ethereum account:`,
-                walletAddress,
-                '',
-                'Sign in to PlugPort Dashboard',
-                '',
-                `URI: ${origin}`,
-                `Version: 1`,
-                `Chain ID: 10143`,
-                `Nonce: ${nonce}`,
-                `Issued At: ${new Date().toISOString()}`,
-            ].join('\n');
+            const siweMessage = new SiweMessage({
+                domain,
+                address: walletAddress,
+                statement: 'Sign in to PlugPort Dashboard',
+                uri: origin,
+                version: '1',
+                chainId: 10143,
+                nonce,
+            });
+            const message = siweMessage.prepareMessage();
 
             // Step 3: Request wallet signature (via wagmi)
             const signature = await signMessageAsync({ message });
 
-            // Step 4: Verify on server
+            // Step 4: Verify on server (sets httpOnly session cookie)
             const verifyRes = await fetch(`${apiBase}/api/v1/auth/verify`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ message, signature, address: walletAddress }),
+                body: JSON.stringify({ message, signature }),
+                credentials: 'include',
             });
             if (!verifyRes.ok) throw new Error('Signature verification failed');
-            const { token } = await verifyRes.json();
+            const { address: verifiedAddress } = await verifyRes.json();
 
-            setJwt(token);
+            setAuthenticatedAddress(verifiedAddress);
         } catch (err) {
             console.error('SIWE sign-in failed:', err);
             throw err;
         } finally {
             isSigningInRef.current = false;
         }
-    }, [walletAddress, isConnected, serverUrl, setJwt, signMessageAsync]);
+    }, [walletAddress, isConnected, serverUrl, signMessageAsync]);
 
-    const signOut = useCallback(() => {
-        setJwt(null);
+    const signOut = useCallback(async () => {
+        const apiBase = getApiBase(serverUrl);
+        // Destroy server session
+        try {
+            await fetch(`${apiBase}/api/v1/auth/logout`, {
+                method: 'POST',
+                credentials: 'include',
+            });
+        } catch {
+            // Best-effort — disconnect wallet regardless
+        }
+        setAuthenticatedAddress(null);
         disconnect();
-    }, [setJwt, disconnect]);
+    }, [serverUrl, disconnect]);
 
     // Determine auth method
-    const authMethod: AuthMethod = jwt && isConnected
+    const authMethod: AuthMethod = authenticatedAddress && isConnected
         ? 'wallet'
         : process.env.NEXT_PUBLIC_TDBX_API_KEY
             ? 'apiKey'
@@ -172,26 +181,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     // Auto sign-in when wallet connects
     useEffect(() => {
-        if (isConnected && walletAddress && !jwt) {
+        if (isConnected && walletAddress && !authenticatedAddress) {
             signIn().catch((err) => {
                 console.error('Auto sign-in failed', err);
                 disconnect(); // Disconnect wallet if they reject the signature
             });
         }
-    }, [isConnected, walletAddress, jwt, signIn, disconnect]);
+    }, [isConnected, walletAddress, authenticatedAddress, signIn, disconnect]);
 
     return (
         <AuthContext.Provider
             value={{
                 address,
                 authMethod,
-                jwt,
                 isAuthenticated,
                 serverUrl,
                 signIn,
                 signOut,
                 setServerUrl,
-                setJwt,
             }}
         >
             {children}

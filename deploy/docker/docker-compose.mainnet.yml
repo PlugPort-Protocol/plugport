@@ -1,0 +1,47 @@
+# PlugPort Docker Compose — Monad Mainnet
+# Usage: docker compose -f docker-compose.yml -f docker-compose.mainnet.yml --env-file ../../.env.mainnet up
+#
+# Requires .env.mainnet with:
+#   MONAD_RPC_URL, MONAD_PRIVATE_KEY, MONAD_CONTRACT_ADDRESS, DASHBOARD_URL
+
+services:
+  plugport-server:
+    environment:
+      - NODE_ENV=production
+      - IS_TESTNET=false
+      - LOG_LEVEL=warn
+      # ---- Monad Mainnet ----
+      - MONAD_RPC_URL=${MONAD_RPC_URL}
+      - MONAD_CHAIN_ID=${MONAD_CHAIN_ID}
+      - MONAD_PRIVATE_KEY=${MONAD_PRIVATE_KEY}
+      - MONAD_CONTRACT_ADDRESS=${MONAD_CONTRACT_ADDRESS}
+      # ---- CORS (lock to production domain) ----
+      - DASHBOARD_URL=${DASHBOARD_URL}
+      # ---- Private Store & PubSub ----
+      - PRIVATE_STORE_CONTRACT=${PRIVATE_STORE_CONTRACT:-}
+      - MESSAGEBROKER_CONTRACT_ADDRESS=${MESSAGEBROKER_CONTRACT_ADDRESS:-}
+      - MESSAGEBROKER_GAS_STATION=${MESSAGEBROKER_GAS_STATION:-}
+      - MONAD_WS_URL=${MONAD_WS_URL:-}
+      - RELATIONAL_CONTRACT_ADDRESS=${RELATIONAL_CONTRACT_ADDRESS:-}
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 256M
+      restart_policy:
+        condition: any
+        delay: 5s
+        max_attempts: 5
+        window: 120s
+
+  plugport-dashboard:
+    environment:
+      - NODE_ENV=production
+
+  # Mainnet: tighter Grafana security
+  grafana:
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_AUTH_ANONYMOUS_ENABLED=false

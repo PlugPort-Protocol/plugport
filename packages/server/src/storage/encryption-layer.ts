@@ -202,8 +202,9 @@ export class EncryptionLayer implements KVAdapter {
                     key: entry.key,
                     value: this.decrypt(Buffer.from(entry.value), this.aesKey),
                 };
-            } catch {
-                return entry; // Return raw if decryption fails
+            } catch (err) {
+                console.warn(`[EncryptionLayer] Decryption failed for key "${entry.key}":`, err instanceof Error ? err.message : 'unknown error');
+                return entry; // Return raw if decryption fails — caller sees garbled data
             }
         });
     }

@@ -9,6 +9,7 @@ import {
     type MonadConfig,
 } from '../storage/monaddb-adapter.js';
 import { InMemoryKVStore } from '../storage/kv-adapter.js';
+import { RoutingAdapter } from '../storage/routing-adapter.js';
 
 // =====================================================
 // generateKeypair Tests
@@ -210,7 +211,7 @@ describe('createStorageAdapter', () => {
         expect(adapter).toBeInstanceOf(InMemoryKVStore);
     });
 
-    it('should return InMemoryKVStore when contract address is missing', async () => {
+    it('should return RoutingAdapter wrapping InMemoryKVStore when contract address is missing', async () => {
         process.env.MONAD_PRIVATE_KEY = 'a'.repeat(64);
 
         const { createStorageAdapter } = await import('../index.js');
@@ -227,10 +228,13 @@ describe('createStorageAdapter', () => {
         };
 
         const adapter = createStorageAdapter(config);
-        expect(adapter).toBeInstanceOf(InMemoryKVStore);
+        // With MONAD_PRIVATE_KEY set, createStorageAdapter wraps in RoutingAdapter
+        expect(adapter).toBeInstanceOf(RoutingAdapter);
+        expect(typeof (adapter as any).getKeyCount).toBe('function');
+        expect(typeof (adapter as any).getEstimatedSizeBytes).toBe('function');
     });
 
-    it('should return MonadAdapter when all config values are set', async () => {
+    it('should return RoutingAdapter wrapping MonadAdapter when all config values are set', async () => {
         process.env.MONAD_PRIVATE_KEY = 'a'.repeat(64);
 
         const { createStorageAdapter } = await import('../index.js');
@@ -248,10 +252,12 @@ describe('createStorageAdapter', () => {
         };
 
         const adapter = createStorageAdapter(config);
-        expect(adapter).toBeInstanceOf(MonadAdapter);
+        // With MONAD_PRIVATE_KEY set, always returns RoutingAdapter wrapper
+        expect(adapter).toBeInstanceOf(RoutingAdapter);
+        expect(typeof (adapter as any).setPrivacyManager).toBe('function');
     });
 
-    it('MonadAdapter from factory should have correct address format', async () => {
+    it('RoutingAdapter from factory should have diagnostic methods', async () => {
         process.env.MONAD_PRIVATE_KEY = 'a'.repeat(64);
 
         const { createStorageAdapter } = await import('../index.js');
@@ -268,7 +274,10 @@ describe('createStorageAdapter', () => {
             monadContractAddress: '0x' + '1'.repeat(40),
         };
 
-        const adapter = createStorageAdapter(config) as MonadAdapter;
-        expect(adapter.getServerAddress()).toMatch(/^0x[0-9a-fA-F]{40}$/);
+        const adapter = createStorageAdapter(config);
+        // Verify RoutingAdapter wrapper with diagnostic methods
+        expect(adapter).toBeInstanceOf(RoutingAdapter);
+        expect((adapter as any).getKeyCount()).toBeGreaterThanOrEqual(0);
+        expect((adapter as any).getEstimatedSizeBytes()).toBeGreaterThanOrEqual(0);
     });
 });

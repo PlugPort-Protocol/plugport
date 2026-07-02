@@ -6,10 +6,12 @@ import {
     RainbowKitProvider,
     getDefaultConfig,
     darkTheme,
+    lightTheme,
 } from '@rainbow-me/rainbowkit';
 import { WagmiProvider } from 'wagmi';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { defineChain } from 'viem';
+import { useTheme } from 'next-themes';
 
 // ---- Monad Chain Definitions ----
 
@@ -57,20 +59,31 @@ const queryClient = new QueryClient({
     },
 });
 
+// ---- Theme-aware RainbowKit config ----
+
+const rainbowThemeConfig = {
+    accentColor: '#836ef9',
+    accentColorForeground: 'white',
+    borderRadius: 'medium' as const,
+    fontStack: 'system' as const,
+    overlayBlur: 'small' as const,
+};
+
 // ---- Provider Component ----
 
 export function WalletProvider({ children }: { children: ReactNode }) {
+    const { resolvedTheme } = useTheme();
+
+    // B5 fix: Dynamically switch RainbowKit theme based on next-themes
+    const rainbowTheme = resolvedTheme === 'dark'
+        ? darkTheme(rainbowThemeConfig)
+        : lightTheme(rainbowThemeConfig);
+
     return (
         <WagmiProvider config={config}>
             <QueryClientProvider client={queryClient}>
                 <RainbowKitProvider
-                    theme={darkTheme({
-                        accentColor: '#836ef9',
-                        accentColorForeground: 'white',
-                        borderRadius: 'medium',
-                        fontStack: 'system',
-                        overlayBlur: 'small',
-                    })}
+                    theme={rainbowTheme}
                     modalSize="compact"
                 >
                     {children}

@@ -90,8 +90,18 @@ export class RoutingAdapter implements KVAdapter {
             }
         }
 
-        // Fallback for global scans (rare, usually just public)
-        return this.publicAdapter.scan(options);
+        // A7 fix: Global scans should merge results from both adapters
+        const publicResults = await this.publicAdapter.scan(options);
+        if (this.publicAdapter === this.privateAdapter) {
+            return publicResults;
+        }
+        const privateResults = await this.privateAdapter.scan(options);
+        const merged = [...publicResults, ...privateResults];
+        // Respect limit if set
+        if (options.limit && merged.length > options.limit) {
+            return merged.slice(0, options.limit);
+        }
+        return merged;
     }
 
     async count(prefix?: string): Promise<number> {
@@ -109,7 +119,13 @@ export class RoutingAdapter implements KVAdapter {
             }
         }
 
-        return this.publicAdapter.count(prefix);
+        // A7 fix: Global count should sum both adapters
+        const publicCount = await this.publicAdapter.count(prefix);
+        if (this.publicAdapter === this.privateAdapter) {
+            return publicCount;
+        }
+        const privateCount = await this.privateAdapter.count(prefix);
+        return publicCount + privateCount;
     }
 
     async clear(): Promise<void> {

@@ -1,0 +1,35 @@
+# PlugPort Docker Compose — Monad Testnet
+# Usage: docker compose -f docker-compose.yml -f docker-compose.testnet.yml --env-file ../../.env.testnet up
+#
+# Requires .env.testnet with:
+#   MONAD_RPC_URL, MONAD_PRIVATE_KEY, MONAD_CONTRACT_ADDRESS, DASHBOARD_URL
+
+services:
+  plugport-server:
+    environment:
+      - NODE_ENV=production
+      - IS_TESTNET=true
+      - LOG_LEVEL=info
+      # ---- Monad Testnet ----
+      - MONAD_RPC_URL=${MONAD_RPC_URL}
+      - MONAD_CHAIN_ID=10143
+      - MONAD_PRIVATE_KEY=${MONAD_PRIVATE_KEY}
+      - MONAD_CONTRACT_ADDRESS=${MONAD_CONTRACT_ADDRESS}
+      # ---- CORS ----
+      - DASHBOARD_URL=${DASHBOARD_URL}
+      # ---- Optional: Private Store & PubSub ----
+      - PRIVATE_STORE_CONTRACT=${PRIVATE_STORE_CONTRACT:-}
+      - MESSAGEBROKER_CONTRACT_ADDRESS=${MESSAGEBROKER_CONTRACT_ADDRESS:-}
+      - MESSAGEBROKER_GAS_STATION=${MESSAGEBROKER_GAS_STATION:-}
+      - MONAD_WS_URL=${MONAD_WS_URL:-}
+      - RELATIONAL_CONTRACT_ADDRESS=${RELATIONAL_CONTRACT_ADDRESS:-}
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 128M
+
+  plugport-dashboard:
+    environment:
+      - NODE_ENV=production

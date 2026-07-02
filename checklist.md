@@ -136,3 +136,53 @@
 - [x] Cleaned up `EncryptionLayer` strictly handling AES-256-GCM logic without circular dependencies
 - [x] Discarded global `STORAGE_MODE` config enabling granular dynamic per-collection privacy configurations
 - [x] Cleaned `.env.example`s across the entire stack ensuring precise `PRIVATE_STORE_CONTRACT` onboarding
+
+## Phase 16: SIWE + iron-session Auth Refactor
+- [x] Replaced custom `siwe-handler.ts` (JWT + in-memory nonce) with `siwe` package + `iron-session` encrypted cookies
+- [x] Session secret derived from `MONAD_PRIVATE_KEY` via HMAC-SHA256 — zero new env vars
+- [x] Added `@fastify/cookie` for cookie parsing, locked CORS to `DASHBOARD_URL` with `credentials: true`
+- [x] Dashboard uses official `SiweMessage` class for EIP-4361, cookie-based auth flow
+- [x] Added `/auth/logout` endpoint for explicit session destruction
+- [x] Removed `jose` dependency, `setAuthToken()`, and all JWT/localStorage patterns
+
+## Phase 17: Security Audit Hotfixes (S2–S6, B7)
+- [x] Access control enforced on `count` and `distinct` endpoints via `checkAccess()`
+- [x] User-scoped endpoints (`user/:address/*`) guarded with auth + ownership verification
+- [x] Owner spoofing prevented in `deploy/register` — always uses authenticated address
+- [x] Gas station balance endpoint requires auth + validates Ethereum address format
+- [x] Privacy mode changes restricted to collection owner only
+- [x] BigInt precision fix for MON balance conversion in gas station endpoint
+
+## Phase 18: Bug Fixes (B1–B6)
+- [x] Light mode CSS tokens (`--radius-*`, `--transition-*`, `--sidebar-width`) moved to `:root`
+- [x] `btn-primary` / `btn-secondary` hardcoded colors replaced with theme-aware variables
+- [x] `InMemoryKVStore.batchWrite()` implemented for dev mode correctness
+- [x] `RoutingAdapter` diagnostic metrics now include both public + private storage channels
+- [x] RainbowKit theme synced with `next-themes` (light/dark mode)
+- [x] `EncryptionLayer.scan()` logs warnings on decryption failures
+
+## Phase 19: Architecture & DevEx (A1–A7)
+- [x] Created shared `types.ts` for dashboard, then fully decomposed `page.tsx` monolith (2,114→253 lines) into 12 component files
+- [x] CI pipeline triggers fixed to include `v3` branch
+- [x] `PrivacyManager.listOwnedCollections` scan bounded with `limit: 10000`
+- [x] SIWE nonce store issue resolved (iron-session cookies, no in-memory Map)
+- [x] Whitelist management persisted to KV store (survives restarts)
+- [x] `RoutingAdapter.scan()` and `count()` merge public + private results for global operations
+
+## Phase 20: Residual Fixes (R1–R3)
+- [x] Bounded `GET /deploy/contracts` scan with `limit: 10000`
+- [x] Dashboard `page.tsx` imports all types from shared `types.ts` — inline types removed
+- [x] Fixed 3 pre-existing `monaddb-adapter.test.ts` failures (RoutingAdapter wrapping assertions)
+
+## Phase 21: Test Coverage (T1–T4)
+- [x] Access control integration tests (8 tests: count/distinct ACL, user auth, gas station auth)
+- [x] RoutingAdapter routing logic tests (15 tests: privacy routing, global merge, dedup, batch write)
+- [x] CSS correctness verified via dashboard build (no unit-level visual regression)
+- [x] InMemoryKVStore batchWrite tests (7 tests: multi-key ops, Uint8Array, edge cases)
+
+## Phase 22: Improvements (I1–I10)
+- [x] `page.tsx` monolith fully decomposed: 10 tab components + `ScopeToggle` extracted into `components/` directory with barrel re-export (88% line reduction)
+- [x] I2 N/A: JWT replaced by iron-session — no `JWT_SECRET` needed
+- [x] PrivacyManager TTL cache (30s) eliminates repeated KV reads per request
+- [x] Silent `catch {}` blocks audited — structured `console.warn` added to critical paths
+- [x] All 200 tests passing across 9 test files; dashboard build verified clean

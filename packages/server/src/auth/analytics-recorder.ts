@@ -244,7 +244,8 @@ export class AnalyticsRecorder {
         if (!data) return null;
         try {
             return JSON.parse(data.toString()) as T;
-        } catch {
+        } catch (err) {
+            console.warn(`[Analytics] Malformed JSON for key "${key}":`, err instanceof Error ? err.message : 'parse error');
             return null;
         }
     }

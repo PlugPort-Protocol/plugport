@@ -4,12 +4,15 @@
 
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
+import cookie from '@fastify/cookie';
 import rateLimit from '@fastify/rate-limit';
 import { timingSafeEqual } from 'crypto';
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
+import { getIronSession } from 'iron-session';
+import { SiweMessage, generateNonce as siweGenerateNonce } from 'siwe';
 import { DocumentStore, DocumentStoreError } from './storage/document-store.js';
 import { MetricsCollector } from './metrics.js';
-import { SIWEHandler } from './auth/siwe-handler.js';
+import { getSessionOptions, type SessionData } from './auth/session.js';
 import { ApiKeyManager, type ApiKeyPermission } from './auth/api-key-manager.js';
 import { AnalyticsRecorder } from './auth/analytics-recorder.js';
 import { PrivacyManager } from './storage/privacy-manager.js';
@@ -45,14 +48,15 @@ export interface HttpServerOptions {
         disableProtocol(name: string): Promise<void>;
     };
     whitelistAddresses?: string[];
-    jwtSecret?: string;
+    /** Allowed origin for CORS credentials (defaults to DASHBOARD_URL env var) */
+    dashboardUrl?: string;
 }
 
 export async function createHttpServer(options: HttpServerOptions): Promise<FastifyInstance> {
     const { store, metrics, kvStore, apiKey } = options;
 
     // Initialize auth subsystems
-    const siweHandler = new SIWEHandler({ jwtSecret: options.jwtSecret });
+    const sessionOptions = getSessionOptions();
     const apiKeyManager = new ApiKeyManager(kvStore);
     const analyticsRecorder = new AnalyticsRecorder(kvStore);
     const privacyManager = new PrivacyManager(kvStore);
@@ -74,14 +78,22 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
     });
 
     // Security Middleware
-    await app.register(cors, { origin: true, methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'] });
+    const allowedOrigin = options.dashboardUrl
+        || process.env.DASHBOARD_URL
+        || (process.env.NODE_ENV === 'production' ? undefined : true);
+    await app.register(cors, {
+        origin: allowedOrigin,
+        credentials: true,
+        methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    });
+    await app.register(cookie);
     await app.register(rateLimit, {
         max: 100, // Limit each IP to 100 requests
         timeWindow: '10 seconds' // per 10 seconds (600 RPM)
     });
 
     // ---- Triple-Auth Middleware ----
-    // Priority: (1) JWT Bearer → wallet auth, (2) pp_live_/pp_test_ → wallet-linked API key,
+    // Priority: (1) Session cookie → wallet auth (SIWE), (2) pp_live_/pp_test_ → wallet-linked API key,
     //           (3) legacy x-api-key → static API key from .env
     app.addHook('onRequest', async (request: FastifyRequest, reply: FastifyReply) => {
         const path = request.url;
@@ -99,23 +111,22 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
             return;
         }
 
-        const authHeader = request.headers.authorization;
-        const xApiKey = request.headers['x-api-key'] as string;
-
-        // Method 1: JWT Bearer token (wallet auth via SIWE)
-        if (authHeader?.startsWith('Bearer ')) {
-            const token = authHeader.slice(7);
-            // Check if it's a JWT (not a legacy API key)
-            if (token.includes('.')) {
-                try {
-                    const session = await siweHandler.validateToken(token);
-                    request.user = { address: session.address, authMethod: 'wallet' };
-                    return;
-                } catch {
-                    // Fall through to other methods
-                }
+        // Method 1: Session cookie (wallet auth via SIWE)
+        try {
+            const session = await getIronSession<SessionData>(request.raw, reply.raw, sessionOptions);
+            if (session.address) {
+                request.user = { address: session.address, authMethod: 'wallet' };
+                return;
+            }
+        } catch (err) {
+            // Cookie missing or corrupt — fall through to other methods
+            if (process.env.LOG_LEVEL === 'debug') {
+                console.warn('[Auth] Session cookie parse failed:', err instanceof Error ? err.message : 'unknown');
             }
         }
+
+        const authHeader = request.headers.authorization;
+        const xApiKey = request.headers['x-api-key'] as string;
 
         // Method 2: Wallet-linked API key (pp_live_... or pp_test_...)
         const rawKey = xApiKey || (authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : undefined);
@@ -444,6 +455,7 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
         }>,
         reply: FastifyReply,
     ) => {
+        if (!(await checkAccess(req, reply, req.params.name, 'read'))) return;
         try {
             const { filter = {} } = req.body || {};
             const count = await store.countDocuments(req.params.name, filter);
@@ -460,6 +472,7 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
         }>,
         reply: FastifyReply,
     ) => {
+        if (!(await checkAccess(req, reply, req.params.name, 'read'))) return;
         try {
             const { field, filter = {} } = req.body || {} as { field: string; filter?: Filter };
             if (!field) {
@@ -690,10 +703,25 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
         }
     });
 
-    // ---- Whitelist Management (Legacy — global) ----
+    // ---- Whitelist Management (Legacy — global, persisted to KV) ----
+
+    const WHITELIST_KEY = 'meta:whitelist:global';
+
+    async function getWhitelist(): Promise<string[]> {
+        const raw = await kvStore.get(WHITELIST_KEY);
+        if (raw) {
+            try { return JSON.parse(raw.toString()); } catch { /* ignore malformed */ }
+        }
+        return options.whitelistAddresses || [];
+    }
+
+    async function saveWhitelist(addresses: string[]): Promise<void> {
+        await kvStore.put(WHITELIST_KEY, Buffer.from(JSON.stringify(addresses)));
+    }
 
     app.get('/api/v1/whitelist', async () => {
-        return { addresses: options.whitelistAddresses || [], ok: 1 };
+        const addresses = await getWhitelist();
+        return { addresses, ok: 1 };
     });
 
     app.post('/api/v1/whitelist', async (
@@ -704,21 +732,20 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
         if (!body?.address) {
             return reply.status(400).send({ ok: 0, errmsg: 'address is required' });
         }
-        if (!options.whitelistAddresses) {
-            options.whitelistAddresses = [];
-        }
+        let addresses = await getWhitelist();
         if (body.action === 'add') {
-            if (!options.whitelistAddresses.includes(body.address)) {
-                options.whitelistAddresses.push(body.address);
+            if (!addresses.includes(body.address)) {
+                addresses.push(body.address);
             }
         } else if (body.action === 'remove') {
-            options.whitelistAddresses = options.whitelistAddresses.filter(a => a !== body.address);
+            addresses = addresses.filter(a => a !== body.address);
         }
-        return { ok: 1, addresses: options.whitelistAddresses };
+        await saveWhitelist(addresses);
+        return { ok: 1, addresses };
     });
 
     // ════════════════════════════════════════════════════════
-    // SIWE Authentication Endpoints
+    // SIWE Authentication Endpoints (cookie-based via iron-session)
     // ════════════════════════════════════════════════════════
 
     app.post('/api/v1/auth/nonce', async (
@@ -729,31 +756,59 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
         if (!address || !address.startsWith('0x')) {
             return reply.status(400).send({ ok: 0, errmsg: 'Valid Ethereum address required' });
         }
-        const nonce = siweHandler.generateNonce(address);
+        const nonce = siweGenerateNonce();
+
+        // Store nonce in session cookie for verification in the next step
+        const session = await getIronSession<SessionData>(req.raw, reply.raw, sessionOptions);
+        session.nonce = nonce;
+        await session.save();
+
         return { nonce, ok: 1 };
     });
 
     app.post('/api/v1/auth/verify', async (
-        req: FastifyRequest<{ Body: { message: string; signature: string; address: string } }>,
+        req: FastifyRequest<{ Body: { message: string; signature: string } }>,
         reply: FastifyReply,
     ) => {
-        const { message, signature, address } = req.body || {} as { message: string; signature: string; address: string };
-        if (!message || !signature || !address) {
-            return reply.status(400).send({ ok: 0, errmsg: 'message, signature, and address are required' });
+        const { message, signature } = req.body || {} as { message: string; signature: string };
+        if (!message || !signature) {
+            return reply.status(400).send({ ok: 0, errmsg: 'message and signature are required' });
         }
         try {
-            const result = await siweHandler.verify(message, signature, address);
-            return { token: result.token, address: result.address, ok: 1 };
+            const session = await getIronSession<SessionData>(req.raw, reply.raw, sessionOptions);
+            const siweMessage = new SiweMessage(message);
+
+            // Verify signature + nonce + domain + expiry via the official SIWE package
+            const { data: fields } = await siweMessage.verify({
+                signature,
+                nonce: session.nonce,
+            });
+
+            // Set authenticated session
+            session.address = fields.address.toLowerCase();
+            session.chainId = fields.chainId;
+            session.nonce = undefined; // Consume nonce (one-time use)
+            await session.save();
+
+            return { address: session.address, ok: 1 };
         } catch (err) {
             return reply.status(401).send({ ok: 0, errmsg: err instanceof Error ? err.message : 'Verification failed' });
         }
     });
 
     app.get('/api/v1/auth/me', async (req: FastifyRequest, reply: FastifyReply) => {
-        if (!req.user?.address) {
+        // Read session from cookie (also populated by middleware for non-auth routes)
+        const session = await getIronSession<SessionData>(req.raw, reply.raw, sessionOptions);
+        if (!session.address) {
             return reply.status(401).send({ ok: 0, errmsg: 'Not authenticated' });
         }
-        return { address: req.user.address, authMethod: req.user.authMethod, ok: 1 };
+        return { address: session.address, chainId: session.chainId, ok: 1 };
+    });
+
+    app.post('/api/v1/auth/logout', async (req: FastifyRequest, reply: FastifyReply) => {
+        const session = await getIronSession<SessionData>(req.raw, reply.raw, sessionOptions);
+        session.destroy();
+        return { ok: 1 };
     });
 
     // ════════════════════════════════════════════════════════
@@ -887,6 +942,11 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
         if (!req.user?.address) {
             return reply.status(401).send({ ok: 0, errmsg: 'Authentication required to change privacy' });
         }
+        // S6 fix: Only the collection owner (or first-time setter) can change privacy mode
+        const existingPrivacy = await privacyManager.getCollectionPrivacy(req.params.name);
+        if (existingPrivacy && existingPrivacy.ownerAddress && existingPrivacy.ownerAddress !== req.user.address.toLowerCase()) {
+            return reply.status(403).send({ ok: 0, errmsg: 'Only the collection owner can change privacy mode' });
+        }
         const { mode, contractAddress } = req.body || {} as { mode: 'public' | 'private'; contractAddress?: string };
         if (!mode || !['public', 'private'].includes(mode)) {
             return reply.status(400).send({ ok: 0, errmsg: 'mode must be "public" or "private"' });
@@ -931,8 +991,16 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
 
     app.get('/api/v1/user/:address/collections', async (
         req: FastifyRequest<{ Params: { address: string } }>,
+        reply: FastifyReply,
     ) => {
+        // S3 fix: Only the authenticated user can view their own data
+        if (!req.user?.address) {
+            return reply.status(401).send({ ok: 0, errmsg: 'Authentication required' });
+        }
         const address = req.params.address.toLowerCase();
+        if (req.user.address.toLowerCase() !== address) {
+            return reply.status(403).send({ ok: 0, errmsg: 'You can only view your own collections' });
+        }
         const allCollections = await store.listCollections();
         const userCollections = [];
         for (const c of allCollections) {
@@ -951,8 +1019,16 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
 
     app.get('/api/v1/user/:address/metrics', async (
         req: FastifyRequest<{ Params: { address: string } }>,
+        reply: FastifyReply,
     ) => {
+        // S3 fix: Only the authenticated user can view their own metrics
+        if (!req.user?.address) {
+            return reply.status(401).send({ ok: 0, errmsg: 'Authentication required' });
+        }
         const address = req.params.address.toLowerCase();
+        if (req.user.address.toLowerCase() !== address) {
+            return reply.status(403).send({ ok: 0, errmsg: 'You can only view your own metrics' });
+        }
         const keys = await apiKeyManager.listKeys(address);
         const hashes = keys.map(k => k.hash);
         const overview = await analyticsRecorder.getOverviewForOwner(hashes);
@@ -984,19 +1060,20 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
     // ════════════════════════════════════════════════════════
 
     app.post('/api/v1/deploy/register', async (
-        req: FastifyRequest<{ Body: { contractAddress: string; contractType: string; ownerAddress: string } }>,
+        req: FastifyRequest<{ Body: { contractAddress: string; contractType: string } }>,
         reply: FastifyReply,
     ) => {
         if (!req.user?.address) {
             return reply.status(401).send({ ok: 0, errmsg: 'Authentication required' });
         }
-        const { contractAddress, contractType, ownerAddress } = req.body || {} as any;
+        const { contractAddress, contractType } = req.body || {} as any;
         if (!contractAddress || !contractType) {
             return reply.status(400).send({ ok: 0, errmsg: 'contractAddress and contractType are required' });
         }
+        // S4 fix: Always use the authenticated user's address — never accept ownerAddress from body
         const key = `meta:contract:${contractAddress.toLowerCase()}`;
         await kvStore.put(key, Buffer.from(JSON.stringify({
-            ownerAddress: (ownerAddress || req.user.address).toLowerCase(),
+            ownerAddress: req.user.address.toLowerCase(),
             type: contractType,
             createdAt: Date.now(),
         })));
@@ -1009,7 +1086,7 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
         }
         // Scan for contracts owned by the user using prefix scan
         const contracts: Array<{ address: string; type: string; createdAt: number }> = [];
-        const entries = await kvStore.scan({ prefix: 'meta:contract:' });
+        const entries = await kvStore.scan({ prefix: 'meta:contract:', limit: 10000 });
         for (const entry of entries) {
             try {
                 const meta = JSON.parse(entry.value.toString());
@@ -1020,7 +1097,9 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
                         createdAt: meta.createdAt,
                     });
                 }
-            } catch { /* skip malformed entries */ }
+            } catch (err) {
+                console.warn(`[Deploy] Malformed contract metadata for key "${entry.key}":`, err instanceof Error ? err.message : 'parse error');
+            }
         }
         return { contracts, ok: 1 };
     });
@@ -1031,8 +1110,17 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
 
     app.get('/api/v1/deploy/gas-station/:address/balance', async (
         req: FastifyRequest<{ Params: { address: string } }>,
+        reply: FastifyReply,
     ) => {
+        // S5 fix: Require authentication to prevent using server as free RPC proxy
+        if (!req.user?.address) {
+            return reply.status(401).send({ ok: 0, errmsg: 'Authentication required' });
+        }
         const address = req.params.address;
+        // S5 fix: Validate Ethereum address format
+        if (!/^0x[0-9a-fA-F]{40}$/.test(address)) {
+            return reply.status(400).send({ ok: 0, errmsg: 'Invalid Ethereum address format' });
+        }
         const rpcUrl = process.env.MONAD_RPC_URL || 'https://testnet-rpc.monad.xyz';
 
         try {
@@ -1052,11 +1140,12 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
             }
 
             const balanceWei = BigInt(json.result || '0x0');
-            const balanceEth = Number(balanceWei) / 1e18;
+            // B7 fix: Use BigInt division to avoid Number() precision loss for large balances
+            const balanceEth = Number(balanceWei * 1000000n / (10n ** 18n)) / 1000000;
 
             // Estimate operations: ~50k gas per PlugPort op, ~50 gwei avg gas price
-            const avgCostPerOp = 50_000 * 50_000_000; // in wei
-            const estimatedOps = avgCostPerOp > 0 ? Math.floor(Number(balanceWei) / avgCostPerOp) : 0;
+            const avgCostPerOp = BigInt(50_000) * BigInt(50_000_000); // in wei
+            const estimatedOps = avgCostPerOp > 0n ? Number(balanceWei / avgCostPerOp) : 0;
 
             const LOW_THRESHOLD = 0.1; // MON
 

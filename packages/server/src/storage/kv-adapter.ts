@@ -130,6 +130,21 @@ export class InMemoryKVStore implements KVAdapter {
         return size;
     }
 
+    async batchWrite(puts: { key: string; value: Buffer | Uint8Array }[], deletes: string[]): Promise<void> {
+        for (const { key, value } of puts) {
+            const buf = Buffer.isBuffer(value) ? value : Buffer.from(value);
+            if (!this.store.has(key)) {
+                this.dirty = true;
+            }
+            this.store.set(key, buf);
+        }
+        for (const key of deletes) {
+            if (this.store.delete(key)) {
+                this.dirty = true;
+            }
+        }
+    }
+
     dump(): Map<string, Buffer> {
         return new Map(this.store);
     }

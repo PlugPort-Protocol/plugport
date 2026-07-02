@@ -1,0 +1,12 @@
+# PlugPort Docker Compose — Local Development Override
+# Auto-loaded by `docker compose up` (no flags needed).
+# In-memory storage, all origins allowed, no Monad connection.
+
+services:
+  plugport-server:
+    environment:
+      - NODE_ENV=development
+      - IS_TESTNET=true
+      - LOG_LEVEL=debug
+      # No MONAD_* vars → falls back to InMemoryKVStore
+      # No DASHBOARD_URL → CORS allows all origins in dev

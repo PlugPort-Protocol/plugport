@@ -36,10 +36,18 @@ export interface CollectionPrivacy {
 export class PrivacyManager {
     private kvStore: KVAdapter;
     private prefix: string;
+    // I3: In-memory cache to avoid repeated KV reads (30s TTL)
+    private cache: Map<string, { data: CollectionPrivacy; expires: number }> = new Map();
+    private static CACHE_TTL_MS = 30_000;
 
     constructor(kvStore: KVAdapter, options?: { prefix?: string }) {
         this.kvStore = kvStore;
         this.prefix = options?.prefix || 'meta:privacy:';
+    }
+
+    /** Invalidate the cache for a specific collection. */
+    private invalidateCache(collection: string): void {
+        this.cache.delete(collection);
     }
 
     /**
@@ -47,12 +55,21 @@ export class PrivacyManager {
      * Returns null if no privacy settings have been configured.
      */
     async getCollectionPrivacy(collection: string): Promise<CollectionPrivacy | null> {
+        // I3: Check cache first
+        const cached = this.cache.get(collection);
+        if (cached && Date.now() < cached.expires) {
+            return cached.data;
+        }
+
         const key = `${this.prefix}${collection}`;
         const data = await this.kvStore.get(key);
         if (!data) return null;
         try {
-            return JSON.parse(data.toString()) as CollectionPrivacy;
-        } catch {
+            const parsed = JSON.parse(data.toString()) as CollectionPrivacy;
+            this.cache.set(collection, { data: parsed, expires: Date.now() + PrivacyManager.CACHE_TTL_MS });
+            return parsed;
+        } catch (err) {
+            console.warn(`[PrivacyManager] Malformed privacy data for "${collection}":`, err instanceof Error ? err.message : 'parse error');
             return null;
         }
     }
@@ -179,14 +196,16 @@ export class PrivacyManager {
         const address = ownerAddress.toLowerCase();
         const owned: string[] = [];
 
-        const entries = await this.kvStore.scan({ prefix: this.prefix });
+        const entries = await this.kvStore.scan({ prefix: this.prefix, limit: 10000 });
         for (const entry of entries) {
             try {
                 const privacy = JSON.parse(entry.value.toString()) as CollectionPrivacy;
                 if (privacy.ownerAddress === address) {
                     owned.push(entry.key.replace(this.prefix, ''));
                 }
-            } catch { /* skip malformed entries */ }
+            } catch (err) {
+                console.warn(`[PrivacyManager] Malformed privacy entry "${entry.key}":`, err instanceof Error ? err.message : 'parse error');
+            }
         }
 
         return owned;
@@ -197,5 +216,7 @@ export class PrivacyManager {
     private async putPrivacy(collection: string, privacy: CollectionPrivacy): Promise<void> {
         const key = `${this.prefix}${collection}`;
         await this.kvStore.put(key, Buffer.from(JSON.stringify(privacy)));
+        // I3: Invalidate cache on write so next read fetches fresh data
+        this.invalidateCache(collection);
     }
 }

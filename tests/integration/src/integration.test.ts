@@ -223,29 +223,30 @@ describe('HTTP API Integration Tests', () => {
             expect(data.mode).toBe('private');
         });
 
-        it('should allow adding to whitelist', async () => {
-            const { status, data } = await post(`/api/v1/collections/${testCollection}/whitelist`, {
+        it('should allow granting access role', async () => {
+            const { status, data } = await post(`/api/v1/collections/${testCollection}/roles`, {
                 address: '0x123',
-                action: 'add',
+                action: 'grant',
+                role: 1,
             }, { 'x-test-wallet-address': '0xTestOwner' });
             expect(status).toBe(200);
             expect(data.ok).toBe(1);
 
-            const getRes = await get(`/api/v1/collections/${testCollection}/whitelist`);
-            expect(getRes.data.addresses).toContain('0x123');
+            const getRes = await get(`/api/v1/collections/${testCollection}/roles`);
+            expect(getRes.data.accessRoles['0x123']).toBe(1);
         });
 
-        it('should allow removing from whitelist', async () => {
-            const { status, data } = await post(`/api/v1/collections/${testCollection}/whitelist`, {
+        it('should allow revoking access role', async () => {
+            const { status, data } = await post(`/api/v1/collections/${testCollection}/roles`, {
                 address: '0x123',
-                action: 'remove',
+                action: 'revoke',
             }, { 'x-test-wallet-address': '0xTestOwner' });
             expect(status).toBe(200);
             expect(data.ok).toBe(1);
 
             // Verify it was removed
-            const getRes = await get(`/api/v1/collections/${testCollection}/whitelist`);
-            expect(getRes.data.addresses).not.toContain('0x123');
+            const getRes = await get(`/api/v1/collections/${testCollection}/roles`);
+            expect(getRes.data.accessRoles['0x123']).toBeUndefined();
         });
     });
 

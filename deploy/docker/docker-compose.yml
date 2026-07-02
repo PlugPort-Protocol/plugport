@@ -1,5 +1,8 @@
-# PlugPort Docker Compose - Full Stack
-version: '3.9'
+# PlugPort Docker Compose — Base Services
+# Usage:
+#   Dev (auto-loads override):  docker compose up
+#   Testnet:                    docker compose -f docker-compose.yml -f docker-compose.testnet.yml --env-file ../../.env.testnet up
+#   Mainnet:                    docker compose -f docker-compose.yml -f docker-compose.mainnet.yml --env-file ../../.env.mainnet up
 
 services:
   # ---- Core Server ----
@@ -9,14 +12,18 @@ services:
       dockerfile: deploy/docker/Dockerfile
     container_name: plugport-server
     ports:
-      - "8080:8080" # HTTP API
-      - "27017:27017" # Wire Protocol
+      - "${HTTP_PORT:-8080}:8080"
+      - "${WIRE_PORT:-27017}:27017"
     environment:
       - HTTP_PORT=8080
       - WIRE_PORT=27017
-      - LOG_LEVEL=info
+      - HOST=0.0.0.0
+      - LOG_LEVEL=${LOG_LEVEL:-info}
       - METRICS_ENABLED=true
-      # - API_KEY=your-secret-key
+      - MONGODB_ENABLED=${MONGODB_ENABLED:-true}
+      - PG_ENABLED=${PG_ENABLED:-false}
+      - MYSQL_ENABLED=${MYSQL_ENABLED:-false}
+      - REDIS_ENABLED=${REDIS_ENABLED:-false}
     healthcheck:
       test: wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1
       interval: 10s
@@ -36,7 +43,7 @@ services:
       dockerfile: deploy/docker/Dockerfile.dashboard
     container_name: plugport-dashboard
     ports:
-      - "3000:3000"
+      - "${DASHBOARD_PORT:-3000}:3000"
     environment:
       - NEXT_PUBLIC_API_URL=http://plugport-server:8080
     depends_on:
@@ -68,7 +75,7 @@ services:
     ports:
       - "3001:3000"
     environment:
-      - GF_SECURITY_ADMIN_PASSWORD=plugport
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-plugport}
       - GF_USERS_ALLOW_SIGN_UP=false
     volumes:
       - grafana-data:/var/lib/grafana

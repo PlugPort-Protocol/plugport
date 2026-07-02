@@ -198,7 +198,7 @@ GET  /api/v1/collections/:name/stats      → Collection stats
 POST /api/v1/collections/:name/drop       → Drop collection
 ```
 
-Features: CORS, Triple-Auth Middleware (SIWE JWT Bearer -> Wallet-Linked API Key -> Legacy Key), request timing, API key analytics recording, and error normalization to MongoDB error codes.
+Features: CORS, Triple-Auth Middleware (SIWE Cookie Session -> Wallet-Linked API Key -> Legacy Key), request timing, API key analytics recording, and error normalization to MongoDB error codes.
 
 ### 8. Wire Protocol Server (`wire-server.ts`)
 
