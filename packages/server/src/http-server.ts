@@ -172,7 +172,11 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
                 latencyMs: duration,
                 statusCode: reply.statusCode,
                 payloadBytes: parseInt(reply.getHeader('content-length') as string || '0', 10),
-            }).catch(() => {}); // Fire-and-forget, don't block response
+            }).catch((err) => {
+                if (process.env.LOG_LEVEL === 'debug') {
+                    console.warn('[Analytics] Record failed:', err instanceof Error ? err.message : 'unknown');
+                }
+            }); // Fire-and-forget, don't block response
         }
     });
 
@@ -728,6 +732,10 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
         req: FastifyRequest<{ Body: { address: string; action: 'add' | 'remove' } }>,
         reply: FastifyReply,
     ) => {
+        // N3 fix: Whitelist mutation requires authentication
+        if (!req.user?.address) {
+            return reply.status(401).send({ ok: 0, errmsg: 'Authentication required to modify whitelist' });
+        }
         const body = req.body as { address: string; action: string };
         if (!body?.address) {
             return reply.status(400).send({ ok: 0, errmsg: 'address is required' });
@@ -932,7 +940,22 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
         req: FastifyRequest<{ Params: { name: string } }>,
     ) => {
         const privacy = await privacyManager.getCollectionPrivacy(req.params.name);
-        return { privacy, ok: 1 };
+        if (!privacy) return { privacy: null, ok: 1 };
+
+        // N2 fix: Return reduced payload for non-owners
+        const callerAddress = req.user?.address?.toLowerCase();
+        if (callerAddress && callerAddress === privacy.ownerAddress) {
+            // Owner sees everything
+            return { privacy, ok: 1 };
+        }
+        // Non-owner or unauthenticated: only expose mode (no ACL, no contract address)
+        return {
+            privacy: {
+                mode: privacy.mode,
+                ownerAddress: privacy.ownerAddress,
+            },
+            ok: 1,
+        };
     });
 
     app.post('/api/v1/collections/:name/privacy', async (
@@ -957,9 +980,21 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
 
     app.get('/api/v1/collections/:name/roles', async (
         req: FastifyRequest<{ Params: { name: string } }>,
+        reply: FastifyReply,
     ) => {
+        // N1 fix: Require authentication to view access roles
+        if (!req.user?.address) {
+            return reply.status(401).send({ ok: 0, errmsg: 'Authentication required to view access roles' });
+        }
         const privacy = await privacyManager.getCollectionPrivacy(req.params.name);
-        return { accessRoles: privacy?.accessRoles || {}, ok: 1 };
+        if (!privacy) {
+            return { accessRoles: {}, ok: 1 };
+        }
+        // N1 fix: Only the collection owner can view the full ACL
+        if (privacy.ownerAddress !== req.user.address.toLowerCase()) {
+            return reply.status(403).send({ ok: 0, errmsg: 'Only the collection owner can view access roles' });
+        }
+        return { accessRoles: privacy.accessRoles || {}, ok: 1 };
     });
 
     app.post('/api/v1/collections/:name/roles', async (
@@ -973,6 +1008,14 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
         if (!address?.startsWith('0x')) {
             return reply.status(400).send({ ok: 0, errmsg: 'Valid Ethereum address required' });
         }
+        // N4 fix: Explicit ownership check and error handling
+        const privacy = await privacyManager.getCollectionPrivacy(req.params.name);
+        if (!privacy) {
+            return reply.status(404).send({ ok: 0, errmsg: `Collection "${req.params.name}" has no privacy settings configured. Set privacy mode first.` });
+        }
+        if (privacy.ownerAddress !== req.user.address.toLowerCase()) {
+            return reply.status(403).send({ ok: 0, errmsg: 'Only the collection owner can modify access roles' });
+        }
         if (action === 'grant') {
             if (role !== 1 && role !== 2) return reply.status(400).send({ ok: 0, errmsg: 'role must be 1 (read) or 2 (write)' });
             await privacyManager.grantAccess(req.params.name, address, role, req.user.address);
@@ -981,8 +1024,8 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
         } else {
             return reply.status(400).send({ ok: 0, errmsg: 'action must be "grant" or "revoke"' });
         }
-        const privacy = await privacyManager.getCollectionPrivacy(req.params.name);
-        return { accessRoles: privacy?.accessRoles || {}, ok: 1 };
+        const updatedPrivacy = await privacyManager.getCollectionPrivacy(req.params.name);
+        return { accessRoles: updatedPrivacy?.accessRoles || {}, ok: 1 };
     });
 
     // ════════════════════════════════════════════════════════
@@ -1140,21 +1183,23 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
             }
 
             const balanceWei = BigInt(json.result || '0x0');
-            // B7 fix: Use BigInt division to avoid Number() precision loss for large balances
-            const balanceEth = Number(balanceWei * 1000000n / (10n ** 18n)) / 1000000;
+            // N6 fix: Pure BigInt string arithmetic — no Number() precision loss at any scale
+            const wholePart = balanceWei / (10n ** 18n);
+            const fracPart = (balanceWei % (10n ** 18n)).toString().padStart(18, '0').slice(0, 6);
+            const balanceStr = `${wholePart}.${fracPart}`;
 
             // Estimate operations: ~50k gas per PlugPort op, ~50 gwei avg gas price
             const avgCostPerOp = BigInt(50_000) * BigInt(50_000_000); // in wei
             const estimatedOps = avgCostPerOp > 0n ? Number(balanceWei / avgCostPerOp) : 0;
 
-            const LOW_THRESHOLD = 0.1; // MON
+            const LOW_THRESHOLD_WEI = 10n ** 17n; // 0.1 MON in wei
 
             return {
                 address,
-                balance: balanceEth.toFixed(6),
+                balance: balanceStr,
                 balanceWei: balanceWei.toString(),
                 estimatedOps,
-                isLow: balanceEth < LOW_THRESHOLD,
+                isLow: balanceWei < LOW_THRESHOLD_WEI,
                 ok: 1,
             };
         } catch (err) {

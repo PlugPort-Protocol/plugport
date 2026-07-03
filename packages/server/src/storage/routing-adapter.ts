@@ -137,7 +137,9 @@ export class RoutingAdapter implements KVAdapter {
                 // If privateAdapter wraps the same base as publicAdapter, this might double-clear.
                 // But generally safe if it's idempotent.
                 await this.privateAdapter.clear();
-            } catch { /* ignore */ }
+            } catch (err) {
+                console.warn('[RoutingAdapter] Failed to clear private adapter:', err instanceof Error ? err.message : 'unknown');
+            }
         }
     }
 

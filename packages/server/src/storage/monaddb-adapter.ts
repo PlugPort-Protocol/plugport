@@ -108,8 +108,8 @@ export class MonadAdapter implements KVAdapter {
                     }
                 }
             }
-        } catch {
-            // Contract may not be deployed yet; silently ignore
+        } catch (err) {
+            console.warn('[MonadAdapter] Failed to load key index (contract may not be deployed):', err instanceof Error ? err.message : 'unknown error');
         }
 
         this.indexLoaded = true;
@@ -199,7 +199,8 @@ export class MonadAdapter implements KVAdapter {
             try {
                 const count = await this.contract.keyCount();
                 return Number(count);
-            } catch {
+            } catch (err) {
+                console.warn('[MonadAdapter] keyCount() RPC failed:', err instanceof Error ? err.message : 'unknown error');
                 return 0;
             }
         }

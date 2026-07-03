@@ -186,3 +186,15 @@
 - [x] PrivacyManager TTL cache (30s) eliminates repeated KV reads per request
 - [x] Silent `catch {}` blocks audited — structured `console.warn` added to critical paths
 - [x] All 200 tests passing across 9 test files; dashboard build verified clean
+
+## Phase 23: 2nd Audit Fixes (T3, R1–R3, N1–N6)
+- [x] **R1–R3**: Silent catch blocks in `monaddb-adapter.ts`, `routing-adapter.ts`, and `http-server.ts` now log `console.warn` with structured context
+- [x] **N1**: `GET /collections/:name/roles` requires auth + collection ownership (401/403)
+- [x] **N2**: `GET /collections/:name/privacy` returns reduced payload for non-owners (no ACL/contract leaked)
+- [x] **N3**: `POST /api/v1/whitelist` requires authentication (401)
+- [x] **N4**: `POST /collections/:name/roles` validates ownership at HTTP layer with 404/403 error handling
+- [x] **N5**: Integration test cleanup passes owner auth header — `afterAll` drop no longer silently fails
+- [x] **N6**: Balance endpoint uses pure BigInt string arithmetic — no `Number()` precision loss at any scale
+- [x] **T3**: 18 CSS token validation tests added to dashboard (`css-tokens.test.ts` + `vitest.config.ts`)
+- [x] Test suite updated for new auth requirements: `access-control.test.ts` (+3 tests), `protocol-integration.test.ts` (whitelist auth headers)
+- [x] All 244 tests passing (203 server + 18 dashboard CSS + 23 integration)

@@ -145,4 +145,38 @@ describe('Access Control Integration', () => {
             expect(res.statusCode).toBeGreaterThanOrEqual(400);
         });
     });
+
+    // ---- N1: GET /roles requires auth + ownership ----
+
+    describe('N1: roles endpoint auth', () => {
+        it('should reject GET /roles without auth', async () => {
+            const res = await app.inject({
+                method: 'GET',
+                url: '/api/v1/collections/private_col/roles',
+            });
+            expect(res.statusCode).toBe(401);
+        });
+
+        it('should reject GET /roles for non-owner', async () => {
+            const res = await app.inject({
+                method: 'GET',
+                url: '/api/v1/collections/private_col/roles',
+                headers: { 'x-test-wallet-address': '0xnottheowner' },
+            });
+            expect(res.statusCode).toBe(403);
+        });
+    });
+
+    // ---- N3: POST /whitelist requires auth ----
+
+    describe('N3: whitelist mutation auth', () => {
+        it('should reject POST /whitelist without auth', async () => {
+            const res = await app.inject({
+                method: 'POST',
+                url: '/api/v1/whitelist',
+                payload: { address: '0x123', action: 'add' },
+            });
+            expect(res.statusCode).toBe(401);
+        });
+    });
 });

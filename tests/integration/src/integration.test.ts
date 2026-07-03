@@ -23,8 +23,8 @@ describe('HTTP API Integration Tests', () => {
     const testCollection = `test_integration_${Date.now()}`;
 
     afterAll(async () => {
-        // Cleanup
-        await post(`/api/v1/collections/${testCollection}/drop`, {});
+        // N5 fix: Pass owner auth header so cleanup succeeds even for private collections
+        await post(`/api/v1/collections/${testCollection}/drop`, {}, { 'x-test-wallet-address': '0xTestOwner' });
     });
 
     describe('Health', () => {
@@ -232,7 +232,7 @@ describe('HTTP API Integration Tests', () => {
             expect(status).toBe(200);
             expect(data.ok).toBe(1);
 
-            const getRes = await get(`/api/v1/collections/${testCollection}/roles`);
+            const getRes = await get(`/api/v1/collections/${testCollection}/roles`, { 'x-test-wallet-address': '0xTestOwner' });
             expect(getRes.data.accessRoles['0x123']).toBe(1);
         });
 
@@ -245,7 +245,7 @@ describe('HTTP API Integration Tests', () => {
             expect(data.ok).toBe(1);
 
             // Verify it was removed
-            const getRes = await get(`/api/v1/collections/${testCollection}/roles`);
+            const getRes = await get(`/api/v1/collections/${testCollection}/roles`, { 'x-test-wallet-address': '0xTestOwner' });
             expect(getRes.data.accessRoles['0x123']).toBeUndefined();
         });
     });

@@ -141,6 +141,7 @@ describe('Protocol Integration', () => {
                 method: 'POST',
                 url: '/api/v1/whitelist',
                 payload: { address: '0xDDEEFF', action: 'add' },
+                headers: { 'x-test-wallet-address': '0xAdminUser' },
             });
             expect(res.statusCode).toBe(200);
 
@@ -154,11 +155,13 @@ describe('Protocol Integration', () => {
                 method: 'POST',
                 url: '/api/v1/whitelist',
                 payload: { address: '0x111111', action: 'add' },
+                headers: { 'x-test-wallet-address': '0xAdminUser' },
             });
             await app.inject({
                 method: 'POST',
                 url: '/api/v1/whitelist',
                 payload: { address: '0x111111', action: 'add' },
+                headers: { 'x-test-wallet-address': '0xAdminUser' },
             });
 
             const res = await app.inject({ method: 'GET', url: '/api/v1/whitelist' });
@@ -173,6 +176,7 @@ describe('Protocol Integration', () => {
                 method: 'POST',
                 url: '/api/v1/whitelist',
                 payload: { address: '0x999999', action: 'add' },
+                headers: { 'x-test-wallet-address': '0xAdminUser' },
             });
 
             // Then remove
@@ -180,6 +184,7 @@ describe('Protocol Integration', () => {
                 method: 'POST',
                 url: '/api/v1/whitelist',
                 payload: { address: '0x999999', action: 'remove' },
+                headers: { 'x-test-wallet-address': '0xAdminUser' },
             });
             expect(res.statusCode).toBe(200);
 
@@ -192,6 +197,7 @@ describe('Protocol Integration', () => {
                 method: 'POST',
                 url: '/api/v1/whitelist',
                 payload: { action: 'add' },
+                headers: { 'x-test-wallet-address': '0xAdminUser' },
             });
             expect(res.statusCode).toBe(400);
         });

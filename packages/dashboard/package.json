@@ -6,7 +6,9 @@
         "dev": "next dev -p 3000",
         "build": "next build",
         "start": "next start -p 3000",
-        "lint": "next lint"
+        "lint": "next lint",
+        "test": "vitest run",
+        "test:visual": "vitest run src/__tests__/css-tokens.test.ts"
     },
     "dependencies": {
         "@plugport/shared": "workspace:*",
@@ -26,6 +28,7 @@
         "@types/node": "^22.0.0",
         "@types/react": "^19.0.0",
         "@types/react-dom": "^19.0.0",
-        "typescript": "^5.7.0"
+        "typescript": "^5.7.0",
+        "vitest": "^3.2.0"
     }
 }

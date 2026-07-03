@@ -214,3 +214,17 @@
 - [x] **I8**: Already completed in B5 — RainbowKit theme synced with `next-themes`.
 - [x] **I9**: Already completed in B2 — button colors use theme variables.
 - [x] **I10**: Audited all bare `catch {}` blocks across server package. Added structured `console.warn` to: session cookie parse (debug-gated), contract metadata parse, `PrivacyManager.getCollectionPrivacy()`, and `PrivacyManager.listOwnedCollections()`. Left timing-safe comparison catch intentionally silent (security).
+
+## 2nd Audit (02072026) — Fixes: T3, R1–R3, N1–N6
+- [x] **R1**: Added `console.warn` to `monaddb-adapter.ts` silent catches — key index load (L111) and `keyCount()` RPC (L202) now log on failure while preserving fallback behavior.
+- [x] **R2**: Added debug-gated logging to `http-server.ts` analytics fire-and-forget — `.catch(() => {})` replaced with `console.warn` gated behind `LOG_LEVEL=debug`.
+- [x] **R3**: Added `console.warn` to `routing-adapter.ts` `clear()` catch — private adapter clear failures now logged with error context.
+- [x] **N1**: Added auth + ownership check to `GET /collections/:name/roles` — returns 401 without auth, 403 for non-owners. Only the collection owner can view the full ACL.
+- [x] **N2**: Reduced `GET /collections/:name/privacy` payload — non-owners/unauthenticated callers only see `{ mode, ownerAddress }`, no ACL or contract address leaked.
+- [x] **N3**: Added auth check to `POST /api/v1/whitelist` — whitelist mutation now requires authentication (401 without).
+- [x] **N4**: Added explicit ownership check + 404/403 handling to `POST /collections/:name/roles` — "no privacy settings" returns 404, non-owner returns 403.
+- [x] **N5**: Fixed integration test `afterAll` cleanup — `drop` call now passes `x-test-wallet-address: 0xTestOwner` header; `GET /roles` tests updated with auth headers.
+- [x] **N6**: Replaced `Number(BigInt)` in balance endpoint with pure BigInt string arithmetic — `wholePart / fracPart` formatting and `isLow` comparison use only BigInt.
+- [x] **T3**: Created 18 CSS token validation tests (`css-tokens.test.ts`) — validates `:root` tokens, dark theme overrides, button variable usage. Added `vitest` to dashboard.
+- [x] Updated `access-control.test.ts` (+3 tests for N1/N3) and `protocol-integration.test.ts` (whitelist tests with auth headers).
+- [x] All 244 tests passing (203 server + 18 dashboard CSS + 23 integration).
