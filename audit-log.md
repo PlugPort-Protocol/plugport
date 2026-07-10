@@ -228,3 +228,11 @@
 - [x] **T3**: Created 18 CSS token validation tests (`css-tokens.test.ts`) — validates `:root` tokens, dark theme overrides, button variable usage. Added `vitest` to dashboard.
 - [x] Updated `access-control.test.ts` (+3 tests for N1/N3) and `protocol-integration.test.ts` (whitelist tests with auth headers).
 - [x] All 244 tests passing (203 server + 18 dashboard CSS + 23 integration).
+
+## Auth Hardening: Rate Limiting + CSRF Protection
+- [x] **Auth Rate Limiting**: Per-route rate limits on auth endpoints — `POST /auth/nonce` (10/min), `POST /auth/verify` (5/min), `GET /auth/me` (30/min), `POST /auth/logout` (10/min). Global 100/10s limit retained for all other endpoints.
+- [x] **CSRF Protection**: Double-submit cookie pattern for session-authenticated (SIWE) mutations. CSRF token generated on `/auth/verify`, stored in encrypted session + non-httpOnly `plugport_csrf` cookie. Validated on POST/PUT/DELETE for cookie-authed users. API key and test backdoor auth exempt.
+- [x] Dashboard `api.ts` reads `plugport_csrf` cookie and attaches `x-csrf-token` header on all mutations (POST/PUT/DELETE). Auth endpoints (`/auth/*`) exempt.
+- [x] CSRF cookie cleared on `/auth/logout` alongside session destruction.
+- [x] Created `auth-security.test.ts` — 5 tests covering rate limiting enforcement (429 on excess nonce/verify requests) and CSRF exemptions (test backdoor, API key, GET).
+- [x] All 249 tests passing (208 server + 18 dashboard CSS + 23 integration).

@@ -6,7 +6,7 @@ import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import cookie from '@fastify/cookie';
 import rateLimit from '@fastify/rate-limit';
-import { timingSafeEqual } from 'crypto';
+import { timingSafeEqual, randomBytes } from 'crypto';
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { getIronSession } from 'iron-session';
 import { SiweMessage, generateNonce as siweGenerateNonce } from 'siwe';
@@ -116,6 +116,15 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
             const session = await getIronSession<SessionData>(request.raw, reply.raw, sessionOptions);
             if (session.address) {
                 request.user = { address: session.address, authMethod: 'wallet' };
+
+                // CSRF validation for state-changing requests (session-authed only)
+                const method = request.method;
+                if (method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS') {
+                    const csrfHeader = request.headers['x-csrf-token'] as string;
+                    if (!session.csrfToken || csrfHeader !== session.csrfToken) {
+                        return reply.status(403).send({ ok: 0, errmsg: 'CSRF token missing or invalid' });
+                    }
+                }
                 return;
             }
         } catch (err) {
@@ -129,6 +138,7 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
         const xApiKey = request.headers['x-api-key'] as string;
 
         // Method 2: Wallet-linked API key (pp_live_... or pp_test_...)
+        // API key auth does NOT require CSRF tokens (no cookie-based session)
         const rawKey = xApiKey || (authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : undefined);
         if (rawKey?.startsWith('pp_')) {
             const validation = await apiKeyManager.validateKey(rawKey);
@@ -756,7 +766,9 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
     // SIWE Authentication Endpoints (cookie-based via iron-session)
     // ════════════════════════════════════════════════════════
 
-    app.post('/api/v1/auth/nonce', async (
+    app.post('/api/v1/auth/nonce', {
+        config: { rateLimit: { max: 10, timeWindow: '1 minute' } },
+    }, async (
         req: FastifyRequest<{ Body: { address: string } }>,
         reply: FastifyReply,
     ) => {
@@ -774,7 +786,9 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
         return { nonce, ok: 1 };
     });
 
-    app.post('/api/v1/auth/verify', async (
+    app.post('/api/v1/auth/verify', {
+        config: { rateLimit: { max: 5, timeWindow: '1 minute' } },
+    }, async (
         req: FastifyRequest<{ Body: { message: string; signature: string } }>,
         reply: FastifyReply,
     ) => {
@@ -796,7 +810,20 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
             session.address = fields.address.toLowerCase();
             session.chainId = fields.chainId;
             session.nonce = undefined; // Consume nonce (one-time use)
+
+            // Generate CSRF token for double-submit cookie pattern
+            const csrfToken = randomBytes(32).toString('hex');
+            session.csrfToken = csrfToken;
             await session.save();
+
+            // Set non-httpOnly CSRF cookie so dashboard JS can read it
+            reply.setCookie('plugport_csrf', csrfToken, {
+                httpOnly: false,
+                secure: process.env.NODE_ENV === 'production',
+                sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+                path: '/',
+                maxAge: 60 * 60 * 24, // 24 hours
+            });
 
             return { address: session.address, ok: 1 };
         } catch (err) {
@@ -804,7 +831,9 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
         }
     });
 
-    app.get('/api/v1/auth/me', async (req: FastifyRequest, reply: FastifyReply) => {
+    app.get('/api/v1/auth/me', {
+        config: { rateLimit: { max: 30, timeWindow: '1 minute' } },
+    }, async (req: FastifyRequest, reply: FastifyReply) => {
         // Read session from cookie (also populated by middleware for non-auth routes)
         const session = await getIronSession<SessionData>(req.raw, reply.raw, sessionOptions);
         if (!session.address) {
@@ -813,9 +842,17 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
         return { address: session.address, chainId: session.chainId, ok: 1 };
     });
 
-    app.post('/api/v1/auth/logout', async (req: FastifyRequest, reply: FastifyReply) => {
+    app.post('/api/v1/auth/logout', {
+        config: { rateLimit: { max: 10, timeWindow: '1 minute' } },
+    }, async (req: FastifyRequest, reply: FastifyReply) => {
         const session = await getIronSession<SessionData>(req.raw, reply.raw, sessionOptions);
         session.destroy();
+        // Clear CSRF cookie alongside session
+        reply.clearCookie('plugport_csrf', {
+            path: '/',
+            secure: process.env.NODE_ENV === 'production',
+            sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+        });
         return { ok: 1 };
     });
 

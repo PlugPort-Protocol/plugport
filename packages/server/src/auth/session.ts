@@ -24,6 +24,8 @@ export interface SessionData {
     chainId?: number;
     /** Pre-auth: pending nonce for SIWE verification */
     nonce?: string;
+    /** Double-submit CSRF token for mutation protection */
+    csrfToken?: string;
 }
 
 // ---- Session Secret Derivation ----

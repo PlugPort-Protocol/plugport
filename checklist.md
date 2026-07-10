@@ -198,3 +198,14 @@
 - [x] **T3**: 18 CSS token validation tests added to dashboard (`css-tokens.test.ts` + `vitest.config.ts`)
 - [x] Test suite updated for new auth requirements: `access-control.test.ts` (+3 tests), `protocol-integration.test.ts` (whitelist auth headers)
 - [x] All 244 tests passing (203 server + 18 dashboard CSS + 23 integration)
+
+## Phase 24: Auth Hardening (Rate Limiting + CSRF)
+- [x] Per-route rate limits on auth endpoints: `/auth/nonce` (10/min), `/auth/verify` (5/min), `/auth/me` (30/min), `/auth/logout` (10/min)
+- [x] Double-submit CSRF cookie pattern for session-authenticated (SIWE) mutations
+- [x] CSRF token generated on `/auth/verify`, stored in encrypted session + non-httpOnly `plugport_csrf` cookie
+- [x] `onRequest` middleware validates `x-csrf-token` header on POST/PUT/DELETE for cookie-authed users
+- [x] API key auth, test backdoor, and GET/HEAD/OPTIONS exempt from CSRF
+- [x] Dashboard `api.ts` reads `plugport_csrf` cookie and attaches `x-csrf-token` header on mutations
+- [x] CSRF cookie cleared on `/auth/logout` alongside session destruction
+- [x] Auth security tests: 5 new tests (rate limit 429 enforcement, CSRF exemptions)
+- [x] All 249 tests passing (208 server + 18 dashboard CSS + 23 integration)

@@ -38,6 +38,16 @@ function getCommonOptions(): RequestInit {
     return options;
 }
 
+/**
+ * Read the CSRF token from the non-httpOnly `plugport_csrf` cookie.
+ * Returns undefined if not found (pre-auth or API key auth).
+ */
+function getCsrfToken(): string | undefined {
+    if (typeof document === 'undefined') return undefined;
+    const match = document.cookie.match(/(?:^|;\s*)plugport_csrf=([^;]*)/);
+    return match?.[1];
+}
+
 // ---- React Hook ----
 
 export function useApi<T>(path: string, options?: { autoFetch?: boolean }) {
@@ -87,11 +97,13 @@ export async function apiPost<T>(path: string, body: unknown): Promise<T> {
     const timeoutId = setTimeout(() => controller.abort(), 10000);
     try {
         const common = getCommonOptions();
+        const csrfToken = getCsrfToken();
         const res = await fetch(`${getApiBase()}${path}`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
                 ...(common.headers as Record<string, string> || {}),
+                ...(csrfToken && !path.startsWith('/api/v1/auth/') ? { 'x-csrf-token': csrfToken } : {}),
             },
             body: JSON.stringify(body),
             signal: controller.signal,
@@ -135,10 +147,16 @@ export async function apiDelete<T>(path: string): Promise<T> {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 10000);
     try {
+        const common = getCommonOptions();
+        const csrfToken = getCsrfToken();
         const res = await fetch(`${getApiBase()}${path}`, {
             method: 'DELETE',
+            headers: {
+                ...(common.headers as Record<string, string> || {}),
+                ...(csrfToken ? { 'x-csrf-token': csrfToken } : {}),
+            },
             signal: controller.signal,
-            ...getCommonOptions(),
+            credentials: 'include',
         });
         clearTimeout(timeoutId);
         const json = await res.json();
@@ -158,11 +176,13 @@ export async function apiPut<T>(path: string, body: unknown): Promise<T> {
     const timeoutId = setTimeout(() => controller.abort(), 10000);
     try {
         const common = getCommonOptions();
+        const csrfToken = getCsrfToken();
         const res = await fetch(`${getApiBase()}${path}`, {
             method: 'PUT',
             headers: {
                 'Content-Type': 'application/json',
                 ...(common.headers as Record<string, string> || {}),
+                ...(csrfToken ? { 'x-csrf-token': csrfToken } : {}),
             },
             body: JSON.stringify(body),
             signal: controller.signal,
