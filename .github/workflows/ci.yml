@@ -3,13 +3,17 @@ name: CI/CD
 
 on:
   push:
-    branches: [main, develop, v3]
+    branches: [main, 'dev*', 'v*']
   pull_request:
-    branches: [main, v3]
+    branches: [main, 'dev*', 'v*']
 
 env:
   NODE_VERSION: '22'
   PNPM_VERSION: '9.15.0'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   # ---- Lint & Type Check ----
@@ -36,7 +40,6 @@ jobs:
   test-unit:
     name: Unit Tests
     runs-on: ubuntu-latest
-    needs: lint
     steps:
       - uses: actions/checkout@v4
 
@@ -57,7 +60,6 @@ jobs:
   test-integration:
     name: Integration Tests
     runs-on: ubuntu-latest
-    needs: test-unit
     steps:
       - uses: actions/checkout@v4
 
@@ -80,7 +82,7 @@ jobs:
   build-docker:
     name: Build Docker
     runs-on: ubuntu-latest
-    needs: [test-unit, test-integration]
+    needs: [lint, test-unit, test-integration]
     if: github.ref == 'refs/heads/main'
     steps:
       - uses: actions/checkout@v4
@@ -116,7 +118,7 @@ jobs:
   publish-npm:
     name: Publish NPM
     runs-on: ubuntu-latest
-    needs: [test-unit, test-integration]
+    needs: [lint, test-unit, test-integration]
     if: github.ref == 'refs/heads/main'
     steps:
       - uses: actions/checkout@v4
@@ -134,15 +136,11 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm -r build
 
-      - run: pnpm --filter @plugport/shared publish --access public --no-git-checks
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-      - run: pnpm --filter @plugport/sdk publish --access public --no-git-checks
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-      - run: pnpm --filter @plugport/cli publish --access public --no-git-checks
+      - name: Publish NPM Packages
+        run: |
+          pnpm --filter @plugport/shared publish --access public --no-git-checks
+          pnpm --filter @plugport/sdk publish --access public --no-git-checks
+          pnpm --filter @plugport/cli publish --access public --no-git-checks
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
