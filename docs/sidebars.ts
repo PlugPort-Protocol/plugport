@@ -24,6 +24,36 @@ const sidebars: SidebarsConfig = {
         },
         {
             type: 'category',
+            label: 'Protocols',
+            collapsed: false,
+            link: {
+                type: 'generated-index',
+                title: 'Protocol Guides',
+                description: 'Connect via MongoDB, PostgreSQL, MySQL, Redis, or HTTP REST.',
+                slug: '/category/protocols',
+            },
+            items: [
+                'protocols/protocols',
+                'advanced/joins',
+            ],
+        },
+        {
+            type: 'category',
+            label: 'Smart Contracts',
+            collapsed: true,
+            link: {
+                type: 'generated-index',
+                title: 'Smart Contracts',
+                description: 'On-chain components: PlugPortStore, PrivateStore, MessageBroker, and Relational.',
+                slug: '/category/smart-contracts',
+            },
+            items: [
+                'smart-contracts/message-broker',
+                'smart-contracts/private-store',
+            ],
+        },
+        {
+            type: 'category',
             label: 'SDK Reference',
             collapsed: false,
             link: {
@@ -56,6 +86,7 @@ const sidebars: SidebarsConfig = {
                 'guides/deployment',
                 'guides/docker',
                 'guides/kubernetes',
+                'guides/vercel',
                 'guides/monitoring',
                 'guides/configuration',
             ],

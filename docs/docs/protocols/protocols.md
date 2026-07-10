@@ -1,3 +1,10 @@
+---
+id: protocols
+title: Multi-Protocol Guides
+sidebar_label: Protocol Guides
+sidebar_position: 1
+---
+
 # PlugPort Protocol Guides
 
 ## Architecture
@@ -169,10 +176,10 @@ redis-cli -p 6379
 | Category | Commands |
 |----------|----------|
 | String | `GET`, `SET`, `DEL`, `MGET`, `MSET`, `INCR`, `DECR`, `APPEND`, `STRLEN`, `SETNX` |
-| Hash | `HSET`, `HGET`, `HGETALL`, `HDEL`, `HMSET`, `HMGET`, `HKEYS`, `HVALS`, `HEXISTS`, `HLEN` |
+| Hash | `HSET`, `HGET`, `HGETALL`, `HDEL`, `HKEYS`, `HVALS`, `HEXISTS`, `HLEN` |
 | List | `LPUSH`, `RPUSH`, `LPOP`, `RPOP`, `LLEN`, `LRANGE` |
 | Set | `SADD`, `SREM`, `SMEMBERS`, `SISMEMBER`, `SCARD` |
-| Key | `EXISTS`, `TYPE`, `KEYS`, `TTL`, `PERSIST`, `RENAME`, `EXPIRE` |
+| Key | `EXISTS`, `TYPE`, `KEYS`, `TTL`, `PTTL`, `PERSIST`, `EXPIRE`, `PEXPIRE` |
 | Pub/Sub | `SUBSCRIBE`, `PUBLISH`, `UNSUBSCRIBE`, `PSUBSCRIBE` |
 | Server | `PING`, `INFO`, `DBSIZE`, `FLUSHDB`, `SELECT`, `AUTH`, `COMMAND` |
 
@@ -188,7 +195,7 @@ redis-cli -p 6379 SUBSCRIBE news
 redis-cli -p 6379 PUBLISH news "Hello from Monad!"
 ```
 
-See [Message Broker docs](../smart-contracts/message-broker.md) for details.
+See [Message Broker docs](/docs/smart-contracts/message-broker) for details.
 
 ### Client Libraries
 
@@ -235,6 +242,8 @@ Always enabled on the HTTP port.
 | POST | `/api/v1/:collection/update` | Update documents |
 | POST | `/api/v1/:collection/delete` | Delete documents |
 | POST | `/api/v1/:collection/createIndex` | Create index |
+
+This is a summary of core endpoints. The HTTP API includes 40+ endpoints covering authentication (SIWE), API key management, multi-protocol SQL/Redis, analytics, privacy, and more. See the **[full HTTP API Reference](/docs/api-reference/http-api)** for complete documentation.
 
 ---
 

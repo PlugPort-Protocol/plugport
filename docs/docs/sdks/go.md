@@ -153,6 +153,16 @@ name, err := coll.CreateIndex(ctx, "email", true) // unique
 err = coll.Drop(ctx)
 ```
 
+#### RBAC (Access Control)
+
+```go
+// Grant read access (role: 1 = read, 2 = write)
+_, err := coll.GrantRole(ctx, "0xabc...", 1)
+
+// Revoke access
+_, err := coll.RevokeRole(ctx, "0xabc...")
+```
+
 ## Error Handling
 
 ```go

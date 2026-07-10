@@ -95,3 +95,33 @@ Output:
   Uptime:     2h 45m
   Keys:       1,234
 ```
+
+### `plugport protocol`
+
+Manage database protocol frontends (MongoDB, PostgreSQL, MySQL, Redis).
+
+```bash
+# List all protocols and their status
+plugport protocol list
+
+# Enable a protocol
+plugport protocol enable postgresql
+
+# Disable a protocol
+plugport protocol disable mysql
+```
+
+### `plugport whitelist`
+
+Manage the private store address whitelist.
+
+```bash
+# Add an address
+plugport whitelist add 0xabc123...
+
+# Remove an address
+plugport whitelist remove 0xabc123...
+
+# List all whitelisted addresses
+plugport whitelist list
+```

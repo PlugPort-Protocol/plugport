@@ -1,3 +1,10 @@
+---
+id: joins
+title: SQL JOINs Performance Guide
+sidebar_label: SQL JOINs
+sidebar_position: 1
+---
+
 # SQL JOINs in PlugPort — Performance Guide
 
 ## Overview
@@ -75,12 +82,12 @@ SELECT * FROM sizes CROSS JOIN colors;
 
 | Join Size | Memory Estimate | Time Estimate |
 |-----------|-----------------|---------------|
-| 100 × 100 | ~1 MB | <50ms |
-| 1K × 1K | ~10 MB | <200ms |
-| 10K × 10K | ~100 MB | <2s |
+| 100 × 100 | ~1 MB | &lt;50ms |
+| 1K × 1K | ~10 MB | &lt;200ms |
+| 10K × 10K | ~100 MB | &lt;2s |
 | 100K × 100K | ~1 GB | ~20s |
 
-> **Recommendation:** For joins > 10K rows per side, add WHERE clauses to reduce the working set.
+> **Recommendation:** For joins with more than 10K rows per side, add WHERE clauses to reduce the working set.
 
 ## Multi-Table JOINs
 

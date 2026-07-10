@@ -1,3 +1,10 @@
+---
+id: private-store
+title: PlugPortPrivateStore — Encrypted Database with ACL
+sidebar_label: Private Store
+sidebar_position: 2
+---
+
 # PlugPortPrivateStore — Encrypted Database with ACL
 
 ## Overview

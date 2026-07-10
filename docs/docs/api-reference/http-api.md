@@ -443,6 +443,28 @@ Update a single document.
 }
 ```
 
+### `POST /api/v1/collections/:name/updateMany`
+
+Update all documents matching the filter.
+
+**Request:**
+```json
+{
+  "filter": { "status": "inactive" },
+  "update": { "$set": { "archived": true } }
+}
+```
+
+**Response:**
+```json
+{
+  "acknowledged": true,
+  "matchedCount": 5,
+  "modifiedCount": 5,
+  "upsertedId": null
+}
+```
+
 ### `POST /api/v1/collections/:name/deleteOne`
 
 Delete a single document.
@@ -515,6 +537,265 @@ Drop an index by name.
 **Response:**
 ```json
 { "acknowledged": true }
+```
+
+### `POST /api/v1/collections/:name/count`
+
+Count documents matching a filter.
+
+**Request:**
+```json
+{ "filter": { "status": "active" } }
+```
+
+**Response:**
+```json
+{ "count": 42, "ok": 1 }
+```
+
+### `POST /api/v1/collections/:name/distinct`
+
+Get distinct values of a field across documents.
+
+**Request:**
+```json
+{ "field": "category", "filter": {} }
+```
+
+**Response:**
+```json
+{ "values": ["electronics", "clothing", "books"], "ok": 1 }
+```
+
+---
+
+## Multi-Protocol Endpoints
+
+PlugPort supports SQL and Redis command interfaces that translate to the underlying document store.
+
+### `GET /api/v1/protocols`
+
+List all protocol frontends and their status.
+
+**Response:**
+```json
+{
+  "protocols": [
+    { "name": "mongodb", "enabled": true, "port": 27017 },
+    { "name": "postgresql", "enabled": false },
+    { "name": "redis", "enabled": true, "port": 6379 }
+  ],
+  "ok": 1
+}
+```
+
+### `POST /api/v1/sql`
+
+Execute a SQL query translated to PlugPort document operations. Supports SELECT, INSERT, UPDATE, DELETE, CREATE INDEX, and DROP INDEX.
+
+**Request:**
+```json
+{ "query": "SELECT name, age FROM users WHERE age >= 25 ORDER BY age DESC LIMIT 10" }
+```
+
+**Response:**
+```json
+{
+  "ok": 1,
+  "result": {
+    "cursor": {
+      "firstBatch": [
+        { "_id": "...", "name": "Alice", "age": 30 }
+      ],
+      "id": 0
+    },
+    "ok": 1
+  }
+}
+```
+
+### `POST /api/v1/redis`
+
+Execute a Redis command via the RESP protocol translation layer.
+
+**Request:**
+```json
+{ "command": ["SET", "mykey", "myvalue"] }
+```
+
+**Response:**
+```json
+{ "ok": 1, "result": "OK" }
+```
+
+Supported commands: `GET`, `SET`, `DEL`, `MGET`, `MSET`, `KEYS`, `EXISTS`, `PUBLISH`, `SUBSCRIBE`.
+
+### `GET /api/v1/redis/stream`
+
+Server-Sent Events (SSE) stream for Redis Pub/Sub messages.
+
+**Query Parameters:**
+- `channels` (required): Comma-separated list of channels to subscribe to.
+
+**Example:**
+```bash
+curl -N "http://localhost:8080/api/v1/redis/stream?channels=chat,notifications"
+```
+
+**SSE Events:**
+```
+data: {"channel": "chat", "message": "Hello world"}
+
+data: {"event": "subscribe", "channel": "chat", "count": 1}
+```
+
+### `POST /api/v1/protocols/:name/enable`
+
+Enable a protocol frontend. Requires authentication.
+
+**Response:**
+```json
+{ "ok": 1, "protocol": "postgresql", "enabled": true }
+```
+
+### `POST /api/v1/protocols/:name/disable`
+
+Disable a protocol frontend. Requires authentication.
+
+**Response:**
+```json
+{ "ok": 1, "protocol": "postgresql", "enabled": false }
+```
+
+---
+
+## API Key Management
+
+All API key endpoints require session authentication (SIWE). Keys are scoped to the authenticated wallet.
+
+### `POST /api/v1/keys/generate`
+
+Generate a new wallet-linked API key.
+
+**Request:**
+```json
+{
+  "label": "Production Backend",
+  "permissions": ["read", "write"],
+  "rateLimit": 100
+}
+```
+
+**Response:**
+```json
+{
+  "apiKey": "pp_live_abc123...",
+  "hash": "sha256_hash",
+  "metadata": {
+    "label": "Production Backend",
+    "permissions": ["read", "write"],
+    "rateLimit": 100,
+    "createdAt": 1720000000000
+  },
+  "ok": 1
+}
+```
+
+> **Important:** The full API key is only shown once. Store it securely.
+
+### `GET /api/v1/keys`
+
+List all API keys for the authenticated user.
+
+**Response:**
+```json
+{
+  "keys": [
+    {
+      "hash": "sha256_hash",
+      "label": "Production Backend",
+      "prefix": "pp_live_abc...",
+      "permissions": ["read", "write"],
+      "createdAt": 1720000000000
+    }
+  ],
+  "ok": 1
+}
+```
+
+### `DELETE /api/v1/keys/:hash`
+
+Revoke an API key. Returns 404 if key not found or not owned by you.
+
+**Response:**
+```json
+{ "ok": 1, "revoked": true }
+```
+
+### `POST /api/v1/keys/:hash/rotate`
+
+Rotate an API key — generates a new key value with the same metadata.
+
+**Response:**
+```json
+{
+  "apiKey": "pp_live_newkey...",
+  "hash": "new_sha256_hash",
+  "metadata": { "label": "Production Backend", "permissions": ["read", "write"] },
+  "ok": 1
+}
+```
+
+### `PUT /api/v1/keys/:hash/permissions`
+
+Update the permissions of an API key.
+
+**Request:**
+```json
+{ "permissions": ["read"] }
+```
+
+**Response:**
+```json
+{ "ok": 1, "updated": true }
+```
+
+Permission values: `"all"`, `"read"`, `"write"`, `"admin"`.
+
+### `GET /api/v1/keys/:hash/analytics`
+
+Get usage analytics for a specific API key.
+
+**Query Parameters:**
+- `days` (optional, default: 7): Number of days to include.
+
+**Response:**
+```json
+{
+  "analytics": {
+    "totalRequests": 1234,
+    "byEndpoint": { "/api/v1/collections/users/find": 500 },
+    "byDay": [{ "date": "2026-07-10", "count": 200 }]
+  },
+  "ok": 1
+}
+```
+
+### `GET /api/v1/analytics/overview`
+
+Get aggregated analytics across all your API keys.
+
+**Response:**
+```json
+{
+  "overview": {
+    "totalRequests": 5000,
+    "byKey": [
+      { "hash": "sha256_hash", "label": "Production Backend", "count": 3000 }
+    ]
+  },
+  "ok": 1
+}
 ```
 
 ---

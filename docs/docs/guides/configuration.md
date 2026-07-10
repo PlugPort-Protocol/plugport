@@ -11,19 +11,50 @@ All PlugPort configuration is done via environment variables. No config files ar
 
 ## Environment Variables
 
+### Core Settings
+
 | Variable | Type | Default | Description |
 |----------|------|---------|-------------|
-| `HTTP_PORT` | `number` | `8080` | HTTP API port |
-| `WIRE_PORT` | `number` | `27017` | Wire protocol port |
+| `HTTP_PORT` | `number` | `8080` | HTTP API port (also accepts `PORT` for PaaS compatibility) |
+| `WIRE_PORT` | `number` | `27017` | MongoDB wire protocol port |
 | `HOST` | `string` | `0.0.0.0` | Bind address |
 | `API_KEY` | `string` | none | Legacy global API key for HTTP auth. Prefer generating wallet-linked keys via Dashboard instead. |
 | `DASHBOARD_URL` | `string` | none | Allowed origin for CORS credentials (required in production, e.g. `https://plugport.xyz`). In dev mode, all origins are allowed. |
 | `LOG_LEVEL` | `string` | `info` | `debug`, `info`, `warn`, `error` |
 | `METRICS_ENABLED` | `boolean` | `true` | Enable Prometheus /metrics |
-| `MONADDB_ENDPOINT` | `string` | none | MonadDb RPC URL (in-memory if not set) |
-| `MONADDB_PRIVATE_KEY` | `string` | none | Server wallet private key (64 hex chars, no 0x). Also used to derive the session encryption key. |
 | `MAX_DOC_SIZE` | `number` | `1048576` | Max document size in bytes |
-| `MAX_COLLECTIONS` | `number` | `1000` | Max number of collections |
+| `IS_TESTNET` | `boolean` | `true` | Affects API key prefix (`pp_test_` vs `pp_live_`) |
+
+### Protocol Frontends
+
+| Variable | Type | Default | Description |
+|----------|------|---------|-------------|
+| `MONGODB_ENABLED` | `boolean` | `true` | Enable MongoDB wire protocol |
+| `PG_ENABLED` | `boolean` | `false` | Enable PostgreSQL wire protocol |
+| `PG_PORT` | `number` | `5432` | PostgreSQL port |
+| `MYSQL_ENABLED` | `boolean` | `false` | Enable MySQL wire protocol |
+| `MYSQL_PORT` | `number` | `3306` | MySQL port |
+| `REDIS_ENABLED` | `boolean` | `false` | Enable Redis RESP protocol |
+| `REDIS_PORT` | `number` | `6379` | Redis port |
+
+### Monad / MonadDb
+
+| Variable | Type | Default | Description |
+|----------|------|---------|-------------|
+| `MONAD_RPC_URL` | `string` | none | Monad RPC URL (in-memory storage if not set) |
+| `MONAD_PRIVATE_KEY` | `string` | none | Server wallet private key (64 hex chars, no 0x). Also used to derive the session encryption key. |
+| `MONAD_CONTRACT_ADDRESS` | `string` | none | Deployed PlugPortStore contract address |
+| `MONAD_CHAIN_ID` | `number` | none | Monad chain ID (e.g. `10143` for testnet) |
+| `MONAD_WS_URL` | `string` | none | Monad WebSocket URL for real-time event subscriptions |
+
+### Smart Contracts (Optional)
+
+| Variable | Type | Default | Description |
+|----------|------|---------|-------------|
+| `PRIVATE_STORE_CONTRACT` | `string` | none | Deployed PlugPortPrivateStore contract address |
+| `WHITELIST_ADDRESSES` | `string` | none | Comma-separated Ethereum addresses for private store whitelist |
+| `MESSAGEBROKER_CONTRACT_ADDRESS` | `string` | none | Deployed PlugPortMessageBroker contract address |
+| `RELATIONAL_CONTRACT_ADDRESS` | `string` | none | Deployed PlugPortRelational contract for batch JOIN reads |
 
 ## Quick Start with .env.example
 
@@ -57,8 +88,9 @@ API_KEY=your-production-key \
 DASHBOARD_URL=https://plugport.xyz \
 LOG_LEVEL=warn \
 METRICS_ENABLED=true \
-MONADDB_ENDPOINT=https://monaddb-rpc.monad.xyz/v1 \
-MONADDB_PRIVATE_KEY=your_64_char_hex_private_key \
+MONAD_RPC_URL=https://monad-testnet.drpc.org \
+MONAD_PRIVATE_KEY=your_64_char_hex_private_key \
+MONAD_CONTRACT_ADDRESS=0xYourDeployedContractAddress \
 node packages/server/dist/index.js
 ```
 

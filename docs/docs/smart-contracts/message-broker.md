@@ -1,3 +1,10 @@
+---
+id: message-broker
+title: PlugPortMessageBroker — On-Chain Pub/Sub
+sidebar_label: Message Broker
+sidebar_position: 1
+---
+
 # PlugPortMessageBroker — On-Chain Pub/Sub
 
 ## Overview

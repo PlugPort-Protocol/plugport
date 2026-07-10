@@ -59,7 +59,7 @@ const features = [
     {
         title: 'Multi-Protocol Access',
         emoji: '🌐',
-        description: 'Connect via MongoDB wire protocol (port 27017) or REST HTTP API (port 8080). Both served from one process.',
+        description: 'Connect via MongoDB (27017), PostgreSQL (5432), MySQL (3306), Redis (6379), or HTTP REST (8080). All protocols share the same storage backend.',
     },
     {
         title: 'SDKs for Every Stack',

@@ -4,7 +4,7 @@ import type * as Preset from '@docusaurus/preset-classic';
 
 const config: Config = {
     title: 'PlugPort',
-    tagline: 'MongoDB-Compatible Document Store on MonadDb',
+    tagline: 'Multi-Protocol Database on MonadDb — MongoDB, SQL, Redis in One',
     favicon: 'img/favicon.ico',
 
     // GitHub Pages deployment config

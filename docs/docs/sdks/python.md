@@ -179,6 +179,22 @@ index_name = users.create_index("email", unique=True)
 count = users.count_documents({"status": "active"})
 ```
 
+#### `grant_role(address, role) -> dict`
+
+Grant an access role to a wallet address on this collection.
+
+```python
+users.grant_role("0xabc...", 1)  # 1 = read, 2 = write
+```
+
+#### `revoke_role(address) -> dict`
+
+Revoke access for a wallet address.
+
+```python
+users.revoke_role("0xabc...")
+```
+
 ## Error Handling
 
 ```python

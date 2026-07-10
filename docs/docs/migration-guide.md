@@ -5,9 +5,9 @@ sidebar_position: 2
 slug: /migration-guide
 ---
 
-# Migration Guide: MongoDB to PlugPort
+# Migration Guide
 
-PlugPort is designed as a drop-in replacement for MongoDB. This guide covers every migration path, from zero-code changes (wire protocol) to SDK-level migrations.
+PlugPort is designed as a drop-in replacement for MongoDB, and also accepts connections from PostgreSQL, MySQL, Redis, and SQLite clients. This guide covers migration paths from every supported protocol.
 
 ## Migration Strategies
 
@@ -175,7 +175,7 @@ Remove the MongoDB dependency entirely.
 | `$gt/$lt/$gte/$lte` | ✅ Full |
 | `$in/$eq/$ne` | ✅ Full |
 | `$and` | ✅ Full |
-| `$or` | ❌ Roadmap |
+| `$or` | ✅ Full |
 | `$regex` | ❌ Roadmap |
 | Sort | ✅ Full |
 | Projection (include/exclude) | ✅ Full |
@@ -242,3 +242,140 @@ plugport migrate --file users_dedup.json --collection users
 ### Performance differences
 
 PlugPort's query planner currently optimizes for single-field index scans. Complex multi-field queries fall back to collection scans. Create indexes on your most-queried fields for best performance.
+
+---
+
+## Migrating from PostgreSQL / MySQL
+
+PlugPort's SQL Translation Layer lets you connect with `psql`, `mysql`, or any PostgreSQL/MySQL client library and use familiar SQL syntax.
+
+### Enable the Protocol
+
+```bash
+# In .env
+PG_ENABLED=true    # PostgreSQL on port 5432
+MYSQL_ENABLED=true # MySQL on port 3306
+```
+
+### Connect with Your Existing Client
+
+```bash
+# PostgreSQL
+psql -h localhost -p 5432
+
+# MySQL
+mysql -h localhost -P 3306
+```
+
+### Supported SQL Statements
+
+| Statement | Status | Notes |
+|-----------|--------|-------|
+| `SELECT` with `WHERE`, `ORDER BY`, `LIMIT`, `OFFSET` | ✅ Supported | Translates to document find |
+| `INSERT INTO ... VALUES` | ✅ Supported | Single and batch |
+| `UPDATE ... SET ... WHERE` | ✅ Supported | Translates to updateOne/updateMany |
+| `DELETE FROM ... WHERE` | ✅ Supported | Translates to deleteOne/deleteMany |
+| `CREATE INDEX` | ✅ Supported | Single-field indexes |
+| `DROP INDEX` | ✅ Supported | |
+| `CREATE TABLE` | ✅ Supported | Creates a collection |
+| `DROP TABLE` | ✅ Supported | Drops a collection |
+| `SHOW TABLES` / `SHOW DATABASES` | ✅ Supported | |
+| `DESCRIBE` / `DESC` | ✅ Supported | |
+| `JOIN` (INNER, LEFT, RIGHT, CROSS) | ✅ Supported | Via JoinEngine |
+| `COUNT`, `SUM`, `AVG`, `MIN`, `MAX` | ✅ Supported | Aggregation functions |
+| `BEGIN` / `COMMIT` / `ROLLBACK` | ⚠️ Acknowledged | No-op (transactions not supported) |
+| `PRAGMA` | ⚠️ Ignored | SQLite compat |
+
+### HTTP API Alternative
+
+You can also execute SQL via the HTTP API:
+
+```bash
+curl -X POST http://localhost:8080/api/v1/sql \
+  -H "Content-Type: application/json" \
+  -d '{"query": "SELECT * FROM users WHERE age >= 25 ORDER BY age DESC LIMIT 10"}'
+```
+
+### Key Differences from Native PostgreSQL/MySQL
+
+- **No transactions** — `BEGIN`/`COMMIT` are acknowledged but are no-ops
+- **No stored procedures or triggers** — Not supported
+- **No foreign keys** — Use the JoinEngine for cross-collection queries
+- **Document-based storage** — Tables are collections of JSON documents internally
+- **Schema-free** — No need for `ALTER TABLE`; documents can have varying fields
+
+---
+
+## Migrating from Redis
+
+PlugPort implements the RESP protocol and supports 50+ Redis commands. Connect with `redis-cli` or any Redis client library.
+
+### Enable the Protocol
+
+```bash
+# In .env
+REDIS_ENABLED=true  # Redis on port 6379
+```
+
+### Connect
+
+```bash
+redis-cli -h localhost -p 6379
+```
+
+### Supported Command Groups
+
+| Category | Commands | Notes |
+|----------|----------|-------|
+| **String** | `GET`, `SET`, `SETNX`, `MGET`, `MSET`, `INCR`, `DECR`, `APPEND`, `STRLEN` | ✅ Full |
+| **Hash** | `HSET`, `HGET`, `HDEL`, `HGETALL`, `HKEYS`, `HVALS`, `HLEN`, `HEXISTS` | ✅ Full |
+| **List** | `LPUSH`, `RPUSH`, `LPOP`, `RPOP`, `LRANGE`, `LLEN` | ✅ Full |
+| **Set** | `SADD`, `SREM`, `SMEMBERS`, `SISMEMBER`, `SCARD` | ✅ Full |
+| **Keys** | `DEL`, `EXISTS`, `KEYS`, `TYPE`, `EXPIRE`, `PEXPIRE`, `TTL`, `PTTL`, `PERSIST` | ✅ Full |
+| **Pub/Sub** | `PUBLISH`, `SUBSCRIBE`, `UNSUBSCRIBE`, `PSUBSCRIBE` | ✅ Full (SSE via HTTP) |
+| **Server** | `PING`, `ECHO`, `INFO`, `DBSIZE`, `FLUSHDB`, `FLUSHALL`, `SELECT`, `AUTH`, `QUIT` | ✅ Full |
+
+### HTTP API Alternative
+
+```bash
+# Execute Redis commands via HTTP
+curl -X POST http://localhost:8080/api/v1/redis \
+  -H "Content-Type: application/json" \
+  -d '{"command": ["SET", "mykey", "myvalue"]}'
+
+# Subscribe to Pub/Sub via SSE
+curl -N "http://localhost:8080/api/v1/redis/stream?channels=chat,notifications"
+```
+
+### Key Differences from Native Redis
+
+- **Persistent storage** — Data is backed by MonadDb (or in-memory in dev), not Redis's AOF/RDB
+- **No Lua scripting** — `EVAL` and `EVALSHA` are not supported
+- **No cluster mode** — Single-node only
+- **No streams** — `XADD`/`XREAD` not supported; use Pub/Sub instead
+
+---
+
+## Using @plugport/sqlite-compat
+
+The `@plugport/sqlite-compat` package provides a drop-in replacement for `better-sqlite3`, letting SQLite-based applications use PlugPort as a backend.
+
+### Installation
+
+```bash
+npm install @plugport/sqlite-compat
+```
+
+### Usage
+
+```typescript
+// Before: import Database from 'better-sqlite3';
+import Database from '@plugport/sqlite-compat';
+
+const db = new Database(':memory:');
+db.exec('CREATE TABLE users (name TEXT, age INTEGER)');
+db.exec("INSERT INTO users VALUES ('Alice', 30)");
+const rows = db.prepare('SELECT * FROM users WHERE age >= ?').all(25);
+```
+
+This routes all SQL operations through PlugPort's SQL Translation Layer, giving you the same API surface as `better-sqlite3` while storing data in PlugPort's document store.

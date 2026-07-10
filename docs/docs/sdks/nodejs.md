@@ -55,6 +55,7 @@ const client = await PlugPortClient.connect('http://localhost:8080', {
 |-----------|------|-------------|
 | `uri` | `string` | Server URL (`http://` or `plugport://`) |
 | `options.apiKey` | `string?` | API key for authentication |
+| `options.timeout` | `number?` | Request timeout in milliseconds (default: 30000) |
 
 #### `client.db(name)`
 
@@ -217,6 +218,39 @@ const stats = await users.stats();
 
 ```typescript
 const count = await users.countDocuments({ status: 'active' });
+```
+
+#### `distinct(field, filter?)`
+
+```typescript
+const categories = await products.distinct('category', { inStock: true });
+// ['electronics', 'clothing', 'books']
+```
+
+#### `updateMany(filter, update)`
+
+```typescript
+const result = await users.updateMany(
+  { status: 'inactive' },
+  { $set: { archived: true } },
+);
+console.log(result.modifiedCount); // 5
+```
+
+#### `grantRole(address, role)`
+
+Grant an access role to a wallet address on this collection.
+
+```typescript
+await users.grantRole('0xabc...', 1); // 1 = read, 2 = write
+```
+
+#### `revokeRole(address)`
+
+Revoke access for a wallet address.
+
+```typescript
+await users.revokeRole('0xabc...');
 ```
 
 #### `drop()`

@@ -161,18 +161,64 @@ Do not mix include (1) and exclude (0) in the same projection (except `_id`). Th
 }
 ```
 
+### `$inc` - Increment Fields
+
+```json
+{
+  "update": {
+    "$inc": { "views": 1, "score": -5 }
+  }
+}
+```
+
+Increments numeric fields by the specified amount. Use negative values to decrement.
+
+### `$unset` - Remove Fields
+
+```json
+{
+  "update": {
+    "$unset": { "temporaryField": "" }
+  }
+}
+```
+
+Removes the specified fields from the document.
+
+## Additional Query Operators
+
+### `$or` - Logical OR
+
+```json
+{ "$or": [{ "status": "active" }, { "role": "admin" }] }
+```
+
+Matches documents that satisfy at least one of the expressions.
+
+### `$nin` - Not In Array
+
+```json
+{ "status": { "$nin": ["deleted", "archived"] } }
+```
+
+Matches documents where the field value is not in the specified array. Inverse of `$in`.
+
+### `$exists` - Field Exists
+
+```json
+{ "email": { "$exists": true } }
+```
+
+Matches documents that have (or don't have) the specified field.
+
 ## Roadmap Operators
 
 These operators are planned for future releases:
 
 | Operator | Type | Status |
 |----------|------|--------|
-| `$or` | Logical | Planned |
 | `$not` | Logical | Planned |
 | `$regex` | Evaluation | Planned |
-| `$exists` | Element | Planned |
 | `$type` | Element | Planned |
-| `$inc` | Update | Planned |
-| `$unset` | Update | Planned |
 | `$push` | Array Update | Planned |
 | `$pull` | Array Update | Planned |

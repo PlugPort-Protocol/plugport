@@ -134,6 +134,16 @@ mongosh mongodb://localhost:27017
 > db.users.find({ age: { $gte: 25 } })
 ```
 
+## Authentication
+
+In dev mode, PlugPort operates without authentication. For production, PlugPort supports three auth methods:
+
+1. **Session Cookie (SIWE)** — Recommended. Sign-In with Ethereum via the Dashboard.
+2. **Wallet-Linked API Key** — Generated from the Dashboard. Use as `Authorization: Bearer pp_live_...`.
+3. **Legacy Static Key** — Set `API_KEY` env var. Use via `x-api-key` header.
+
+See the [HTTP API Reference](/docs/api-reference/http-api#authentication) for full details, including CSRF protection and rate limits.
+
 ## What's Next?
 
 - **[Migration Guide](./migration-guide)** - Moving from MongoDB to PlugPort

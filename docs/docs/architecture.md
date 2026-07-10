@@ -247,6 +247,30 @@ Client                    PlugPort
 
 Each message has a 16-byte header (length, requestId, opCode) followed by BSON sections. The server parses BSON, routes to DocumentStore, and serializes the response back to BSON.
 
+### 9. Multi-Protocol Architecture (`protocol-manager.ts`)
+
+PlugPort exposes the same underlying DocumentStore through multiple database protocol frontends:
+
+| Protocol | Port | Translation Layer |
+|----------|------|-------------------|
+| **MongoDB** | 27017 | Native wire protocol (OP_MSG) |
+| **PostgreSQL** | 5432 | SQL → Document ops via `sql-translator.ts` |
+| **MySQL** | 3306 | SQL → Document ops via `sql-translator.ts` |
+| **Redis** | 6379 | RESP commands → KV ops, includes Pub/Sub |
+
+The `ProtocolManager` handles lifecycle (enable/disable) for each frontend. The SQL Translation Layer (`sql-translator.ts`) parses SQL statements (SELECT, INSERT, UPDATE, DELETE, CREATE INDEX) and converts them to DocumentStore method calls. The `JoinEngine` supports hash, left, right, and cross joins across collections.
+
+Redis support includes GET/SET/DEL/KEYS for KV operations, plus PUBLISH/SUBSCRIBE for real-time messaging via SSE streams.
+
+### 10. API Key System (`api-key-manager.ts` & `analytics-recorder.ts`)
+
+Wallet-linked API keys provide programmatic access tied to a specific Ethereum address:
+
+- **Key generation**: Creates `pp_live_*` or `pp_test_*` prefixed keys with configurable permissions (`read`, `write`, `admin`, `all`) and per-key rate limits.
+- **Key rotation**: Generates a new key value while preserving metadata and ownership.
+- **Analytics recording**: Every API request made with a key is recorded — endpoint, timestamp, response time. Queryable via `/keys/:hash/analytics` and `/analytics/overview`.
+- **Permissions enforcement**: Keys can be scoped to read-only, write-only, or full access. Checked in the auth middleware before each request.
+
 ## Data Flow: Insert Operation
 
 ```

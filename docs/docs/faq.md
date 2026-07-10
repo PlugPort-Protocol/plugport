@@ -64,7 +64,7 @@ In-memory mode: limited by available RAM. MonadDb mode: effectively unlimited (l
 
 ### Does it support real-time queries?
 
-Not natively. Use the JSON metrics API (/api/v1/metrics) with polling, or the built-in dashboard that auto-refreshes every 3 seconds.
+Yes. PlugPort supports real-time messaging via Redis Pub/Sub over Server-Sent Events (SSE). Subscribe to channels with `GET /api/v1/redis/stream?channels=chat,notifications`. The dashboard also auto-refreshes metrics every 3 seconds.
 
 ---
 
@@ -72,7 +72,7 @@ Not natively. Use the JSON metrics API (/api/v1/metrics) with polling, or the bu
 
 ### Which MongoDB features are supported?
 
-See the [Migration Guide compatibility table](./migration-guide#data-format-compatibility). Key supported features: CRUD, single-field indexes, sort, projection, skip/limit, and common query operators.
+See the [Migration Guide compatibility table](./migration-guide#data-format-compatibility). Key supported features: CRUD (`insertOne`, `insertMany`, `find`, `findOne`, `updateOne`, `updateMany`, `deleteOne`, `deleteMany`), `countDocuments`, `distinct`, single-field indexes, sort, projection, skip/limit, common query operators, and RBAC access control (`grantRole`/`revokeRole`). PlugPort also supports SQL queries and Redis commands via the multi-protocol layer.
 
 ### What's NOT supported?
 
