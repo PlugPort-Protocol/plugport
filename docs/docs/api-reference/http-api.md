@@ -11,22 +11,121 @@ PlugPort exposes a RESTful HTTP API on port 8080 (configurable via `HTTP_PORT`).
 
 ## Authentication
 
-Set the `API_KEY` environment variable to enable API key authentication:
+PlugPort supports three authentication methods, evaluated in priority order:
+
+### 1. Session Cookie (SIWE — Recommended)
+
+Sign-In with Ethereum (EIP-4361) provides wallet-based authentication via encrypted cookies.
+
+**Flow:**
+
+```
+1. POST /api/v1/auth/nonce   → { nonce: "abc123" }     (stores nonce in session)
+2. Sign the SIWE message with your wallet (client-side)
+3. POST /api/v1/auth/verify  → { address: "0x...", ok: 1 }  (sets session cookie + CSRF cookie)
+4. All subsequent requests automatically include the session cookie
+```
+
+The session is encrypted using `iron-session` (AES-256) and stored as an httpOnly cookie. Sessions expire after 24 hours.
+
+### 2. Wallet-Linked API Key
+
+Generate API keys from the dashboard. Keys are prefixed `pp_live_` (production) or `pp_test_` (testing):
+
+```bash
+curl -H "Authorization: Bearer pp_live_your-key-here" http://localhost:8080/api/v1/collections
+```
+
+### 3. Legacy Static Key
+
+Set the `API_KEY` environment variable and pass it via header:
 
 ```bash
 API_KEY=your-secret-key pnpm --filter @plugport/server dev
+curl -H "x-api-key: your-secret-key" http://localhost:8080/api/v1/collections
 ```
 
-Then include the key in requests:
+### CSRF Protection
+
+Session-authenticated (SIWE) mutations require a CSRF token. After `/auth/verify`, the server sets a `plugport_csrf` cookie (readable by JS). Include it on all POST/PUT/DELETE requests:
 
 ```bash
-curl -H "Authorization: Bearer your-wallet-linked-key" http://localhost:8080/api/v1/collections
+curl -X POST \
+  -H "Cookie: plugport_session=..." \
+  -H "x-csrf-token: <value-from-plugport_csrf-cookie>" \
+  http://localhost:8080/api/v1/collections/users/insertOne \
+  -d '{"document": {"name": "Alice"}}'
 ```
 
-Or using legacy keys via `x-api-key`:
+API key and legacy key auth do **not** require CSRF tokens.
 
-```bash
-curl -H "x-api-key: your-legacy-key" http://localhost:8080/api/v1/collections
+### Rate Limits
+
+Auth endpoints have stricter per-route rate limits:
+
+| Endpoint | Rate Limit |
+|----------|-----------|
+| `POST /api/v1/auth/nonce` | 10/min per IP |
+| `POST /api/v1/auth/verify` | 5/min per IP |
+| `GET /api/v1/auth/me` | 30/min per IP |
+| `POST /api/v1/auth/logout` | 10/min per IP |
+| All other endpoints | 100 / 10s per IP |
+
+---
+
+## Auth Endpoints
+
+### `POST /api/v1/auth/nonce`
+
+Request a nonce for SIWE message signing.
+
+**Request:**
+```json
+{ "address": "0x1234..." }
+```
+
+**Response:**
+```json
+{ "nonce": "abc123def456", "ok": 1 }
+```
+
+### `POST /api/v1/auth/verify`
+
+Verify a signed SIWE message and establish a session.
+
+**Request:**
+```json
+{
+  "message": "plugport.wtf wants you to sign in...",
+  "signature": "0xabc..."
+}
+```
+
+**Response:**
+```json
+{ "address": "0x1234...", "ok": 1 }
+```
+
+Sets `plugport_session` (httpOnly) and `plugport_csrf` (JS-readable) cookies.
+
+### `GET /api/v1/auth/me`
+
+Check current session status.
+
+**Response (authenticated):**
+```json
+{ "address": "0x1234...", "chainId": 10143, "ok": 1 }
+```
+
+**Response (not authenticated):** `401`
+
+### `POST /api/v1/auth/logout`
+
+Destroy the current session and clear cookies.
+
+**Response:**
+```json
+{ "ok": 1 }
 ```
 
 ## System Endpoints
@@ -128,68 +227,97 @@ Get collection statistics.
 
 ### `GET /api/v1/collections/:name/privacy`
 
-Get privacy settings for a collection.
+Get privacy settings for a collection. Owners see the full object; non-owners see only `mode` and `ownerAddress`.
 
-**Response:**
+**Response (owner):**
 ```json
 {
   "ok": 1,
   "privacy": {
     "mode": "private",
-    "owner": "0x123..."
+    "ownerAddress": "0x123...",
+    "accessRoles": { "0xabc...": 1 },
+    "contractAddress": "0xdef..."
+  }
+}
+```
+
+**Response (non-owner):**
+```json
+{
+  "ok": 1,
+  "privacy": {
+    "mode": "private",
+    "ownerAddress": "0x123..."
   }
 }
 ```
 
 ### `POST /api/v1/collections/:name/privacy`
 
-Set privacy mode for a collection (Requires Owner Auth).
+Set privacy mode for a collection. Requires authentication. Only the collection owner (or first-time setter) can change the mode.
 
 **Request:**
 ```json
-{
-  "mode": "private"
-}
+{ "mode": "private" }
 ```
 
 **Response:**
 ```json
-{
-  "ok": 1,
-  "privacy": {
-    "mode": "private",
-    "owner": "0x123..."
-  }
-}
+{ "ok": 1, "collection": "users", "mode": "private" }
 ```
 
-### `GET /api/v1/collections/:name/whitelist`
+### `GET /api/v1/collections/:name/roles`
 
-Get whitelist for a private collection (Requires Owner Auth).
+View access roles for a collection. Requires authentication. **Owner only** — returns `403` for non-owners.
 
 **Response:**
 ```json
-{
-  "ok": 1,
-  "whitelist": ["0xabc..."]
-}
+{ "accessRoles": { "0xabc...": 1, "0xdef...": 2 }, "ok": 1 }
 ```
 
-### `POST /api/v1/collections/:name/whitelist`
+Role values: `1` = read, `2` = write.
 
-Add or remove an address from the whitelist (Requires Owner Auth).
+### `POST /api/v1/collections/:name/roles`
+
+Grant or revoke access roles. Requires authentication. **Owner only.**
+
+**Request (grant):**
+```json
+{ "address": "0xabc...", "action": "grant", "role": 1 }
+```
+
+**Request (revoke):**
+```json
+{ "address": "0xabc...", "action": "revoke" }
+```
+
+**Response:**
+```json
+{ "accessRoles": { "0xabc...": 1 }, "ok": 1 }
+```
+
+### `GET /api/v1/whitelist`
+
+Get the global address whitelist (public, no auth required).
+
+**Response:**
+```json
+{ "addresses": ["0xabc...", "0xdef..."], "ok": 1 }
+```
+
+### `POST /api/v1/whitelist`
+
+Add or remove an address from the global whitelist. Requires authentication.
 
 **Request:**
 ```json
-{
-  "address": "0xabc...",
-  "action": "add"
-}
+{ "address": "0xabc...", "action": "add" }
 ```
 
 **Response:**
 ```json
-{ "ok": 1 }
+{ "ok": 1, "addresses": ["0xabc..."] }
 ```
 
 ---

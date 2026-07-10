@@ -26,6 +26,12 @@ const sidebars: SidebarsConfig = {
             type: 'category',
             label: 'SDK Reference',
             collapsed: false,
+            link: {
+                type: 'generated-index',
+                title: 'SDK Reference',
+                description: 'PlugPort SDKs for Node.js, Python, Go, and CLI.',
+                slug: '/category/sdk-reference',
+            },
             items: [
                 'sdks/nodejs',
                 'sdks/python',

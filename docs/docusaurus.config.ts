@@ -8,9 +8,9 @@ const config: Config = {
     favicon: 'img/favicon.ico',
 
     // GitHub Pages deployment config
-    url: 'https://plugport.github.io',
+    url: 'https://plugport-protocol.github.io',
     baseUrl: '/plugport/',
-    organizationName: 'plugport',
+    organizationName: 'PlugPort-Protocol',
     projectName: 'plugport',
     deploymentBranch: 'gh-pages',
     trailingSlash: false,
@@ -29,7 +29,7 @@ const config: Config = {
             {
                 docs: {
                     sidebarPath: './sidebars.ts',
-                    editUrl: 'https://github.com/plugport/plugport/tree/main/docs/',
+                    editUrl: 'https://github.com/PlugPort-Protocol/plugport/tree/main/docs/',
                     routeBasePath: 'docs',
                 },
                 blog: false,
@@ -66,7 +66,7 @@ const config: Config = {
                     position: 'left',
                 },
                 {
-                    href: 'https://github.com/plugport/plugport',
+                    href: 'https://github.com/PlugPort-Protocol/plugport',
                     label: 'GitHub',
                     position: 'right',
                 },
@@ -94,7 +94,7 @@ const config: Config = {
                 {
                     title: 'Community',
                     items: [
-                        { label: 'GitHub', href: 'https://github.com/plugport/plugport' },
+                        { label: 'GitHub', href: 'https://github.com/PlugPort-Protocol/plugport' },
                         { label: 'Monad', href: 'https://monad.xyz' },
                     ],
                 },

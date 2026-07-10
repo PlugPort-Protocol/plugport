@@ -87,4 +87,12 @@ PlugPort uses a Triple-Auth Middleware for maximum flexibility:
 
 Endpoints exempt from auth: `/health`, `/metrics`
 
+### CSRF Protection
+
+Session-authenticated (SIWE) mutations are protected by a double-submit CSRF cookie. After login, the server sets a `plugport_csrf` cookie (JS-readable). The dashboard automatically reads this cookie and sends it as the `x-csrf-token` header on every POST/PUT/DELETE request. API key users are exempt.
+
+### Rate Limiting
+
+Auth endpoints have stricter per-route rate limits (e.g., `/auth/verify` is limited to 5 requests/min per IP) to prevent brute-force attacks. All other endpoints share a global limit of 100 requests / 10 seconds per IP. See the [HTTP API Reference](/docs/api-reference/http-api#rate-limits) for details.
+
 The wire protocol uses SCRAM authentication (placeholder - accepts any credentials in MVP).

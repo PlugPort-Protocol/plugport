@@ -198,7 +198,35 @@ GET  /api/v1/collections/:name/stats      → Collection stats
 POST /api/v1/collections/:name/drop       → Drop collection
 ```
 
-Features: CORS, Triple-Auth Middleware (SIWE Cookie Session -> Wallet-Linked API Key -> Legacy Key), request timing, API key analytics recording, and error normalization to MongoDB error codes.
+#### Authentication (Triple-Auth Middleware)
+
+Three auth methods evaluated in priority order:
+
+1. **Session Cookie (SIWE):** Encrypted `iron-session` cookie set after Sign-In with Ethereum (EIP-4361) verification. Stateless, multi-replica safe.
+2. **Wallet-Linked API Key:** Keys prefixed `pp_live_` or `pp_test_`, validated against hashed records in KV store. Tied to a wallet address.
+3. **Legacy Static Key:** Environment variable `API_KEY`, compared via `timingSafeEqual`.
+
+#### Rate Limiting
+
+Global rate limit of 100 requests / 10 seconds per IP, with stricter per-route limits on auth endpoints:
+
+| Endpoint | Rate Limit |
+|----------|-----------|
+| `POST /auth/nonce` | 10/min |
+| `POST /auth/verify` | 5/min |
+| `GET /auth/me` | 30/min |
+| `POST /auth/logout` | 10/min |
+| All other endpoints | 100/10s (global) |
+
+#### CSRF Protection (Double-Submit Cookie)
+
+Session-authenticated (SIWE) users are protected against Cross-Site Request Forgery:
+
+1. On `/auth/verify` success, a random CSRF token is stored in the encrypted session and set as a non-httpOnly `plugport_csrf` cookie.
+2. On every POST/PUT/DELETE request, the middleware validates the `x-csrf-token` header matches the session token.
+3. API key auth and legacy key auth are exempt (no cookie-based session to exploit).
+
+Features: CORS, Triple-Auth Middleware, per-route rate limiting, CSRF protection, request timing, API key analytics recording, and error normalization to MongoDB error codes.
 
 ### 8. Wire Protocol Server (`wire-server.ts`)
 

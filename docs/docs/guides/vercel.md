@@ -31,7 +31,7 @@ Since PlugPort is a monorepo, you need to point Vercel to the dashboard applicat
 2. **Framework Preset**: Next.js
 3. **Root Directory**: Click "Edit" and select `packages/dashboard`
 
-![Vercel Root Directory](/img/vercel/root-dir.png)
+> Set the **Root Directory** to `packages/dashboard` in the Vercel project settings.
 
 ### 3. Build Settings
 
