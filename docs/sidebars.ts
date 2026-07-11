@@ -67,6 +67,7 @@ const sidebars: SidebarsConfig = {
                 'sdks/python',
                 'sdks/go',
                 'sdks/cli',
+                'sdks/sqlite-compat',
             ],
         },
         {
@@ -96,6 +97,9 @@ const sidebars: SidebarsConfig = {
                 'guides/vercel',
                 'guides/monitoring',
                 'guides/configuration',
+                'guides/dashboard',
+                'guides/demos',
+                'advanced/testing',
             ],
         },
         {

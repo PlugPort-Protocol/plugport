@@ -111,8 +111,19 @@ const config: Config = {
             disableSwitch: false,
             respectPrefersColorScheme: true,
         },
-        algolia: undefined,
     } satisfies Preset.ThemeConfig,
+
+    themes: [
+        [
+            "@easyops-cn/docusaurus-search-local",
+            {
+                hashed: true,
+                indexDocs: true,
+                indexPages: false,
+                language: ["en"],
+            },
+        ],
+    ],
 };
 
 export default config;

@@ -353,34 +353,59 @@ terraform apply
 ```
 plugport/
 ├── packages/
-│   ├── shared/          # Shared types (KVAdapter, Filter, Config)
-│   ├── server/          # Core server (HTTP + Wire + Storage)
+│   ├── shared/              # Shared types & interfaces (KVAdapter, Filter, Config)
+│   ├── server/              # Core server
 │   │   └── src/
-│   │       ├── storage/     # KV adapter, key encoding, indexes, query planner
-│   │       ├── http-server  # Fastify HTTP API
-│   │       ├── wire-server  # MongoDB wire protocol (OP_MSG)
-│   │       ├── metrics      # Prometheus metrics
-│   │       └── index        # Server bootstrap
-│   ├── sdk/             # Node.js SDK
-│   ├── cli/             # CLI tool
-│   └── dashboard/       # Next.js 15 dashboard
+│   │       ├── auth/            # SIWE sessions, API key manager, analytics recorder
+│   │       ├── storage/         # Document store, KV adapter, index manager,
+│   │       │                    # query planner, encryption layer, routing adapter,
+│   │       │                    # MonadDb adapter, privacy manager, message broker
+│   │       ├── protocols/       # Multi-protocol wire servers
+│   │       │   ├── pg-server        # PostgreSQL wire protocol
+│   │       │   ├── mysql-server     # MySQL wire protocol
+│   │       │   ├── redis-server     # Redis wire protocol (RESP)
+│   │       │   ├── sql-translator   # SQL → Document Store AST
+│   │       │   ├── join-engine      # Cross-collection joins
+│   │       │   └── protocol-manager # Protocol lifecycle orchestrator
+│   │       ├── http-server      # Fastify HTTP REST API
+│   │       ├── wire-server      # MongoDB wire protocol (OP_MSG)
+│   │       ├── metrics          # Prometheus metrics exporter
+│   │       └── index            # Server bootstrap
+│   ├── sdk/                 # Node.js SDK (@plugport/sdk)
+│   ├── cli/                 # CLI tool (@plugport/cli)
+│   ├── sqlite-compat/       # Drop-in better-sqlite3 replacement
+│   └── dashboard/           # Next.js 15 dashboard (RainbowKit + SIWE)
 ├── sdks/
-│   ├── python/          # Python SDK (PyMongo shim)
-│   └── go/              # Go client library
+│   ├── python/              # Python SDK (PyMongo-compatible shim)
+│   └── go/                  # Go client library
+├── contracts/               # Solidity smart contracts
+│   ├── PlugPortStore.sol        # Core document storage contract
+│   ├── PlugPortPrivateStore.sol # Encrypted private collections + RBAC
+│   ├── PlugPortPrivateStoreFactory.sol
+│   ├── PlugPortRelational.sol   # Relational data contract
+│   └── PlugPortMessageBroker.sol # On-chain Pub/Sub message broker
 ├── demos/
-│   ├── ecommerce/       # E-commerce demo (cart, checkout)
-│   └── chat/            # Real-time chat (WebSocket + PlugPort)
+│   ├── ecommerce/           # E-commerce demo (Express + @plugport/sdk)
+│   └── chat/                # Real-time chat (WebSocket + @plugport/sdk)
 ├── tests/
-│   ├── integration/     # HTTP API integration tests
-│   └── load/            # k6 load test scripts
-├── docs/               # Docusaurus documentation site
+│   ├── integration/         # HTTP API + MongoDB compatibility tests
+│   └── load/                # k6 load test scripts (crud-mix.js)
+├── docs/                    # Docusaurus documentation site (wiki.plugport.wtf)
 ├── deploy/
-│   ├── docker/          # Dockerfiles + docker-compose
-│   ├── k8s/             # Kubernetes manifests
-│   └── terraform/       # Terraform templates
-├── .env.example         # Environment variable template
-└── .github/
-    └── workflows/       # CI/CD + Docs deploy
+│   ├── docker/              # Dockerfiles + docker-compose
+│   ├── k8s/                 # Kubernetes manifests
+│   └── terraform/           # Terraform templates
+├── audits/                  # Security & code audit reports
+├── .github/
+│   └── workflows/
+│       ├── ci.yml               # CI pipeline (lint, test, build)
+│       └── deploy-docs.yml      # Docusaurus → GitHub Pages deployment
+├── .env.example             # Environment variable template
+├── .env.testnet.example     # Monad testnet configuration
+├── .env.mainnet.example     # Monad mainnet configuration
+├── pnpm-workspace.yaml      # Workspace package definitions
+├── tsconfig.json            # Root TypeScript config
+└── eslint.config.mjs        # ESLint flat config
 ```
 
 ## Environment Variables
@@ -388,16 +413,29 @@ plugport/
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `HTTP_PORT` | `8080` | HTTP API port |
-| `WIRE_PORT` | `27017` | Wire protocol port |
 | `HOST` | `0.0.0.0` | Bind address |
 | `API_KEY` | none | API key for authentication |
 | `LOG_LEVEL` | `info` | Log level (debug, info, warn, error) |
 | `METRICS_ENABLED` | `true` | Enable Prometheus metrics |
-| `MONADDB_ENDPOINT` | none | MonadDb RPC endpoint (uses in-memory if unset) |
-| `MONADDB_PRIVATE_KEY` | none | Server wallet private key (64 hex chars, no 0x prefix) |
 | `MAX_DOC_SIZE` | `1048576` | Maximum document size in bytes (1MB) |
+| `IS_TESTNET` | `true` | Testnet mode flag |
+| `DASHBOARD_URL` | none | Dashboard URL for CORS origin locking |
+| **Protocol Toggles** | | |
+| `MONGODB_ENABLED` | `true` | Enable MongoDB wire protocol |
+| `WIRE_PORT` | `27017` | MongoDB wire protocol port |
+| `PG_ENABLED` | `false` | Enable PostgreSQL wire protocol |
+| `PG_PORT` | `5432` | PostgreSQL wire protocol port |
+| `MYSQL_ENABLED` | `false` | Enable MySQL wire protocol |
+| `MYSQL_PORT` | `3306` | MySQL wire protocol port |
+| `REDIS_ENABLED` | `false` | Enable Redis wire protocol |
+| `REDIS_PORT` | `6379` | Redis wire protocol port |
+| **Monad Configuration** | | |
+| `MONAD_RPC_URL` | none | Monad RPC endpoint (uses in-memory if unset) |
+| `MONAD_CHAIN_ID` | `10143` | Monad chain ID |
+| `MONAD_PRIVATE_KEY` | none | Gas station wallet key (64 hex chars, no 0x) |
+| `MONAD_CONTRACT_ADDRESS` | none | Deployed PlugPortStore contract address |
 
-> See `.env.example` for a fully commented template. Each package also has its own `.env.example`.
+> See `.env.example`, `.env.testnet.example`, and `.env.mainnet.example` for fully commented templates.
 
 ## Why MonadDb?
 
