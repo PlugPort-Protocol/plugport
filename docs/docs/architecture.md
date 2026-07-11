@@ -6,7 +6,7 @@ sidebar_position: 3
 
 # Architecture
 
-PlugPort bridges MongoDB's document model with MonadDb's Merkle Patricia Trie storage. This page explains how every layer works.
+PlugPort bridges traditional database models (MongoDB, PostgreSQL, MySQL, Redis, SQLite) with MonadDb's Merkle Patricia Trie storage. This page explains how every layer works.
 
 ## High-Level Architecture
 

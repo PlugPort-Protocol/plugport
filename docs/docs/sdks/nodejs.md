@@ -7,7 +7,7 @@ sidebar_position: 1
 
 # Node.js SDK
 
-The `@plugport/sdk` package provides a MongoDB driver-compatible API for Node.js and TypeScript applications.
+The `@plugport/sdk` package provides a unified API for Node.js and TypeScript applications. While its syntax is intentionally designed to mirror the MongoDB driver for zero-learning-curve familiarity, it acts as a universal bridge connecting to PlugPort's verifiable multi-protocol storage.
 
 ## Installation
 

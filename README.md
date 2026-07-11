@@ -1,7 +1,7 @@
 <p align="center">
   <h1 align="center">PlugPort</h1>
   <p align="center">
-    <strong>Multi-Protocol Document, SQL & Key-Value Store on MonadDb</strong>
+    <strong>Web3 protocol port for every database - Apps to dApps in seconds!</strong>
   </p>
   <p align="center">
     <a href="#features">Features</a> |
@@ -16,7 +16,7 @@
 
 ---
 
-PlugPort bridges the developer experience of MongoDB, SQL (PostgreSQL/MySQL/SQLite), and Redis with the verifiable storage guarantees of MonadDb's Merkle Patricia Trie. Use familiar drivers, queries, and tooling while your data is backed by blockchain-grade cryptographic proofs. All protocols interact with the same underlying document store using a unified translation layer.
+PlugPort is a Web3 protocol port for every major database. It helps developers convert traditional Web2 Apps into dApps seamlessly by providing drop-in compatibility for MongoDB, PostgreSQL, MySQL, Redis, and SQLite. Built on MonadDb's Merkle Patricia Trie, it offers verifiable storage by default—giving you cryptographic trust while letting you keep your familiar drivers and tools. All protocols interact with the same underlying document store using a unified translation layer.
 
 ## Features
 
@@ -258,7 +258,7 @@ pnpm --filter @plugport/dashboard dev
 | `GET` | `/api/v1/collections/:name/stats` | Collection statistics |
 | `POST` | `/api/v1/collections/:name/drop` | Drop a collection |
 
-### Wire Protocol Commands
+### MongoDB Wire Protocol Commands
 
 | Command | Status |
 |---------|--------|
@@ -410,7 +410,7 @@ MonadDb provides the ideal storage substrate for a document database:
 
 ## Documentation
 
-Full documentation is available at [plugport.github.io/plugport](https://plugport.github.io/plugport/) (Docusaurus).
+Full documentation is available at [wiki.plugport.wtf](https://wiki.plugport.wtf).
 
 Or preview locally:
 

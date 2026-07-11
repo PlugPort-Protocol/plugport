@@ -7,7 +7,9 @@ slug: /
 
 # Getting Started
 
-PlugPort is a MongoDB-compatible document store backed by MonadDb's Merkle Patricia Trie. This guide will have you up and running in under 5 minutes.
+PlugPort is a Web3 protocol port for every major database. It helps developers convert traditional Web2 Apps into dApps seamlessly by providing drop-in compatibility for MongoDB, PostgreSQL, MySQL, Redis, and SQLite.
+
+Built on MonadDb's Merkle Patricia Trie, it offers verifiable storage by default—giving you cryptographic trust while letting you keep your familiar drivers and tools. This guide will have you up and running in under 5 minutes.
 
 ## Prerequisites
 

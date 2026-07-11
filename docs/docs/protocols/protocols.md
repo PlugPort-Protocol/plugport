@@ -206,7 +206,7 @@ See [Message Broker docs](../smart-contracts/message-broker.md) for details.
 
 ---
 
-## MongoDB (Default)
+## MongoDB
 
 ### Enable
 

@@ -6,7 +6,7 @@ sidebar_position: 2
 
 # Migration Guide
 
-PlugPort is designed as a drop-in replacement for MongoDB, and also accepts connections from PostgreSQL, MySQL, Redis, and SQLite clients. This guide covers migration paths from every supported protocol.
+PlugPort is designed as a decentralised drop-in replacement for traditional databases, accepting connections from MongoDB, PostgreSQL, MySQL, Redis, and SQLite clients. This guide covers migration paths from every supported protocol.
 
 ## Migration Strategies
 
@@ -18,7 +18,9 @@ PlugPort is designed as a drop-in replacement for MongoDB, and also accepts conn
 
 ---
 
-## Strategy 1: Wire Protocol (Zero Code Changes)
+## Migrating from MongoDB
+
+### Strategy 1: Wire Protocol (Zero Code Changes)
 
 The simplest path. PlugPort speaks the MongoDB wire protocol on port 27017. Simply point your existing MongoDB URI to the PlugPort server.
 
@@ -58,7 +60,7 @@ MONGODB_URI=mongodb://plugport-server:27017/myapp
 
 ---
 
-## Strategy 2: SDK Swap (2-Line Change)
+### Strategy 2: SDK Swap (2-Line Change)
 
 For applications that want to use the PlugPort SDK directly, the migration is exactly 2 lines of code.
 
@@ -116,7 +118,7 @@ For applications that want to use the PlugPort SDK directly, the migration is ex
 
 ---
 
-## Strategy 3: Gradual Migration
+### Strategy 3: Gradual Migration
 
 For large codebases, migrate one collection at a time.
 
@@ -158,7 +160,7 @@ Remove the MongoDB dependency entirely.
 
 ---
 
-## Data Format Compatibility
+### Data Format Compatibility
 
 ### What Maps Directly
 
@@ -222,7 +224,7 @@ The PlugPort server handles all blockchain interaction. Your application code ne
 
 ---
 
-## Troubleshooting
+### Troubleshooting MongoDB Migration
 
 ### "No such command" errors via wire protocol
 
@@ -355,7 +357,7 @@ curl -N "http://localhost:8080/api/v1/redis/stream?channels=chat,notifications"
 
 ---
 
-## Using @plugport/sqlite-compat
+## Migrating from SQLite
 
 The `@plugport/sqlite-compat` package provides a drop-in replacement for `better-sqlite3`, letting SQLite-based applications use PlugPort as a backend.
 

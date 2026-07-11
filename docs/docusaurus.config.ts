@@ -4,7 +4,7 @@ import type * as Preset from '@docusaurus/preset-classic';
 
 const config: Config = {
     title: 'PlugPort',
-    tagline: 'Multi-Protocol Database on MonadDb — MongoDB, SQL, Redis in One',
+    tagline: 'Web3 protocol port for every database - Apps to dApps in seconds!',
     favicon: 'img/favicon.ico',
 
     // GitHub Pages deployment config
@@ -94,6 +94,7 @@ const config: Config = {
                     title: 'Community',
                     items: [
                         { label: 'GitHub', href: 'https://github.com/PlugPort-Protocol/plugport' },
+                        { label: 'X (Twitter)', href: 'https://x.com/gPlugPort' },
                         { label: 'Monad', href: 'https://monad.xyz' },
                     ],
                 },

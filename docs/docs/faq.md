@@ -10,15 +10,15 @@ sidebar_position: 8
 
 ### What is PlugPort?
 
-PlugPort is a MongoDB-compatible document database that stores data on MonadDb's Merkle Patricia Trie. It gives you the MongoDB developer experience with blockchain-grade verifiable storage.
+PlugPort is a multi-protocol Web3 database that stores data on MonadDb's Merkle Patricia Trie. It gives you the developer experience of traditional databases (MongoDB, PostgreSQL, MySQL, Redis, SQLite) with blockchain-grade verifiable storage.
 
-### How is it different from MongoDB?
+### How does it interact with existing databases?
 
-MongoDB stores data in its WiredTiger storage engine. PlugPort stores data in MonadDb's Merkle Patricia Trie, which means every write produces a cryptographic proof. The API is the same, but the storage guarantees are different.
+PlugPort speaks the native wire protocols of these databases. It processes queries from standard drivers (like `pymongo` or `psycopg2`) and stores the resulting data in MonadDb's Merkle Patricia Trie, meaning every write produces a cryptographic proof. The APIs are the same, but the storage guarantees are verifiable.
 
-### Can I use my existing MongoDB code?
+### Can I use my existing database code?
 
-Yes. You can connect via the wire protocol with **zero code changes** (just change the URI). Or swap to the PlugPort SDK with a 2-line change. See the [Migration Guide](./migration-guide.md).
+Yes. You can connect via your database's native wire protocol with **zero code changes** (just change the connection URI to point to PlugPort). Or swap to the PlugPort SDK. See the [Migration Guide](./migration-guide.md).
 
 ---
 
