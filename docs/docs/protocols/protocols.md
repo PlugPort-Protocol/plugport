@@ -176,12 +176,28 @@ redis-cli -p 6379
 | Category | Commands |
 |----------|----------|
 | String | `GET`, `SET`, `DEL`, `MGET`, `MSET`, `INCR`, `DECR`, `APPEND`, `STRLEN`, `SETNX` |
-| Hash | `HSET`, `HGET`, `HGETALL`, `HDEL`, `HKEYS`, `HVALS`, `HEXISTS`, `HLEN` |
+| Hash | `HSET`, `HGET`, `HGETALL`, `HDEL`, `HKEYS`, `HVALS`, `HEXISTS`, `HLEN`, `HMSET`, `HMGET` |
 | List | `LPUSH`, `RPUSH`, `LPOP`, `RPOP`, `LLEN`, `LRANGE` |
 | Set | `SADD`, `SREM`, `SMEMBERS`, `SISMEMBER`, `SCARD` |
-| Key | `EXISTS`, `TYPE`, `KEYS`, `TTL`, `PTTL`, `PERSIST`, `EXPIRE`, `PEXPIRE` |
+| Key | `EXISTS`, `RENAME`, `TYPE`, `KEYS`, `TTL`, `PTTL`, `PERSIST`, `EXPIRE`, `PEXPIRE` |
 | Pub/Sub | `SUBSCRIBE`, `PUBLISH`, `UNSUBSCRIBE`, `PSUBSCRIBE` |
 | Server | `PING`, `INFO`, `DBSIZE`, `FLUSHDB`, `SELECT`, `AUTH`, `COMMAND` |
+
+### Usage Examples
+
+```bash
+# Multi-field hash operations
+redis-cli -p 6379 HMSET user:1 name "Alice" email "alice@example.com" age "30"
+redis-cli -p 6379 HMGET user:1 name email
+# 1) "Alice"
+# 2) "alice@example.com"
+
+# Rename a key (works across all data types: string, hash, list, set)
+redis-cli -p 6379 SET session:old "data"
+redis-cli -p 6379 RENAME session:old session:new
+redis-cli -p 6379 GET session:new
+# "data"
+```
 
 ### Pub/Sub (On-Chain)
 

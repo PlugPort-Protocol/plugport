@@ -569,6 +569,47 @@ Get distinct values of a field across documents.
 
 ---
 
+### `POST /api/v1/collections/:name/aggregate`
+
+Execute an aggregation pipeline on a collection.
+
+**Supported Stages:** `$match`, `$lookup`, `$project`, `$sort`, `$limit`, `$skip`, `$unwind`, `$count`.
+
+**Request:**
+```json
+{
+  "pipeline": [
+    { "$match": { "status": "completed" } },
+    { "$lookup": {
+        "from": "users",
+        "localField": "userId",
+        "foreignField": "_id",
+        "as": "user"
+    }},
+    { "$unwind": "$user" },
+    { "$project": { "orderId": 1, "total": 1, "user.name": 1 } },
+    { "$sort": { "total": -1 } },
+    { "$limit": 10 }
+  ]
+}
+```
+
+**Response:**
+```json
+{
+  "cursor": {
+    "firstBatch": [
+      { "_id": "abc123", "orderId": "ORD-001", "total": 99.99, "user": { "name": "Alice" } }
+    ],
+    "id": 0,
+    "ns": "plugport.orders"
+  },
+  "ok": 1
+}
+```
+
+---
+
 ## Multi-Protocol Endpoints
 
 PlugPort supports SQL and Redis command interfaces that translate to the underlying document store.
@@ -628,7 +669,7 @@ Execute a Redis command via the RESP protocol translation layer.
 { "ok": 1, "result": "OK" }
 ```
 
-Supported commands: `GET`, `SET`, `DEL`, `MGET`, `MSET`, `KEYS`, `EXISTS`, `PUBLISH`, `SUBSCRIBE`.
+Supported commands: `GET`, `SET`, `DEL`, `MGET`, `MSET`, `INCR`, `DECR`, `APPEND`, `STRLEN`, `SETNX`, `EXISTS`, `RENAME`, `KEYS`, `TYPE`, `TTL`, `PTTL`, `PERSIST`, `EXPIRE`, `PEXPIRE`, `HSET`, `HGET`, `HGETALL`, `HDEL`, `HKEYS`, `HVALS`, `HEXISTS`, `HLEN`, `HMSET`, `HMGET`, `LPUSH`, `RPUSH`, `LPOP`, `RPOP`, `LLEN`, `LRANGE`, `SADD`, `SREM`, `SMEMBERS`, `SISMEMBER`, `SCARD`, `SUBSCRIBE`, `PUBLISH`, `UNSUBSCRIBE`, `PSUBSCRIBE`, `PING`, `INFO`, `DBSIZE`, `FLUSHDB`, `SELECT`, `AUTH`, `COMMAND`.
 
 ### `GET /api/v1/redis/stream`
 

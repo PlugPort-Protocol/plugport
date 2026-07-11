@@ -24,8 +24,10 @@ PlugPort is a Web3 protocol port for every major database. It helps developers c
 |---------|-------------|
 | **Multi-Protocol** | Connect with `mongosh`, `psql`, `mysql`, `redis-cli`, and their respective Node.js/Python/Go drivers |
 | **HTTP API** | RESTful CRUD endpoints for all protocols (e.g. `/api/v1/sql`, `/api/v1/redis`) |
+| **Aggregation Pipeline** | Full `$lookup`, `$match`, `$project`, `$sort`, `$limit`, `$skip`, `$unwind`, `$count` support |
+| **Transactions** | Best-effort transactions: buffered writes, sequential flush on commit, discard on abort |
 | **Pub/Sub SSE** | Real-time messaging via Redis Pub/Sub mapping to HTTP Server-Sent Events (`/api/v1/redis/stream`) |
-| **Web3 Native Auth** | SIWE (Sign-In With Ethereum) authentication and granular API key management (Generation, Rotation, Revocation) |
+| **Web3 Native Auth** | SIWE + wallet-derived API keys + SCRAM-SHA-256 with on-chain `PlugPortAuth` contract |
 | **Smart Contract RBAC** | On-chain Role-Based Access Control (`PlugPortPrivateStore`) for granular read/write permissions |
 | **Encryption** | AES-256-GCM encryption with ECDH key sharing for private collections |
 | **Join Engine** | Hash, Left, Right, and Cross joins for SQL and NoSQL aggregations |
@@ -66,6 +68,9 @@ npx @plugport/cli playground
 
 # Query from command line
 npx @plugport/cli query users --filter '{"age": {"$gte": 25}}'
+
+# Run an aggregation pipeline
+npx @plugport/cli aggregate orders --pipeline '[{"$match": {"status": "completed"}}, {"$lookup": {"from": "users", "localField": "userId", "foreignField": "_id", "as": "user"}}]'
 ```
 
 ### Using Docker
@@ -121,9 +126,10 @@ docker-compose up
                               |
                          MonadDb RPC
                       (Smart Contracts)
-                      - PlugPortStore.sol
+                       - PlugPortStore.sol
                       - PlugPortPrivateStore.sol
                       - PlugPortMessageBroker.sol
+                      - PlugPortAuth.sol
 ```
 
 **Key Design Decisions:**
@@ -356,7 +362,7 @@ plugport/
 │   ├── shared/              # Shared types & interfaces (KVAdapter, Filter, Config)
 │   ├── server/              # Core server
 │   │   └── src/
-│   │       ├── auth/            # SIWE sessions, API key manager, analytics recorder
+│   │       ├── auth/            # SIWE sessions, API key manager, analytics, on-chain auth contract adapter
 │   │       ├── storage/         # Document store, KV adapter, index manager,
 │   │       │                    # query planner, encryption layer, routing adapter,
 │   │       │                    # MonadDb adapter, privacy manager, message broker
@@ -381,6 +387,7 @@ plugport/
 ├── contracts/               # Solidity smart contracts
 │   ├── PlugPortStore.sol        # Core document storage contract
 │   ├── PlugPortPrivateStore.sol # Encrypted private collections + RBAC
+│   ├── PlugPortAuth.sol         # On-chain auth: wallet-derived API keys + SCRAM-SHA-256 verifiers
 │   ├── PlugPortPrivateStoreFactory.sol
 │   ├── PlugPortRelational.sol   # Relational data contract
 │   └── PlugPortMessageBroker.sol # On-chain Pub/Sub message broker

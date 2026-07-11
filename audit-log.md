@@ -236,3 +236,47 @@
 - [x] CSRF cookie cleared on `/auth/logout` alongside session destruction.
 - [x] Created `auth-security.test.ts` — 5 tests covering rate limiting enforcement (429 on excess nonce/verify requests) and CSRF exemptions (test backdoor, API key, GET).
 - [x] All 249 tests passing (208 server + 18 dashboard CSS + 23 integration).
+
+## Round 28: Redis Command Expansion (HMSET, HMGET, RENAME)
+- [x] **HMSET**: Implemented multi-field hash write in `redis-server.ts` — merges field/value pairs into existing hash document (backed by JSON in KV store under `redis:hash:` prefix). Returns `OK`.
+- [x] **HMGET**: Implemented multi-field hash read — returns an array of values for requested fields, `nil` for missing fields. Compatible with `redis-cli` array output format.
+- [x] **RENAME**: Implemented atomic key rename across all data types — iterates `redis:str:`, `redis:hash:`, `redis:list:`, `redis:set:`, `redis:zset:` prefixes to find and move the key. Returns `ERR no such key` if not found.
+- [x] Updated `docs/docs/protocols/protocols.md` — added `HMSET`, `HMGET` to Hash row and `RENAME` to Key row in supported commands table. Added usage examples section.
+- [x] Updated `docs/docs/api-reference/http-api.md` — expanded Redis supported commands list from 9 to 50+ commands.
+
+## Round 29: On-Chain Auth, Aggregation Pipeline, SCRAM-SHA-256 & Transactions
+- [x] **PlugPortAuth.sol** (`contracts/PlugPortAuth.sol`): Standalone on-chain authentication contract with:
+  - `KeyEntry` struct: `commitment` (keccak256), `salt`, `storedKey`, `serverKey`, `keyIndex`, `active`, `createdAt`
+  - Direct functions: `registerKey`, `revokeKey`, `rotateKey`
+  - Meta-tx functions: `registerKeyMeta`, `revokeKeyMeta` (EIP-712 + `ecrecover`, `onlyGasStation`)
+  - View functions: `getVerifier`, `getCommitment`, `validateKey`, `getActiveKeys`, `isKeyActive`, `getKeyCount`
+  - Gas station management: `transferGasStation`, `transferOwnership`
+  - Security: 10-key limit, nonce replay protection, self-sovereign access (only owner or verified signer)
+- [x] **Aggregation pipeline** (`wire-server.ts`, `http-server.ts`): Full in-memory pipeline executor — `$match`, `$project`, `$sort`, `$limit`, `$skip`, `$unwind`, `$count`, `$lookup` (cross-collection joins). Accessible via wire protocol `aggregate` command and `POST /api/v1/collections/:name/aggregate` HTTP endpoint.
+- [x] **SCRAM-SHA-256** (`wire-server.ts`): Full `saslStart`/`saslContinue` handshake with:
+  - Client-first-message parsing (username + clientNonce)
+  - Server nonce generation, PBKDF2 derivation, StoredKey/ServerKey computation
+  - ClientProof verification via XOR recovery + SHA-256
+  - ServerSignature response for mutual authentication
+  - PLAIN mechanism kept as fallback
+- [x] **Transactions** (`wire-server.ts`): Best-effort buffer-and-flush model — `startTransaction` buffers writes in memory, `commitTransaction` flushes them sequentially, `abortTransaction` discards the buffer.
+- [x] **HTTP auth relay** (`http-server.ts`): `POST /auth/register-key` (meta-tx relay), `POST /auth/revoke-key` (meta-tx relay), `GET /auth/keys/:address` (on-chain read). Graceful fallback to log-only mode when contract not deployed.
+- [x] **Dashboard ApiKeysTab** (`ApiKeysTab.tsx`): Complete rewrite — Wallet-Derived Keys tab (generate via wallet signature → `keccak256(sig)` → hash commitment, revoke via meta-tx, recover by iterating indices 0–9) + Legacy Keys tab.
+- [x] **Dashboard QueryBuilderTab** (`QueryBuilderTab.tsx`): Added aggregate mode — find/aggregate toggle, pipeline JSON editor, template presets (`$match+$sort`, `$lookup`, `$unwind+$count`, `$project`).
+- [x] **SDKs**: `Collection.aggregate(pipeline)` added to Node.js SDK (`packages/sdk/src/index.ts`), Python SDK (`sdks/python/plugport/client.py`), Go SDK (`sdks/go/plugport.go`).
+- [x] **CLI**: `plugport aggregate <collection> --pipeline '<json>'` command added to `packages/cli/src/index.ts`.
+- [x] **Integration tests**: `tests/integration/src/aggregate.test.ts` — 11 test cases covering all pipeline stages and combined pipelines.
+- [x] **Docs**: Created `docs/advanced/authentication.md` (full auth doc with wallet-derived keys, SCRAM, PlugPortAuth, gas station, security constraints). Updated `migration-guide.md`, `wire-protocol.md`, `faq.md`, `http-api.md`, `nodejs.md`, `python.md`, `go.md`.
+- [x] **README**: Updated features table (aggregation, transactions, Web3 auth), project structure (`PlugPortAuth.sol`), architecture diagram.
+- [x] **Deploy**: `.env.example`, `.env.testnet.example`, `.env.mainnet.example` updated with `AUTH_CONTRACT_ADDRESS` and `AUTH_GAS_STATION_PRIVATE_KEY`.
+
+## Round 30: Live Contract Integration (AuthContractAdapter)
+- [x] Created `auth/auth-contract.ts` — ethers.js v6 adapter for PlugPortAuth.sol:
+  - Singleton pattern (`getAuthContract()`)
+  - Read operations (free `eth_call`): `getActiveKeys()`, `getVerifier()`, `validateKey()`, `isKeyActive()`, `getNonce()`, `getKeyCount()`
+  - Write operations (gas station wallet): `registerKeyMeta()`, `revokeKeyMeta()` — parses `KeyRegistered` events for assigned key index
+  - Graceful fallback: all methods return safe defaults when `AUTH_CONTRACT_ADDRESS` is not set
+- [x] Wired HTTP endpoints to live contract: `POST /auth/register-key` → `registerKeyMeta()` (returns `txHash` + `keyIndex`), `POST /auth/revoke-key` → `revokeKeyMeta()` (returns `txHash`), `GET /auth/keys/:address` → `getActiveKeys()` (returns on-chain entries).
+- [x] Wired SCRAM-SHA-256 `saslStart` in `wire-server.ts` to read on-chain verifiers via `getVerifier(address, 0)` when username is a wallet address (`0x...`). Falls back to local `apiKey` derivation when contract not configured or user has no on-chain keys.
+- [x] Exported `AuthContractAdapter`, `getAuthContract`, `OnChainKeyEntry`, `ScramVerifier` from `auth/index.ts` barrel.
+- [x] Updated `README.md` auth directory description to include on-chain auth contract adapter.

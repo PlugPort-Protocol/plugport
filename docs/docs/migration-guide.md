@@ -54,9 +54,9 @@ MONGODB_URI=mongodb://plugport-server:27017/myapp
 | `listCollections` | ✅ Supported | |
 | `count` | ✅ Supported | |
 | `distinct` | ✅ Supported | |
-| `aggregate` | ⚠️ Basic | Simple pipelines only |
-| `transactions` | ❌ Not yet | Roadmap item |
-| `$lookup` | ❌ Not yet | Roadmap item |
+| `aggregate` | ✅ Supported | Full pipeline: `$match`, `$lookup`, `$project`, `$sort`, `$limit`, `$skip`, `$unwind`, `$count` |
+| `transactions` | ⚠️ Best-Effort | Buffered writes, sequential flush on commit, discard on abort |
+| `$lookup` | ✅ Supported | Cross-collection joins via `localField` / `foreignField` |
 
 ---
 
@@ -185,7 +185,7 @@ Remove the MongoDB dependency entirely.
 | Compound indexes | ❌ Roadmap |
 | TTL indexes | ❌ Roadmap |
 | Unique constraints | ✅ Full |
-| Transactions | ❌ Roadmap |
+| Transactions | ⚠️ Best-Effort (buffered writes, not atomic) |
 
 ### ObjectId Format
 
@@ -284,7 +284,7 @@ mysql -h localhost -P 3306
 | `DESCRIBE` / `DESC` | ✅ Supported | |
 | `JOIN` (INNER, LEFT, RIGHT, CROSS) | ✅ Supported | Via JoinEngine |
 | `COUNT`, `SUM`, `AVG`, `MIN`, `MAX` | ✅ Supported | Aggregation functions |
-| `BEGIN` / `COMMIT` / `ROLLBACK` | ⚠️ Acknowledged | No-op (transactions not supported) |
+| `BEGIN` / `COMMIT` / `ROLLBACK` | ⚠️ Best-Effort | Buffered writes, sequential flush on commit |
 | `PRAGMA` | ⚠️ Ignored | SQLite compat |
 
 ### HTTP API Alternative
@@ -299,7 +299,7 @@ curl -X POST http://localhost:8080/api/v1/sql \
 
 ### Key Differences from Native PostgreSQL/MySQL
 
-- **No transactions** — `BEGIN`/`COMMIT` are acknowledged but are no-ops
+- **Best-effort transactions** — `BEGIN`/`COMMIT` buffer writes and flush sequentially (not atomic rollback)
 - **No stored procedures or triggers** — Not supported
 - **No foreign keys** — Use the JoinEngine for cross-collection queries
 - **Document-based storage** — Tables are collections of JSON documents internally

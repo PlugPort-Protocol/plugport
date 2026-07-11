@@ -125,6 +125,28 @@ docs, err := coll.Find(ctx, filter, plugport.FindOptions{
 doc, err := coll.FindOne(ctx, filter)
 ```
 
+#### Aggregate
+
+Execute an aggregation pipeline. Supported stages: `$match`, `$lookup`, `$project`, `$sort`, `$limit`, `$skip`, `$unwind`, `$count`.
+
+```go
+results, err := coll.Aggregate(ctx, []map[string]interface{}{
+    {"$match": map[string]interface{}{"status": "completed"}},
+    {"$lookup": map[string]interface{}{
+        "from":         "users",
+        "localField":   "userId",
+        "foreignField": "_id",
+        "as":           "user",
+    }},
+    {"$unwind": "$user"},
+    {"$sort": map[string]interface{}{"total": -1}},
+    {"$limit": 10},
+})
+for _, doc := range results {
+    fmt.Println(doc)
+}
+```
+
 #### Update
 
 ```go

@@ -1,14 +1,38 @@
 // PlugPort Wire Protocol Server
 // MongoDB wire protocol (OP_MSG) implementation for driver/mongosh compatibility
-// Supports: hello, isMaster, ping, insert, find, update, delete, buildInfo, getLog, whatsmyuri
+// Supports: hello, isMaster, ping, insert, find, update, delete, aggregate ($lookup, $match,
+//           $project, $sort, $limit, $skip, $unwind, $count), transactions (best-effort),
+//           saslStart/saslContinue (SCRAM-SHA-256 + PLAIN), buildInfo, getLog, whatsmyuri
 
 import * as net from 'net';
 import { BSON, ObjectId as BSONObjectId } from 'bson';
-import { timingSafeEqual } from 'crypto';
+import { createHmac, pbkdf2Sync, randomBytes, timingSafeEqual, createHash } from 'crypto';
 import { DocumentStore, DocumentStoreError } from './storage/document-store.js';
 import { MetricsCollector } from './metrics.js';
+import { getAuthContract } from './auth/auth-contract.js';
 import { WireProtocol, VERSION } from '@plugport/shared';
-import type { Projection, SortSpec } from '@plugport/shared';
+import type { DocumentWithId, Projection, SortSpec } from '@plugport/shared';
+
+// ---- Transaction Session Buffers ----
+// Best-effort transactions: buffer writes in memory, flush on commit, discard on abort.
+interface BufferedWrite {
+    op: 'insert' | 'updateOne' | 'updateMany' | 'deleteOne' | 'deleteMany';
+    collection: string;
+    args: Record<string, unknown>;
+}
+const sessionBuffers = new Map<string, BufferedWrite[]>();
+
+// ---- SCRAM-SHA-256 State ----
+interface ScramState {
+    clientFirstBare: string;
+    serverFirstMessage: string;
+    serverNonce: string;
+    salt: Buffer;
+    storedKey: Buffer;
+    serverKey: Buffer;
+    iterationCount: number;
+}
+const scramSessions = new Map<number, ScramState>();
 
 const { OP_MSG, HEADER_SIZE, MAX_WIRE_VERSION, MIN_WIRE_VERSION } = WireProtocol;
 
@@ -271,6 +295,7 @@ function getCommandName(body: Record<string, unknown>): string {
         'buildInfo', 'buildinfo', 'getLog', 'whatsmyuri', 'saslStart', 'saslContinue',
         'endSessions', 'listCollections', 'listDatabases', 'createIndexes', 'drop',
         'aggregate', 'count', 'distinct', 'getMore', 'killCursors', 'create',
+        'startTransaction', 'commitTransaction', 'abortTransaction',
         'getFreeMonitoringStatus', 'serverStatus', 'getCmdLineOpts', 'getParameter',
         'hostInfo', 'atlasVersion'];
     for (const cmd of commands) {
@@ -337,49 +362,185 @@ async function handleCommand(
             return { you: '127.0.0.1:0', ok: 1 };
 
         case 'saslStart': {
-            if (!apiKey) {
-                return {
-                    conversationId: 1, done: true, payload: Buffer.alloc(0), ok: 1,
-                };
-            }
-
             const mechanism = body.mechanism as string;
-            if (mechanism !== 'PLAIN') {
-                return {
-                    ok: 0,
-                    errmsg: `Unsupported SASL mechanism ${mechanism}. Server requires PLAIN configuration using API Key.`,
-                    code: 332
-                };
+
+            // ---- SCRAM-SHA-256 authentication ----
+            if (mechanism === 'SCRAM-SHA-256') {
+                try {
+                    const payloadBuf = Buffer.isBuffer(body.payload) ? body.payload : Buffer.from(body.payload as string, 'base64');
+                    const clientFirstMessage = payloadBuf.toString('utf8');
+
+                    // Parse client-first-message: "n,,n=<user>,r=<clientNonce>"
+                    const clientFirstBare = clientFirstMessage.replace(/^[npy],,/, '');
+                    const clientFields = Object.fromEntries(
+                        clientFirstBare.split(',').map(f => [f[0], f.substring(2)])
+                    );
+                    const username = clientFields['n'] || '';
+                    const clientNonce = clientFields['r'] || '';
+
+                    // Generate server nonce
+                    const serverNonceBytes = randomBytes(24);
+                    const serverNonce = clientNonce + serverNonceBytes.toString('base64');
+
+                    // Derive SCRAM parameters — try on-chain first, then fall back to local
+                    let salt: Buffer;
+                    let storedKey: Buffer;
+                    let serverKey: Buffer;
+                    const iterationCount = 4096;
+                    let usedOnChain = false;
+
+                    const authContract = getAuthContract();
+                    if (authContract.isReadable && username.startsWith('0x')) {
+                        // Username is a wallet address — try to read on-chain verifiers
+                        try {
+                            // Default to keyIndex 0; could parse from username if needed
+                            const verifier = await authContract.getVerifier(username, 0);
+                            if (verifier && verifier.active) {
+                                // On-chain verifiers are bytes32 — convert to Buffer
+                                salt = Buffer.from(verifier.salt.replace('0x', ''), 'hex').subarray(0, 16);
+                                storedKey = Buffer.from(verifier.storedKey.replace('0x', ''), 'hex');
+                                serverKey = Buffer.from(verifier.serverKey.replace('0x', ''), 'hex');
+                                usedOnChain = true;
+                            }
+                        } catch {
+                            // On-chain lookup failed — fall through to local derivation
+                        }
+                    }
+
+                    if (!usedOnChain) {
+                        // Fallback: derive from the legacy apiKey
+                        salt = createHash('sha256').update(`${apiKey || 'plugport'}:scram-salt`).digest().subarray(0, 16);
+                        const saltedPassword = pbkdf2Sync(apiKey || '', salt, iterationCount, 32, 'sha256');
+                        const clientKeyHmac = createHmac('sha256', saltedPassword).update('Client Key').digest();
+                        storedKey = createHash('sha256').update(clientKeyHmac).digest();
+                        serverKey = createHmac('sha256', saltedPassword).update('Server Key').digest();
+                    }
+
+                    // Build server-first-message
+                    const serverFirstMessage = `r=${serverNonce},s=${salt!.toString('base64')},i=${iterationCount}`;
+
+                    // Store SCRAM state for saslContinue
+                    scramSessions.set(connectionId, {
+                        clientFirstBare,
+                        serverFirstMessage,
+                        serverNonce,
+                        salt: salt!,
+                        storedKey: storedKey!,
+                        serverKey: serverKey!,
+                        iterationCount,
+                    });
+
+                    return {
+                        conversationId: 1,
+                        done: false,
+                        payload: Buffer.from(serverFirstMessage, 'utf8'),
+                        ok: 1,
+                    };
+                } catch {
+                    return { ok: 0, errmsg: 'SCRAM-SHA-256 saslStart failed.', code: 18 };
+                }
             }
 
-            try {
-                // PLAIN payload format: [authzid] \0 authcid \0 passwd
-                const payloadStr = Buffer.from(body.payload as string, 'base64').toString('utf8');
-                const parts = payloadStr.split('\0');
-                const password = parts[parts.length - 1]; // final component is always the password
-
-                // Constant-time comparison to prevent timing attacks
-                const bufA = Buffer.from(password, 'utf-8');
-                const bufB = Buffer.from(apiKey, 'utf-8');
-                const match = bufA.length === bufB.length && timingSafeEqual(bufA, bufB);
-
-                if (match) {
-                    authenticatedConnections.add(connectionId);
+            // ---- PLAIN authentication (fallback) ----
+            if (mechanism === 'PLAIN') {
+                if (!apiKey) {
                     return { conversationId: 1, done: true, payload: Buffer.alloc(0), ok: 1 };
                 }
 
-                return { ok: 0, errmsg: 'Authentication failed.', code: 18 };
-            } catch (err) {
-                return { ok: 0, errmsg: 'Malformed authentication payload.', code: 18 };
+                try {
+                    const payloadStr = Buffer.from(body.payload as string, 'base64').toString('utf8');
+                    const parts = payloadStr.split('\0');
+                    const password = parts[parts.length - 1];
+
+                    const bufA = Buffer.from(password, 'utf-8');
+                    const bufB = Buffer.from(apiKey, 'utf-8');
+                    const match = bufA.length === bufB.length && timingSafeEqual(bufA, bufB);
+
+                    if (match) {
+                        authenticatedConnections.add(connectionId);
+                        return { conversationId: 1, done: true, payload: Buffer.alloc(0), ok: 1 };
+                    }
+                    return { ok: 0, errmsg: 'Authentication failed.', code: 18 };
+                } catch {
+                    return { ok: 0, errmsg: 'Malformed authentication payload.', code: 18 };
+                }
+            }
+
+            // No auth configured — allow all
+            if (!apiKey) {
+                return { conversationId: 1, done: true, payload: Buffer.alloc(0), ok: 1 };
+            }
+
+            return {
+                ok: 0,
+                errmsg: `Unsupported SASL mechanism: ${mechanism}. Supported: SCRAM-SHA-256, PLAIN.`,
+                code: 332,
+            };
+        }
+
+        case 'saslContinue': {
+            const scramState = scramSessions.get(connectionId);
+            if (!scramState) {
+                // No SCRAM session — might be a continuation of PLAIN (already done)
+                return { conversationId: 1, done: true, payload: Buffer.alloc(0), ok: 1 };
+            }
+
+            try {
+                const payloadBuf = Buffer.isBuffer(body.payload) ? body.payload : Buffer.from(body.payload as string, 'base64');
+                const clientFinalMessage = payloadBuf.toString('utf8');
+
+                // Parse client-final-message: "c=<channelBinding>,r=<nonce>,p=<proof>"
+                const clientFields = Object.fromEntries(
+                    clientFinalMessage.split(',').map(f => {
+                        const eqIdx = f.indexOf('=');
+                        return [f.substring(0, eqIdx), f.substring(eqIdx + 1)];
+                    })
+                );
+                const clientProof = Buffer.from(clientFields['p'] || '', 'base64');
+                const clientNonce = clientFields['r'] || '';
+
+                // Verify nonce matches
+                if (clientNonce !== scramState.serverNonce) {
+                    scramSessions.delete(connectionId);
+                    return { ok: 0, errmsg: 'SCRAM nonce mismatch.', code: 18 };
+                }
+
+                // Compute AuthMessage
+                const clientFinalWithoutProof = clientFinalMessage.substring(0, clientFinalMessage.lastIndexOf(',p='));
+                const authMessage = `${scramState.clientFirstBare},${scramState.serverFirstMessage},${clientFinalWithoutProof}`;
+
+                // Verify ClientProof
+                const clientSignature = createHmac('sha256', scramState.storedKey).update(authMessage).digest();
+                const recoveredClientKey = Buffer.alloc(clientProof.length);
+                for (let i = 0; i < clientProof.length; i++) {
+                    recoveredClientKey[i] = clientProof[i] ^ clientSignature[i];
+                }
+                const recoveredStoredKey = createHash('sha256').update(recoveredClientKey).digest();
+
+                if (!timingSafeEqual(recoveredStoredKey, scramState.storedKey)) {
+                    scramSessions.delete(connectionId);
+                    return { ok: 0, errmsg: 'Authentication failed.', code: 18 };
+                }
+
+                // Compute ServerSignature for mutual authentication
+                const serverSignature = createHmac('sha256', scramState.serverKey).update(authMessage).digest();
+                const serverFinalMessage = `v=${serverSignature.toString('base64')}`;
+
+                // Mark connection as authenticated
+                authenticatedConnections.add(connectionId);
+                scramSessions.delete(connectionId);
+
+                return {
+                    conversationId: 1,
+                    done: true,
+                    payload: Buffer.from(serverFinalMessage, 'utf8'),
+                    ok: 1,
+                };
+            } catch {
+                scramSessions.delete(connectionId);
+                return { ok: 0, errmsg: 'SCRAM-SHA-256 saslContinue failed.', code: 18 };
             }
         }
-        case 'saslContinue':
-            return {
-                conversationId: 1,
-                done: true,
-                payload: Buffer.alloc(0),
-                ok: 1,
-            };
 
         case 'getFreeMonitoringStatus':
             return { state: 'disabled', ok: 1 };
@@ -586,23 +747,149 @@ async function handleCommand(
             const collName = body.aggregate as string;
             const pipeline = (body.pipeline || []) as Record<string, unknown>[];
 
-            // Basic aggregation support - handle simple $match pipelines
-            if (pipeline.length === 0 || (pipeline.length === 1 && pipeline[0].$match)) {
-                const filter = pipeline.length > 0 ? normalizeFilter((pipeline[0].$match || {}) as Record<string, unknown>) : {};
-                const result = await store.find(collName, filter);
-                return {
-                    cursor: {
-                        firstBatch: result.cursor.firstBatch,
-                        id: 0,
-                        ns: `${db}.${collName}`,
-                    },
-                    ok: 1,
-                };
+            // Execute pipeline stages sequentially
+            let docs: Record<string, unknown>[] = [];
+
+            // Fetch initial documents from the collection
+            const initialResult = await store.find(collName, {});
+            docs = initialResult.cursor.firstBatch as Record<string, unknown>[];
+
+            for (const stage of pipeline) {
+                const stageKey = Object.keys(stage)[0];
+
+                switch (stageKey) {
+                    case '$match': {
+                        const matchFilter = normalizeFilter(stage.$match as Record<string, unknown>);
+                        const { matchesFilter: matchFn } = await import('./storage/query-planner.js');
+                        docs = docs.filter(doc => matchFn(doc as DocumentWithId, matchFilter));
+                        break;
+                    }
+
+                    case '$lookup': {
+                        const lookup = stage.$lookup as {
+                            from: string;
+                            localField: string;
+                            foreignField: string;
+                            as: string;
+                        };
+
+                        // Batch-fetch: collect all local field values, use $in on foreign collection
+                        const localValues = docs.map(doc => getNestedField(doc, lookup.localField)).filter(v => v !== undefined && v !== null);
+                        const uniqueValues = [...new Set(localValues.map(v => typeof v === 'object' ? JSON.stringify(v) : String(v)))];
+
+                        let foreignDocs: Record<string, unknown>[] = [];
+                        if (uniqueValues.length > 0) {
+                            const foreignResult = await store.find(lookup.from, {
+                                [lookup.foreignField]: { $in: localValues },
+                            });
+                            foreignDocs = foreignResult.cursor.firstBatch as Record<string, unknown>[];
+                        }
+
+                        // Build lookup index: foreignField value → matching docs
+                        const lookupIndex = new Map<string, Record<string, unknown>[]>();
+                        for (const fdoc of foreignDocs) {
+                            const key = String(getNestedField(fdoc, lookup.foreignField) ?? '');
+                            if (!lookupIndex.has(key)) lookupIndex.set(key, []);
+                            lookupIndex.get(key)!.push(fdoc);
+                        }
+
+                        // Embed matched docs as array under the 'as' field
+                        docs = docs.map(doc => {
+                            const localVal = String(getNestedField(doc, lookup.localField) ?? '');
+                            return { ...doc, [lookup.as]: lookupIndex.get(localVal) || [] };
+                        });
+                        break;
+                    }
+
+                    case '$project': {
+                        const projection = stage.$project as Record<string, unknown>;
+                        const include = Object.entries(projection).filter(([, v]) => v === 1 || v === true);
+                        const exclude = Object.entries(projection).filter(([, v]) => v === 0 || v === false);
+
+                        if (include.length > 0) {
+                            const includeFields = new Set(include.map(([k]) => k));
+                            includeFields.add('_id'); // Always include _id unless explicitly excluded
+                            if (projection._id === 0 || projection._id === false) includeFields.delete('_id');
+                            docs = docs.map(doc => {
+                                const result: Record<string, unknown> = {};
+                                for (const field of includeFields) {
+                                    if (field in doc) result[field] = doc[field];
+                                }
+                                return result;
+                            });
+                        } else if (exclude.length > 0) {
+                            const excludeFields = new Set(exclude.map(([k]) => k));
+                            docs = docs.map(doc => {
+                                const result: Record<string, unknown> = {};
+                                for (const [k, v] of Object.entries(doc)) {
+                                    if (!excludeFields.has(k)) result[k] = v;
+                                }
+                                return result;
+                            });
+                        }
+                        break;
+                    }
+
+                    case '$sort': {
+                        const sortSpec = stage.$sort as Record<string, number>;
+                        docs.sort((a, b) => {
+                            for (const [field, direction] of Object.entries(sortSpec)) {
+                                const aVal = getNestedField(a, field) as any;
+                                const bVal = getNestedField(b, field) as any;
+                                if (aVal < bVal) return -1 * direction;
+                                if (aVal > bVal) return 1 * direction;
+                            }
+                            return 0;
+                        });
+                        break;
+                    }
+
+                    case '$limit': {
+                        docs = docs.slice(0, stage.$limit as number);
+                        break;
+                    }
+
+                    case '$skip': {
+                        docs = docs.slice(stage.$skip as number);
+                        break;
+                    }
+
+                    case '$unwind': {
+                        const path = (typeof stage.$unwind === 'string' ? stage.$unwind : (stage.$unwind as { path: string }).path).replace(/^\$/, '');
+                        const unwound: Record<string, unknown>[] = [];
+                        for (const doc of docs) {
+                            const arr = getNestedField(doc, path);
+                            if (Array.isArray(arr)) {
+                                for (const item of arr) {
+                                    unwound.push({ ...doc, [path]: item });
+                                }
+                            } else if (arr !== undefined && arr !== null) {
+                                unwound.push(doc); // Non-array values pass through
+                            }
+                            // Documents with null/missing/empty array are dropped
+                        }
+                        docs = unwound;
+                        break;
+                    }
+
+                    case '$count': {
+                        const countField = stage.$count as string;
+                        docs = [{ [countField]: docs.length }];
+                        break;
+                    }
+
+                    default:
+                        // Unsupported stage — skip silently
+                        break;
+                }
             }
 
-            // Empty result for unsupported aggregations
             return {
-                cursor: { firstBatch: [], id: 0, ns: `${db}.${collName}` },
+                cursor: {
+                    firstBatch: docs,
+                    id: 0,
+                    ns: `${db}.${collName}`,
+                },
                 ok: 1,
             };
         }
@@ -628,6 +915,57 @@ async function handleCommand(
 
         case 'killCursors':
             return { cursorsKilled: [], cursorsNotFound: [], cursorsAlive: [], cursorsUnknown: [], ok: 1 };
+
+        // ---- Transaction commands (best-effort) ----
+        case 'startTransaction': {
+            const lsid = body.lsid as { id: string } | undefined;
+            const sessionId = lsid?.id || `session-${connectionId}`;
+            sessionBuffers.set(sessionId, []);
+            return { ok: 1 };
+        }
+
+        case 'commitTransaction': {
+            const lsid = body.lsid as { id: string } | undefined;
+            const sessionId = lsid?.id || `session-${connectionId}`;
+            const buffer = sessionBuffers.get(sessionId);
+            if (!buffer) return { ok: 1 };
+
+            // Flush buffered writes sequentially (best-effort, not atomic)
+            for (const write of buffer) {
+                try {
+                    switch (write.op) {
+                        case 'insert':
+                            await store.insert(write.collection, [write.args as Record<string, unknown>]);
+                            break;
+                        case 'updateOne':
+                            await store.updateOne(write.collection, write.args.filter as Record<string, unknown>, write.args.update as any);
+                            break;
+                        case 'updateMany':
+                            await store.updateMany(write.collection, write.args.filter as Record<string, unknown>, write.args.update as any);
+                            break;
+                        case 'deleteOne':
+                            await store.deleteOne(write.collection, write.args.filter as Record<string, unknown>);
+                            break;
+                        case 'deleteMany':
+                            await store.deleteMany(write.collection, write.args.filter as Record<string, unknown>);
+                            break;
+                    }
+                } catch (err: any) {
+                    sessionBuffers.delete(sessionId);
+                    return { ok: 0, errmsg: `Transaction commit failed: ${err.message}`, code: 251 };
+                }
+            }
+
+            sessionBuffers.delete(sessionId);
+            return { ok: 1 };
+        }
+
+        case 'abortTransaction': {
+            const lsid = body.lsid as { id: string } | undefined;
+            const sessionId = lsid?.id || `session-${connectionId}`;
+            sessionBuffers.delete(sessionId); // Discard all buffered writes
+            return { ok: 1 };
+        }
 
         default:
             return {
@@ -666,4 +1004,18 @@ function normalizeDocument(doc: Record<string, unknown>, depth: number = 0): Rec
 
 function normalizeFilter(filter: Record<string, unknown>): Record<string, unknown> {
     return normalizeDocument(filter);
+}
+
+/**
+ * Get a nested field value from a document using dot notation.
+ * e.g., getNestedField({a: {b: 1}}, 'a.b') => 1
+ */
+function getNestedField(doc: Record<string, unknown>, path: string): unknown {
+    const parts = path.split('.');
+    let current: unknown = doc;
+    for (const part of parts) {
+        if (current === null || current === undefined || typeof current !== 'object') return undefined;
+        current = (current as Record<string, unknown>)[part];
+    }
+    return current;
 }

@@ -310,6 +310,30 @@ export class Collection<TDoc extends Document = Document> {
         );
         return result.values;
     }
+
+    /**
+     * Execute an aggregation pipeline.
+     *
+     * Supported stages: $match, $lookup, $project, $sort, $limit, $skip, $unwind, $count.
+     *
+     * @example
+     * ```ts
+     * const results = await collection.aggregate([
+     *   { $match: { status: 'active' } },
+     *   { $lookup: { from: 'orders', localField: '_id', foreignField: 'userId', as: 'orders' } },
+     *   { $sort: { createdAt: -1 } },
+     *   { $limit: 10 },
+     * ]);
+     * ```
+     */
+    async aggregate(pipeline: Record<string, unknown>[]): Promise<DocumentWithId[]> {
+        const result = await this.transport.request<{ cursor: { firstBatch: DocumentWithId[] } }>(
+            'POST',
+            `/api/v1/collections/${this.collectionName}/aggregate`,
+            { pipeline },
+        );
+        return result.cursor.firstBatch;
+    }
 }
 
 // ---- Database ----

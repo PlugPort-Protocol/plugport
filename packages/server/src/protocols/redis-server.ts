@@ -455,6 +455,62 @@ export class RedisServer implements ProtocolServerInstance {
                 break;
             }
 
+            case 'HMSET': {
+                // HMSET key field value [field value ...]
+                const hashKey = `redis:hash:${args[1]}`;
+                const existing = await this.kvStore.get(hashKey);
+                const doc = existing ? JSON.parse(existing.toString('utf-8')) : {};
+                for (let i = 2; i < args.length; i += 2) {
+                    doc[args[i]] = args[i + 1];
+                }
+                await this.kvStore.put(hashKey, Buffer.from(JSON.stringify(doc)));
+                socket.write(encodeSimpleString('OK'));
+                break;
+            }
+
+            case 'HMGET': {
+                // HMGET key field [field ...]
+                const hashKey = `redis:hash:${args[1]}`;
+                const value = await this.kvStore.get(hashKey);
+                const doc = value ? JSON.parse(value.toString('utf-8')) : {};
+                const results: Buffer[] = [];
+                for (let i = 2; i < args.length; i++) {
+                    const field = doc[args[i]];
+                    results.push(encodeBulkString(field !== undefined ? String(field) : null));
+                }
+                socket.write(encodeArray(results));
+                break;
+            }
+
+            case 'RENAME': {
+                // RENAME oldkey newkey
+                const oldName = args[1];
+                const newName = args[2];
+                if (!oldName || !newName) {
+                    socket.write(encodeError('wrong number of arguments for \'rename\' command'));
+                    break;
+                }
+
+                const prefixes = ['redis:str:', 'redis:hash:', 'redis:list:', 'redis:set:', 'redis:zset:'];
+                let found = false;
+                for (const prefix of prefixes) {
+                    const val = await this.kvStore.get(prefix + oldName);
+                    if (val) {
+                        await this.kvStore.put(prefix + newName, val);
+                        await this.kvStore.delete(prefix + oldName);
+                        found = true;
+                        break;
+                    }
+                }
+
+                if (found) {
+                    socket.write(encodeSimpleString('OK'));
+                } else {
+                    socket.write(encodeError('no such key'));
+                }
+                break;
+            }
+
             // ---- List commands (backed by JSON arrays in KV) ----
             case 'LPUSH':
             case 'RPUSH': {

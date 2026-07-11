@@ -15,6 +15,7 @@ import { MetricsCollector } from './metrics.js';
 import { getSessionOptions, type SessionData } from './auth/session.js';
 import { ApiKeyManager, type ApiKeyPermission } from './auth/api-key-manager.js';
 import { AnalyticsRecorder } from './auth/analytics-recorder.js';
+import { getAuthContract } from './auth/auth-contract.js';
 import { PrivacyManager } from './storage/privacy-manager.js';
 import { SQLTranslator } from './protocols/sql-translator.js';
 import type { TranslatedQuery } from './protocols/sql-translator.js';
@@ -495,6 +496,264 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
             const result = await store.find(req.params.name, filter);
             const values = [...new Set(result.cursor.firstBatch.map((doc) => (doc as Record<string, unknown>)[field]))];
             return { values, ok: 1 };
+        } catch (err) {
+            return handleError(err, reply);
+        }
+    });
+
+    // ---- Aggregation Pipeline ----
+
+    app.post('/api/v1/collections/:name/aggregate', async (
+        req: FastifyRequest<{
+            Params: { name: string };
+            Body: { pipeline?: Record<string, unknown>[] };
+        }>,
+        reply: FastifyReply,
+    ) => {
+        if (!(await checkAccess(req, reply, req.params.name, 'read'))) return;
+        try {
+            const { pipeline = [] } = req.body || {} as { pipeline?: Record<string, unknown>[] };
+            const collName = req.params.name;
+
+            // Fetch initial documents
+            const initialResult = await store.find(collName, {});
+            let docs: Record<string, unknown>[] = initialResult.cursor.firstBatch as Record<string, unknown>[];
+
+            for (const stage of pipeline) {
+                const stageKey = Object.keys(stage)[0];
+
+                switch (stageKey) {
+                    case '$match': {
+                        const filter = stage.$match as Record<string, unknown>;
+                        const matchResult = await store.find(collName, filter);
+                        // Re-filter from current docs instead of re-querying for chained pipelines
+                        const matchIds = new Set(matchResult.cursor.firstBatch.map((d: any) => d._id));
+                        docs = docs.filter((d: any) => matchIds.has(d._id));
+                        break;
+                    }
+
+                    case '$lookup': {
+                        const lookup = stage.$lookup as {
+                            from: string; localField: string; foreignField: string; as: string;
+                        };
+                        const localValues = docs.map(doc => (doc as any)[lookup.localField]).filter(v => v != null);
+                        let foreignDocs: Record<string, unknown>[] = [];
+                        if (localValues.length > 0) {
+                            const foreignResult = await store.find(lookup.from, {
+                                [lookup.foreignField]: { $in: localValues },
+                            });
+                            foreignDocs = foreignResult.cursor.firstBatch as Record<string, unknown>[];
+                        }
+                        const lookupIndex = new Map<string, Record<string, unknown>[]>();
+                        for (const fdoc of foreignDocs) {
+                            const key = String((fdoc as any)[lookup.foreignField] ?? '');
+                            if (!lookupIndex.has(key)) lookupIndex.set(key, []);
+                            lookupIndex.get(key)!.push(fdoc);
+                        }
+                        docs = docs.map(doc => {
+                            const localVal = String((doc as any)[lookup.localField] ?? '');
+                            return { ...doc, [lookup.as]: lookupIndex.get(localVal) || [] };
+                        });
+                        break;
+                    }
+
+                    case '$project': {
+                        const projection = stage.$project as Record<string, unknown>;
+                        const include = Object.entries(projection).filter(([, v]) => v === 1 || v === true);
+                        const exclude = Object.entries(projection).filter(([, v]) => v === 0 || v === false);
+                        if (include.length > 0) {
+                            const fields = new Set(include.map(([k]) => k));
+                            fields.add('_id');
+                            if (projection._id === 0 || projection._id === false) fields.delete('_id');
+                            docs = docs.map(doc => {
+                                const r: Record<string, unknown> = {};
+                                for (const f of fields) { if (f in doc) r[f] = doc[f]; }
+                                return r;
+                            });
+                        } else if (exclude.length > 0) {
+                            const exFields = new Set(exclude.map(([k]) => k));
+                            docs = docs.map(doc => {
+                                const r: Record<string, unknown> = {};
+                                for (const [k, v] of Object.entries(doc)) { if (!exFields.has(k)) r[k] = v; }
+                                return r;
+                            });
+                        }
+                        break;
+                    }
+
+                    case '$sort': {
+                        const sortSpec = stage.$sort as Record<string, number>;
+                        docs.sort((a, b) => {
+                            for (const [field, dir] of Object.entries(sortSpec)) {
+                                const av = (a as any)[field], bv = (b as any)[field];
+                                if (av < bv) return -1 * dir;
+                                if (av > bv) return 1 * dir;
+                            }
+                            return 0;
+                        });
+                        break;
+                    }
+
+                    case '$limit': docs = docs.slice(0, stage.$limit as number); break;
+                    case '$skip': docs = docs.slice(stage.$skip as number); break;
+
+                    case '$unwind': {
+                        const path = (typeof stage.$unwind === 'string' ? stage.$unwind : (stage.$unwind as { path: string }).path).replace(/^\$/, '');
+                        const unwound: Record<string, unknown>[] = [];
+                        for (const doc of docs) {
+                            const arr = (doc as any)[path];
+                            if (Array.isArray(arr)) {
+                                for (const item of arr) unwound.push({ ...doc, [path]: item });
+                            } else if (arr != null) {
+                                unwound.push(doc);
+                            }
+                        }
+                        docs = unwound;
+                        break;
+                    }
+
+                    case '$count': {
+                        docs = [{ [stage.$count as string]: docs.length }];
+                        break;
+                    }
+                }
+            }
+
+            return {
+                cursor: { firstBatch: docs, id: 0, ns: `plugport.${collName}` },
+                ok: 1,
+            };
+        } catch (err) {
+            return handleError(err, reply);
+        }
+    });
+
+    // ---- On-Chain Auth Relay Endpoints ----
+    // These endpoints relay EIP-712 signed meta-transactions to the PlugPortAuth
+    // contract via the gas station wallet. The dashboard calls these after the user
+    // signs a typed message in their wallet.
+
+    app.post('/api/v1/auth/register-key', async (
+        req: FastifyRequest<{
+            Body: {
+                keyOwner: string;
+                commitment: string;
+                salt: string;
+                storedKey: string;
+                serverKey: string;
+                nonce: number;
+                signature: string;
+            };
+        }>,
+        reply: FastifyReply,
+    ) => {
+        try {
+            const { keyOwner, commitment, salt, storedKey, serverKey, nonce, signature } = req.body;
+            if (!keyOwner || !commitment || !salt || !storedKey || !serverKey || !signature) {
+                return reply.status(400).send({ ok: 0, errmsg: 'Missing required fields' });
+            }
+
+            const authContract = getAuthContract();
+
+            if (authContract.isConfigured) {
+                // Live on-chain registration via gas station meta-tx
+                const result = await authContract.registerKeyMeta(
+                    keyOwner, commitment, salt, storedKey, serverKey, nonce, signature,
+                );
+                return {
+                    ok: 1,
+                    message: 'Key registered on-chain',
+                    keyOwner,
+                    keyIndex: result.keyIndex,
+                    txHash: result.txHash,
+                };
+            }
+
+            // Fallback: log-only mode when contract is not deployed
+            console.log(`[Auth] Key registration requested for ${keyOwner} (nonce: ${nonce}) — contract not configured, logged only`);
+            return {
+                ok: 1,
+                message: 'Key registration request received (contract not deployed — logged only)',
+                keyOwner,
+            };
+        } catch (err) {
+            return handleError(err, reply);
+        }
+    });
+
+    app.post('/api/v1/auth/revoke-key', async (
+        req: FastifyRequest<{
+            Body: {
+                keyOwner: string;
+                keyIndex: number;
+                nonce: number;
+                signature: string;
+            };
+        }>,
+        reply: FastifyReply,
+    ) => {
+        try {
+            const { keyOwner, keyIndex, nonce, signature } = req.body;
+            if (!keyOwner || keyIndex === undefined || !signature) {
+                return reply.status(400).send({ ok: 0, errmsg: 'Missing required fields' });
+            }
+
+            const authContract = getAuthContract();
+
+            if (authContract.isConfigured) {
+                // Live on-chain revocation via gas station meta-tx
+                const result = await authContract.revokeKeyMeta(keyOwner, keyIndex, nonce, signature);
+                return {
+                    ok: 1,
+                    message: 'Key revoked on-chain',
+                    keyOwner,
+                    keyIndex,
+                    txHash: result.txHash,
+                };
+            }
+
+            // Fallback: log-only mode
+            console.log(`[Auth] Key revocation requested for ${keyOwner} (index: ${keyIndex}) — contract not configured, logged only`);
+            return {
+                ok: 1,
+                message: 'Key revocation request received (contract not deployed — logged only)',
+                keyOwner,
+                keyIndex,
+            };
+        } catch (err) {
+            return handleError(err, reply);
+        }
+    });
+
+    app.get('/api/v1/auth/keys/:address', async (
+        req: FastifyRequest<{ Params: { address: string } }>,
+        reply: FastifyReply,
+    ) => {
+        try {
+            const { address } = req.params;
+            if (!address || !address.startsWith('0x')) {
+                return reply.status(400).send({ ok: 0, errmsg: 'Invalid address' });
+            }
+
+            const authContract = getAuthContract();
+
+            if (authContract.isReadable) {
+                // Live on-chain read of active keys
+                const activeKeys = await authContract.getActiveKeys(address);
+                return {
+                    ok: 1,
+                    address,
+                    activeKeys,
+                };
+            }
+
+            // Fallback: empty when contract not configured
+            console.log(`[Auth] Active keys requested for ${address} — contract not configured, returning empty`);
+            return {
+                ok: 1,
+                address,
+                activeKeys: [],
+            };
         } catch (err) {
             return handleError(err, reply);
         }

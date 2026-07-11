@@ -35,6 +35,7 @@ const sidebars: SidebarsConfig = {
             items: [
                 'protocols/protocols',
                 'advanced/joins',
+                'advanced/authentication',
             ],
         },
         {

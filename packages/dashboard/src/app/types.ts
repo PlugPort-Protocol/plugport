@@ -61,6 +61,15 @@ export interface UserMetrics {
     totalRequests: number;
 }
 
+export interface OnChainKeyInfo {
+    keyIndex: number;
+    commitment: string;
+    active: boolean;
+    createdAt: number;
+    /** Client-side only: the re-derived API key (never stored) */
+    derivedKey?: string;
+}
+
 export type TabId = 'overview' | 'collections' | 'query' | 'indexes' | 'metrics' | 'explorer' | 'protocols' | 'privacy' | 'apikeys' | 'deploy';
 
 export type ScopeState = 'my' | 'all' | 'both';

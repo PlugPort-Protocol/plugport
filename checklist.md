@@ -209,3 +209,34 @@
 - [x] CSRF cookie cleared on `/auth/logout` alongside session destruction
 - [x] Auth security tests: 5 new tests (rate limit 429 enforcement, CSRF exemptions)
 - [x] All 249 tests passing (208 server + 18 dashboard CSS + 23 integration)
+
+## Phase 25: Redis Command Expansion (HMSET, HMGET, RENAME)
+- [x] Implemented `HMSET` — multi-field hash write (merges into existing hash document in KV store)
+- [x] Implemented `HMGET` — multi-field hash read (returns array of values, `nil` for missing fields)
+- [x] Implemented `RENAME` — atomic key rename across all data types (string, hash, list, set, sorted set)
+- [x] Updated protocols documentation with HMSET/HMGET/RENAME in supported commands table
+- [x] Added usage examples (multi-field hash ops, cross-type key rename) to protocols docs
+- [x] Updated HTTP API reference with complete Redis command list (50+ commands)
+
+## Phase 26: On-Chain Authentication, Aggregation Pipeline & SCRAM-SHA-256
+- [x] **PlugPortAuth.sol** — standalone on-chain auth contract with EIP-712 meta-transactions, hash commitments (`keccak256(apiKey)`), SCRAM-SHA-256 verifiers, dedicated gas station, 10-key limit, nonce replay protection
+- [x] **Aggregation pipeline** — full `$match`, `$project`, `$sort`, `$limit`, `$skip`, `$unwind`, `$count`, `$lookup` (cross-collection joins) in wire-server and HTTP API
+- [x] **SCRAM-SHA-256** — wire protocol authentication via `saslStart`/`saslContinue` with on-chain verifier lookup + PLAIN fallback
+- [x] **Transactions** — best-effort buffer-and-flush via `startTransaction`, `commitTransaction`, `abortTransaction`
+- [x] **HTTP auth relay endpoints** — `POST /auth/register-key`, `POST /auth/revoke-key`, `GET /auth/keys/:address` (meta-tx relay via gas station)
+- [x] **Dashboard**: API Keys tab rewrite (wallet-derived key generation, on-chain revocation, key recovery by re-signing indices 0–9)
+- [x] **Dashboard**: Query Builder aggregate mode (find/aggregate toggle, pipeline editor, template presets for `$match+$sort`, `$lookup`, `$unwind+$count`, `$project`)
+- [x] **SDKs**: `Collection.aggregate()` added to Node.js, Python, and Go SDKs
+- [x] **CLI**: `plugport aggregate <collection> --pipeline '<json>'` command added
+- [x] **Integration tests**: 11-case aggregate test suite (`$match`, `$project`, `$sort`, `$limit`, `$skip`, `$count`, `$unwind`, `$lookup`, combined pipelines)
+- [x] **Docs**: Full authentication doc (`docs/advanced/authentication.md`), updated migration guide, wire protocol, FAQ, HTTP API, and all SDK docs
+- [x] **README**: Updated features table, project structure, architecture diagram (PlugPortAuth.sol added)
+- [x] **Deploy**: `.env.example`, `.env.testnet.example`, `.env.mainnet.example` updated with `AUTH_CONTRACT_ADDRESS` and `AUTH_GAS_STATION_PRIVATE_KEY`
+
+## Phase 27: Live Contract Integration (AuthContractAdapter)
+- [x] Created `auth/auth-contract.ts` — ethers.js v6 adapter for PlugPortAuth.sol (singleton, graceful fallback when not configured)
+- [x] Wired `POST /auth/register-key` to `authContract.registerKeyMeta()` — returns `txHash` + `keyIndex`
+- [x] Wired `POST /auth/revoke-key` to `authContract.revokeKeyMeta()` — returns `txHash`
+- [x] Wired `GET /auth/keys/:address` to `authContract.getActiveKeys()` — returns on-chain key entries
+- [x] Wired SCRAM-SHA-256 `saslStart` to read on-chain verifiers via `getVerifier(address, keyIndex)` with legacy fallback
+- [x] Exported `AuthContractAdapter`, `getAuthContract`, `OnChainKeyEntry`, `ScramVerifier` from auth barrel

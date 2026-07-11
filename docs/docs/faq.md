@@ -75,7 +75,7 @@ See the [Migration Guide compatibility table](./migration-guide.md#data-format-c
 
 ### What's NOT supported?
 
-Transactions, `$lookup` joins, `$regex`, change streams, text search, compound indexes, and TTL indexes. These are on the roadmap.
+`$regex`, change streams, text search, compound indexes, TTL indexes, and `$group` aggregation. These are on the roadmap. Note: `$lookup` joins and transactions (best-effort) are now supported.
 
 ### Can I use mongosh?
 

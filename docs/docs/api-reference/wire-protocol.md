@@ -91,7 +91,7 @@ When a client connects, it sends a `hello` or `isMaster` command. PlugPort respo
 
 | Command | Status | Notes |
 |---------|--------|-------|
-| `aggregate` | ⚠️ Basic | Simple pipelines |
+| `aggregate` | ✅ Full | Pipeline stages: `$match`, `$lookup`, `$project`, `$sort`, `$limit`, `$skip`, `$unwind`, `$count` |
 | `count` | ✅ Full | |
 | `distinct` | ✅ Full | |
 
@@ -107,24 +107,31 @@ When a client connects, it sends a `hello` or `isMaster` command. PlugPort respo
 
 | Command | Status | Notes |
 |---------|--------|-------|
-| `saslStart` | ⚠️ Placeholder | Returns success |
-| `saslContinue` | ⚠️ Placeholder | Returns success |
+| `saslStart` | ✅ Full | SCRAM-SHA-256 (default) + PLAIN |
+| `saslContinue` | ✅ Full | Completes SCRAM-SHA-256 handshake |
 
-:::info
-SCRAM authentication is a placeholder that accepts any credentials. For production, use the HTTP API with API key authentication, or deploy behind a network boundary.
+PlugPort supports SCRAM-SHA-256 (the default for MongoDB 4.0+) and PLAIN authentication. SCRAM verifiers are stored on-chain via the `PlugPortAuth` smart contract for trustless, auditable key management.
+
+### Transactions
+
+| Command | Status | Notes |
+|---------|--------|-------|
+| `startTransaction` | ⚠️ Best-Effort | Creates a write buffer for the session |
+| `commitTransaction` | ⚠️ Best-Effort | Flushes buffered writes sequentially |
+| `abortTransaction` | ⚠️ Best-Effort | Discards buffered writes |
+
+:::warning
+Transactions use best-effort semantics (similar to FerretDB). Writes are buffered in memory and flushed sequentially on commit. If a write fails mid-commit, preceding writes are NOT rolled back. This provides ordering guarantees but not atomicity.
 :::
 
 ### Unsupported Commands
 
 | Command | Status | Alternative |
 |---------|--------|-------------|
-| `$lookup` | ❌ | Multiple queries |
-| `$unwind` | ❌ | Client-side |
 | `$group` | ❌ | Client-side |
-| `transactions` | ❌ | Single-operation atomicity |
 | `changeStreams` | ❌ | Poll-based |
 | `$text` search | ❌ | Client-side filter |
-| `getMore` | ❌ | Use `limit` + `skip` |
+| `$regex` | ❌ | Client-side filter |
 
 ## Usage Examples
 
@@ -147,6 +154,23 @@ db.users.deleteOne({ name: "Charlie" })
 // Indexes
 db.users.createIndex({ email: 1 }, { unique: true })
 db.users.getIndexes()
+
+// Aggregation with $lookup
+db.orders.aggregate([
+  { $match: { status: "completed" } },
+  { $lookup: { from: "users", localField: "userId", foreignField: "_id", as: "user" } },
+  { $unwind: "$user" },
+  { $project: { orderId: 1, total: 1, "user.name": 1 } },
+  { $sort: { total: -1 } },
+  { $limit: 10 }
+])
+
+// Transactions (best-effort)
+const session = db.getMongo().startSession()
+session.startTransaction()
+db.accounts.updateOne({ _id: "alice" }, { $inc: { balance: -100 } })
+db.accounts.updateOne({ _id: "bob" }, { $inc: { balance: 100 } })
+session.commitTransaction()
 
 // Admin
 db.adminCommand({ ping: 1 })

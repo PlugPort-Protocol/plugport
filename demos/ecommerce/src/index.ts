@@ -106,6 +106,42 @@ async function init() {
         res.json(userOrders);
     });
 
+    // ---- Aggregation Demo Routes ($lookup) ----
+
+    // Get user orders enriched with full product details via $lookup
+    app.get('/api/orders/:userId/summary', async (req, res) => {
+        const results = await orders.aggregate([
+            { $match: { userId: req.params.userId } },
+            { $unwind: '$items' },
+            { $lookup: {
+                from: 'products',
+                localField: 'items.productId',
+                foreignField: '_id',
+                as: 'productDetails',
+            }},
+            { $sort: { createdAt: -1 } },
+            { $limit: 50 },
+        ]);
+        res.json(results);
+    });
+
+    // Get total order count per category (aggregation pipeline demo)
+    app.get('/api/analytics/category-sales', async (_req, res) => {
+        // Get all products then all orders to show $lookup in action
+        const results = await orders.aggregate([
+            { $unwind: '$items' },
+            { $lookup: {
+                from: 'products',
+                localField: 'items.productId',
+                foreignField: '_id',
+                as: 'product',
+            }},
+            { $project: { _id: 0, orderId: '$_id', productName: '$items.name', total: '$items.price' } },
+            { $count: 'totalLineItems' },
+        ]);
+        res.json(results);
+    });
+
     // Health
     app.get('/health', async (_req, res) => {
         const health = await client.health();

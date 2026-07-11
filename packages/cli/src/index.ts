@@ -495,6 +495,43 @@ program
         }
     });
 
+// ---- Aggregate Command ----
+program
+    .command('aggregate <collection>')
+    .description('Run an aggregation pipeline against a PlugPort collection')
+    .option('-p, --pipeline <json>', 'Pipeline as JSON array string', '[]')
+    .option('-u, --url <url>', 'PlugPort server URL', 'http://localhost:8080')
+    .option('-k, --api-key <key>', 'API key for authentication')
+    .action(async (collection, options) => {
+        try {
+            const pipeline = JSON.parse(options.pipeline);
+            if (!Array.isArray(pipeline)) {
+                console.error(chalk.red('Pipeline must be a JSON array'));
+                return;
+            }
+
+            const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+            if (options.apiKey) headers['x-api-key'] = options.apiKey;
+
+            const response = await fetch(`${options.url}/api/v1/collections/${collection}/aggregate`, {
+                method: 'POST',
+                headers,
+                body: JSON.stringify({ pipeline }),
+            });
+
+            const result = await response.json() as { cursor: { firstBatch: unknown[] }; ok: number; errmsg?: string };
+            if (result.ok !== 1) {
+                console.error(chalk.red(`Aggregation failed: ${result.errmsg}`));
+                return;
+            }
+
+            console.log(chalk.cyan(`\n  Aggregation results (${result.cursor.firstBatch.length} documents):\n`));
+            console.log(JSON.stringify(result.cursor.firstBatch, null, 2));
+        } catch (err) {
+            console.error(chalk.red('Aggregation failed:'), err instanceof Error ? err.message : err);
+        }
+    });
+
 // ---- Status Command (enhanced) ----
 program
     .command('status')

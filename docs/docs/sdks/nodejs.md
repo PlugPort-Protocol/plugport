@@ -227,6 +227,26 @@ const categories = await products.distinct('category', { inStock: true });
 // ['electronics', 'clothing', 'books']
 ```
 
+#### `aggregate(pipeline)`
+
+Execute an aggregation pipeline. Supported stages: `$match`, `$lookup`, `$project`, `$sort`, `$limit`, `$skip`, `$unwind`, `$count`.
+
+```typescript
+const results = await orders.aggregate([
+  { $match: { status: 'completed' } },
+  { $lookup: {
+      from: 'users',
+      localField: 'userId',
+      foreignField: '_id',
+      as: 'user',
+  }},
+  { $unwind: '$user' },
+  { $project: { orderId: 1, total: 1, 'user.name': 1 } },
+  { $sort: { total: -1 } },
+  { $limit: 10 },
+]);
+```
+
 #### `updateMany(filter, update)`
 
 ```typescript

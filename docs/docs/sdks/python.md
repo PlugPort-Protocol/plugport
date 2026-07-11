@@ -140,6 +140,27 @@ if user:
     print(user["name"])
 ```
 
+#### `aggregate(pipeline) -> list`
+
+Execute an aggregation pipeline. Supported stages: `$match`, `$lookup`, `$project`, `$sort`, `$limit`, `$skip`, `$unwind`, `$count`.
+
+```python
+results = orders.aggregate([
+    {"$match": {"status": "completed"}},
+    {"$lookup": {
+        "from": "users",
+        "localField": "userId",
+        "foreignField": "_id",
+        "as": "user",
+    }},
+    {"$unwind": "$user"},
+    {"$sort": {"total": -1}},
+    {"$limit": 10},
+])
+for order in results:
+    print(f"{order['orderId']}: {order['user']['name']}")
+```
+
 #### `update_one(filter, update, upsert=False) -> UpdateResult`
 
 ```python

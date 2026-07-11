@@ -395,6 +395,45 @@ func (c *Collection) Drop(ctx context.Context) error {
 	return err
 }
 
+// Aggregate executes an aggregation pipeline on the collection.
+//
+// Supported stages: $match, $lookup, $project, $sort, $limit, $skip, $unwind, $count.
+//
+// Example:
+//
+//	results, err := collection.Aggregate(ctx, []map[string]interface{}{
+//	    {"$match": map[string]interface{}{"status": "active"}},
+//	    {"$lookup": map[string]interface{}{"from": "orders", "localField": "_id", "foreignField": "userId", "as": "orders"}},
+//	    {"$sort": map[string]interface{}{"createdAt": -1}},
+//	    {"$limit": 10},
+//	})
+func (c *Collection) Aggregate(ctx context.Context, pipeline []map[string]interface{}) ([]map[string]interface{}, error) {
+	result, err := c.db.client.doPost(ctx, fmt.Sprintf("/api/v1/collections/%s/aggregate", c.name), map[string]interface{}{
+		"pipeline": pipeline,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	cursor, ok := result["cursor"].(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("invalid aggregate response: missing cursor")
+	}
+
+	batch, ok := cursor["firstBatch"].([]interface{})
+	if !ok {
+		return []map[string]interface{}{}, nil
+	}
+
+	docs := make([]map[string]interface{}, 0, len(batch))
+	for _, item := range batch {
+		if doc, ok := item.(map[string]interface{}); ok {
+			docs = append(docs, doc)
+		}
+	}
+	return docs, nil
+}
+
 // FindOptions contains options for Find operations.
 type FindOptions struct {
 	Limit      int

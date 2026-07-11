@@ -7,11 +7,13 @@ import type { CollectionInfo } from '../types';
 
 export function QueryBuilderTab({ collections }: { collections: CollectionInfo[] }) {
     const [dialect, setDialect] = useState<'mongo' | 'sql' | 'redis'>('mongo');
+    const [mongoMode, setMongoMode] = useState<'find' | 'aggregate'>('find');
     const [collection, setCollection] = useState(collections[0]?.name || '');
     const [filter, setFilter] = useState('{}');
     const [projection, setProjection] = useState('');
     const [sort, setSort] = useState('');
     const [limit, setLimit] = useState('50');
+    const [pipeline, setPipeline] = useState('[]');
     const [sqlQuery, setSqlQuery] = useState('');
     const [redisCmd, setRedisCmd] = useState('');
     const [results, setResults] = useState<Record<string, unknown>[] | null>(null);
@@ -42,7 +44,16 @@ export function QueryBuilderTab({ collections }: { collections: CollectionInfo[]
         setSseMessages([]);
         const start = Date.now();
         try {
-            if (dialect === 'mongo') {
+            if (dialect === 'mongo' && mongoMode === 'aggregate') {
+                const parsedPipeline = JSON.parse(pipeline || '[]');
+                if (!Array.isArray(parsedPipeline)) throw new Error('Pipeline must be a JSON array');
+
+                const result = await apiPost<{ cursor: { firstBatch: Record<string, unknown>[] }; ok: number; errmsg?: string }>(
+                    `/api/v1/collections/${collection}/aggregate`, { pipeline: parsedPipeline }
+                );
+                if (result.ok !== 1) throw new Error(result.errmsg || 'Aggregation failed');
+                setResults(result.cursor.firstBatch);
+            } else if (dialect === 'mongo') {
                 const body: Record<string, unknown> = { filter: JSON.parse(filter || '{}') };
                 if (projection) body.projection = JSON.parse(projection);
                 if (sort) body.sort = JSON.parse(sort);
@@ -131,33 +142,88 @@ export function QueryBuilderTab({ collections }: { collections: CollectionInfo[]
 
                 {dialect === 'mongo' && (
                     <>
-                        <div className="grid-2" style={{ marginBottom: 16 }}>
-                            <div className="input-group">
-                                <label className="label">Collection</label>
-                                <select className="select" value={collection} onChange={e => setCollection(e.target.value)}>
+                        {/* Find / Aggregate toggle */}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
+                            <div style={{ display: 'flex', background: 'var(--bg-tertiary)', borderRadius: 6, padding: 2 }}>
+                                {(['find', 'aggregate'] as const).map(m => (
+                                    <button
+                                        key={m}
+                                        style={{
+                                            border: 'none',
+                                            background: mongoMode === m ? 'var(--bg-primary)' : 'transparent',
+                                            color: mongoMode === m ? 'var(--text-primary)' : 'var(--text-tertiary)',
+                                            padding: '4px 14px', fontSize: 12, fontWeight: 600, borderRadius: 4, cursor: 'pointer',
+                                            textTransform: 'capitalize',
+                                        }}
+                                        onClick={() => { setMongoMode(m); setResults(null); setError(null); }}
+                                    >
+                                        {m === 'aggregate' ? '⚡ Aggregate' : '🔍 Find'}
+                                    </button>
+                                ))}
+                            </div>
+                            <div className="input-group" style={{ flex: 1, marginBottom: 0 }}>
+                                <select className="select" value={collection} onChange={e => setCollection(e.target.value)} style={{ marginBottom: 0 }}>
                                     {collections.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
                                     <option value="">-- enter manually --</option>
                                 </select>
                             </div>
-                            <div className="input-group">
-                                <label className="label">Limit</label>
-                                <input className="input" type="number" value={limit} onChange={e => setLimit(e.target.value)} />
-                            </div>
                         </div>
-                        <div className="input-group">
-                            <label className="label">Filter (JSON)</label>
-                            <textarea className="textarea" value={filter} onChange={e => setFilter(e.target.value)} rows={3} placeholder='{"field": "value"}' />
-                        </div>
-                        <div className="grid-2">
-                            <div className="input-group">
-                                <label className="label">Projection (optional)</label>
-                                <input className="input input-mono" value={projection} onChange={e => setProjection(e.target.value)} placeholder='{"password": 0}' />
-                            </div>
-                            <div className="input-group">
-                                <label className="label">Sort (optional)</label>
-                                <input className="input input-mono" value={sort} onChange={e => setSort(e.target.value)} placeholder='{"createdAt": -1}' />
-                            </div>
-                        </div>
+
+                        {mongoMode === 'find' ? (
+                            <>
+                                <div className="grid-2" style={{ marginBottom: 16 }}>
+                                    <div className="input-group">
+                                        <label className="label">Filter (JSON)</label>
+                                        <textarea className="textarea" value={filter} onChange={e => setFilter(e.target.value)} rows={3} placeholder='{"field": "value"}' />
+                                    </div>
+                                    <div className="input-group">
+                                        <label className="label">Limit</label>
+                                        <input className="input" type="number" value={limit} onChange={e => setLimit(e.target.value)} />
+                                    </div>
+                                </div>
+                                <div className="grid-2">
+                                    <div className="input-group">
+                                        <label className="label">Projection (optional)</label>
+                                        <input className="input input-mono" value={projection} onChange={e => setProjection(e.target.value)} placeholder='{"password": 0}' />
+                                    </div>
+                                    <div className="input-group">
+                                        <label className="label">Sort (optional)</label>
+                                        <input className="input input-mono" value={sort} onChange={e => setSort(e.target.value)} placeholder='{"createdAt": -1}' />
+                                    </div>
+                                </div>
+                            </>
+                        ) : (
+                            <>
+                                <div className="input-group">
+                                    <label className="label">Pipeline (JSON array of stages)</label>
+                                    <textarea
+                                        className="textarea input-mono"
+                                        value={pipeline}
+                                        onChange={e => setPipeline(e.target.value)}
+                                        rows={8}
+                                        placeholder={`[\n  { "$match": { "status": "active" } },\n  { "$lookup": { "from": "users", "localField": "userId", "foreignField": "_id", "as": "user" } },\n  { "$sort": { "createdAt": -1 } },\n  { "$limit": 10 }\n]`}
+                                    />
+                                </div>
+                                <div style={{ display: 'flex', gap: 8, marginTop: 4, marginBottom: 12, flexWrap: 'wrap' }}>
+                                    <span style={{ fontSize: 11, color: 'var(--text-tertiary)', lineHeight: '26px' }}>Templates:</span>
+                                    {[
+                                        { label: '$match + $sort', value: '[{"$match": {"status": "active"}}, {"$sort": {"createdAt": -1}}, {"$limit": 20}]' },
+                                        { label: '$lookup', value: `[{"$match": {}}, {"$lookup": {"from": "${collections[1]?.name || 'related'}", "localField": "_id", "foreignField": "refId", "as": "joined"}}, {"$limit": 10}]` },
+                                        { label: '$unwind + $count', value: '[{"$unwind": "$items"}, {"$count": "totalItems"}]' },
+                                        { label: '$project', value: '[{"$project": {"name": 1, "email": 1, "_id": 0}}]' },
+                                    ].map(t => (
+                                        <button
+                                            key={t.label}
+                                            className="btn btn-sm btn-secondary"
+                                            style={{ fontSize: 11, padding: '3px 10px' }}
+                                            onClick={() => setPipeline(t.value)}
+                                        >
+                                            {t.label}
+                                        </button>
+                                    ))}
+                                </div>
+                            </>
+                        )}
                     </>
                 )}
 

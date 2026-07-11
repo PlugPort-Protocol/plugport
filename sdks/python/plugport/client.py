@@ -210,6 +210,32 @@ class Collection:
         )
         return result.get("values", [])
 
+    def aggregate(self, pipeline: List[dict]) -> list:
+        """Execute an aggregation pipeline.
+
+        Supported stages: $match, $lookup, $project, $sort, $limit, $skip, $unwind, $count.
+
+        Args:
+            pipeline: List of aggregation stage dictionaries.
+
+        Returns:
+            List of result documents.
+
+        Example::
+
+            results = collection.aggregate([
+                {"$match": {"status": "active"}},
+                {"$lookup": {"from": "orders", "localField": "_id", "foreignField": "userId", "as": "orders"}},
+                {"$sort": {"createdAt": -1}},
+                {"$limit": 10},
+            ])
+        """
+        result = self._transport.post(
+            f"/api/v1/collections/{self._name}/aggregate",
+            {"pipeline": pipeline},
+        )
+        return result.get("cursor", {}).get("firstBatch", [])
+
     def create_index(self, field: str, unique: bool = False) -> str:
         """Create an index on a field."""
         result = self._transport.post(
