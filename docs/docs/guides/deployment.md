@@ -13,8 +13,8 @@ PlugPort is designed to deploy on free-tier cloud services with zero infrastruct
 
 | Method | Best For | Cost |
 |--------|----------|------|
-| [Docker Compose](./docker) | Local dev, self-hosted | Free |
-| [Kubernetes](./kubernetes) | Production, auto-scaling | Varies |
+| [Docker Compose](./docker.md) | Local dev, self-hosted | Free |
+| [Kubernetes](./kubernetes.md) | Production, auto-scaling | Varies |
 | Railway | Quick cloud deploy | Free (500hrs/mo) |
 | Vercel | Dashboard only | Free |
 | Docker Hub | Container distribution | Free (public) |

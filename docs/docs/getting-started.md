@@ -2,7 +2,7 @@
 id: getting-started
 title: Getting Started
 sidebar_position: 1
-slug: /getting-started
+slug: /
 ---
 
 # Getting Started
@@ -142,11 +142,11 @@ In dev mode, PlugPort operates without authentication. For production, PlugPort 
 2. **Wallet-Linked API Key** — Generated from the Dashboard. Use as `Authorization: Bearer pp_live_...`.
 3. **Legacy Static Key** — Set `API_KEY` env var. Use via `x-api-key` header.
 
-See the [HTTP API Reference](/docs/api-reference/http-api#authentication) for full details, including CSRF protection and rate limits.
+See the [HTTP API Reference](./api-reference/http-api.md#authentication) for full details, including CSRF protection and rate limits.
 
 ## What's Next?
 
-- **[Migration Guide](./migration-guide)** - Moving from MongoDB to PlugPort
-- **[Architecture](./architecture)** - How PlugPort works under the hood
-- **[MonadDb Integration](./monaddb-integration)** - Understanding the blockchain storage layer
+- **[Migration Guide](./migration-guide.md)** - Moving from MongoDB to PlugPort
+- **[Architecture](./architecture.md)** - How PlugPort works under the hood
+- **[MonadDb Integration](./monaddb-integration.md)** - Understanding the blockchain storage layer
 - **[SDK Reference](./category/sdk-reference)** - Detailed SDK documentation

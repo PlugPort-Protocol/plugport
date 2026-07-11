@@ -2,7 +2,6 @@
 id: monaddb-integration
 title: MonadDb Integration
 sidebar_position: 4
-slug: /monaddb-integration
 ---
 
 # MonadDb Integration

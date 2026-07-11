@@ -125,6 +125,6 @@ Session-authenticated (SIWE) mutations are protected by a double-submit CSRF coo
 
 ### Rate Limiting
 
-Auth endpoints have stricter per-route rate limits (e.g., `/auth/verify` is limited to 5 requests/min per IP) to prevent brute-force attacks. All other endpoints share a global limit of 100 requests / 10 seconds per IP. See the [HTTP API Reference](/docs/api-reference/http-api#rate-limits) for details.
+Auth endpoints have stricter per-route rate limits (e.g., `/auth/verify` is limited to 5 requests/min per IP) to prevent brute-force attacks. All other endpoints share a global limit of 100 requests / 10 seconds per IP. See the [HTTP API Reference](../api-reference/http-api.md#rate-limits) for details.
 
 The wire protocol uses SCRAM authentication (placeholder - accepts any credentials in MVP).

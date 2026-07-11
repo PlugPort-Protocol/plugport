@@ -2,7 +2,6 @@
 id: faq
 title: FAQ
 sidebar_position: 8
-slug: /faq
 ---
 
 # Frequently Asked Questions
@@ -19,7 +18,7 @@ MongoDB stores data in its WiredTiger storage engine. PlugPort stores data in Mo
 
 ### Can I use my existing MongoDB code?
 
-Yes. You can connect via the wire protocol with **zero code changes** (just change the URI). Or swap to the PlugPort SDK with a 2-line change. See the [Migration Guide](./migration-guide).
+Yes. You can connect via the wire protocol with **zero code changes** (just change the URI). Or swap to the PlugPort SDK with a 2-line change. See the [Migration Guide](./migration-guide.md).
 
 ---
 
@@ -39,7 +38,7 @@ Yes, for production. Three steps:
 2. **Fund the derived address** with MON from the [faucet](https://faucet.monad.xyz) (testnet)
 3. **Set env vars:** `MONADDB_ENDPOINT` + `MONADDB_PRIVATE_KEY` (see `.env.example`)
 
-Full walkthrough: [MonadDb Integration](./monaddb-integration#production-mode).
+Full walkthrough: [MonadDb Integration](./monaddb-integration.md#production-mode).
 
 ### What happens if the wallet runs out of MON?
 
@@ -72,7 +71,7 @@ Yes. PlugPort supports real-time messaging via Redis Pub/Sub over Server-Sent Ev
 
 ### Which MongoDB features are supported?
 
-See the [Migration Guide compatibility table](./migration-guide#data-format-compatibility). Key supported features: CRUD (`insertOne`, `insertMany`, `find`, `findOne`, `updateOne`, `updateMany`, `deleteOne`, `deleteMany`), `countDocuments`, `distinct`, single-field indexes, sort, projection, skip/limit, common query operators, and RBAC access control (`grantRole`/`revokeRole`). PlugPort also supports SQL queries and Redis commands via the multi-protocol layer.
+See the [Migration Guide compatibility table](./migration-guide.md#data-format-compatibility). Key supported features: CRUD (`insertOne`, `insertMany`, `find`, `findOne`, `updateOne`, `updateMany`, `deleteOne`, `deleteMany`), `countDocuments`, `distinct`, single-field indexes, sort, projection, skip/limit, common query operators, and RBAC access control (`grantRole`/`revokeRole`). PlugPort also supports SQL queries and Redis commands via the multi-protocol layer.
 
 ### What's NOT supported?
 
@@ -97,7 +96,7 @@ Partial support. Compass can connect and browse collections, but some advanced f
 - **Docker Hub**: Container images (public)
 - **GitHub Actions**: CI/CD (2000 min/mo)
 
-See the [Deployment Guide](./guides/deployment).
+See the [Deployment Guide](./guides/deployment.md).
 
 ### Can it run alongside MongoDB?
 

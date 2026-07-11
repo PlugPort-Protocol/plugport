@@ -2,7 +2,6 @@
 id: migration-guide
 title: Migration Guide
 sidebar_position: 2
-slug: /migration-guide
 ---
 
 # Migration Guide
@@ -227,7 +226,7 @@ The PlugPort server handles all blockchain interaction. Your application code ne
 
 ### "No such command" errors via wire protocol
 
-Some advanced MongoDB commands are not yet supported. Check the [Wire Protocol Reference](./api-reference/wire-protocol) for the full list.
+Some advanced MongoDB commands are not yet supported. Check the [Wire Protocol Reference](./api-reference/wire-protocol.md) for the full list.
 
 ### Duplicate key errors after migration
 

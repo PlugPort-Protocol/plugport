@@ -195,7 +195,7 @@ redis-cli -p 6379 SUBSCRIBE news
 redis-cli -p 6379 PUBLISH news "Hello from Monad!"
 ```
 
-See [Message Broker docs](/docs/smart-contracts/message-broker) for details.
+See [Message Broker docs](../smart-contracts/message-broker.md) for details.
 
 ### Client Libraries
 
@@ -243,7 +243,7 @@ Always enabled on the HTTP port.
 | POST | `/api/v1/:collection/delete` | Delete documents |
 | POST | `/api/v1/:collection/createIndex` | Create index |
 
-This is a summary of core endpoints. The HTTP API includes 40+ endpoints covering authentication (SIWE), API key management, multi-protocol SQL/Redis, analytics, privacy, and more. See the **[full HTTP API Reference](/docs/api-reference/http-api)** for complete documentation.
+This is a summary of core endpoints. The HTTP API includes 40+ endpoints covering authentication (SIWE), API key management, multi-protocol SQL/Redis, analytics, privacy, and more. See the **[full HTTP API Reference](../api-reference/http-api.md)** for complete documentation.
 
 ---
 

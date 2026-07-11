@@ -82,3 +82,6 @@ Thumbs.db
 # Disallowed Lockfiles
 package-lock.json
 yarn.lock
+
+# Allowed Lockfiles
+!docs/package-lock.json

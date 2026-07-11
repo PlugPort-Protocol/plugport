@@ -2,7 +2,6 @@
 id: architecture
 title: Architecture
 sidebar_position: 3
-slug: /architecture
 ---
 
 # Architecture

@@ -8,11 +8,10 @@ const config: Config = {
     favicon: 'img/favicon.ico',
 
     // GitHub Pages deployment config
-    url: 'https://plugport-protocol.github.io',
-    baseUrl: '/plugport/',
+    url: 'https://wiki.plugport.wtf',
+    baseUrl: '/',
     organizationName: 'PlugPort-Protocol',
     projectName: 'plugport',
-    deploymentBranch: 'gh-pages',
     trailingSlash: false,
 
     onBrokenLinks: 'throw',
@@ -30,7 +29,7 @@ const config: Config = {
                 docs: {
                     sidebarPath: './sidebars.ts',
                     editUrl: 'https://github.com/PlugPort-Protocol/plugport/tree/main/docs/',
-                    routeBasePath: 'docs',
+                    routeBasePath: '/',
                 },
                 blog: false,
                 theme: {
@@ -56,12 +55,12 @@ const config: Config = {
                     label: 'Docs',
                 },
                 {
-                    to: '/docs/category/sdk-reference',
+                    to: 'category/sdk-reference',
                     label: 'SDKs',
                     position: 'left',
                 },
                 {
-                    to: '/docs/api-reference/http-api',
+                    to: 'api-reference/http-api',
                     label: 'API',
                     position: 'left',
                 },
@@ -78,17 +77,17 @@ const config: Config = {
                 {
                     title: 'Documentation',
                     items: [
-                        { label: 'Getting Started', to: '/docs/getting-started' },
-                        { label: 'Migration Guide', to: '/docs/migration-guide' },
-                        { label: 'Architecture', to: '/docs/architecture' },
+                        { label: 'Getting Started', to: '/' },
+                        { label: 'Migration Guide', to: 'migration-guide' },
+                        { label: 'Architecture', to: 'architecture' },
                     ],
                 },
                 {
                     title: 'SDKs',
                     items: [
-                        { label: 'Node.js', to: '/docs/sdks/nodejs' },
-                        { label: 'Python', to: '/docs/sdks/python' },
-                        { label: 'Go', to: '/docs/sdks/go' },
+                        { label: 'Node.js', to: 'sdks/nodejs' },
+                        { label: 'Python', to: 'sdks/python' },
+                        { label: 'Go', to: 'sdks/go' },
                     ],
                 },
                 {
@@ -99,7 +98,7 @@ const config: Config = {
                     ],
                 },
             ],
-            copyright: `Copyright ${new Date().getFullYear()} PlugPort. Built for the Monad Ecosystem.`,
+            copyright: `Copyright ${new Date().getFullYear()} PlugPort. Built on Monad with ❤️.`,
         },
         prism: {
             theme: prismThemes.github,

@@ -30,7 +30,7 @@ const sidebars: SidebarsConfig = {
                 type: 'generated-index',
                 title: 'Protocol Guides',
                 description: 'Connect via MongoDB, PostgreSQL, MySQL, Redis, or HTTP REST.',
-                slug: '/category/protocols',
+                slug: 'category/protocols',
             },
             items: [
                 'protocols/protocols',
@@ -45,7 +45,7 @@ const sidebars: SidebarsConfig = {
                 type: 'generated-index',
                 title: 'Smart Contracts',
                 description: 'On-chain components: PlugPortStore, PrivateStore, MessageBroker, and Relational.',
-                slug: '/category/smart-contracts',
+                slug: 'category/smart-contracts',
             },
             items: [
                 'smart-contracts/message-broker',
@@ -60,7 +60,7 @@ const sidebars: SidebarsConfig = {
                 type: 'generated-index',
                 title: 'SDK Reference',
                 description: 'PlugPort SDKs for Node.js, Python, Go, and CLI.',
-                slug: '/category/sdk-reference',
+                slug: 'category/sdk-reference',
             },
             items: [
                 'sdks/nodejs',
@@ -73,6 +73,13 @@ const sidebars: SidebarsConfig = {
             type: 'category',
             label: 'API Reference',
             collapsed: false,
+            // Added explicit linking configuration to tie cleanly into navbar routing
+            link: {
+                type: 'generated-index',
+                title: 'API Reference',
+                description: 'PlugPort API endpoints, engine wire protocols, and execution syntax guidelines.',
+                slug: 'category/api-reference',
+            },
             items: [
                 'api-reference/http-api',
                 'api-reference/wire-protocol',
