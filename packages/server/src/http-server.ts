@@ -515,6 +515,15 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
             const { pipeline = [] } = req.body || {} as { pipeline?: Record<string, unknown>[] };
             const collName = req.params.name;
 
+            // B4: Cap pipeline stage count to prevent DoS (same as wire protocol limit)
+            if (pipeline.length > 50) {
+                return reply.status(400).send({
+                    ok: 0,
+                    errmsg: `Pipeline exceeds maximum of 50 stages (got ${pipeline.length})`,
+                    code: 15942,
+                });
+            }
+
             // Fetch initial documents
             const initialResult = await store.find(collName, {});
             let docs: Record<string, unknown>[] = initialResult.cursor.firstBatch as Record<string, unknown>[];
@@ -719,6 +728,57 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
                 message: 'Key revocation request received (contract not deployed — logged only)',
                 keyOwner,
                 keyIndex,
+            };
+        } catch (err) {
+            return handleError(err, reply);
+        }
+    });
+
+    app.post('/api/v1/auth/rotate-key', async (
+        req: FastifyRequest<{
+            Body: {
+                keyOwner: string;
+                oldKeyIndex: number;
+                newCommitment: string;
+                newSalt: string;
+                newStoredKey: string;
+                newServerKey: string;
+                nonce: number;
+                signature: string;
+            };
+        }>,
+        reply: FastifyReply,
+    ) => {
+        try {
+            const { keyOwner, oldKeyIndex, newCommitment, newSalt, newStoredKey, newServerKey, nonce, signature } = req.body;
+            if (!keyOwner || oldKeyIndex === undefined || !newCommitment || !signature) {
+                return reply.status(400).send({ ok: 0, errmsg: 'Missing required fields' });
+            }
+
+            const authContract = getAuthContract();
+
+            if (authContract.isConfigured) {
+                // Atomic on-chain rotation via gas station meta-tx
+                const result = await authContract.rotateKeyMeta(
+                    keyOwner, oldKeyIndex, newCommitment, newSalt, newStoredKey, newServerKey, nonce, signature,
+                );
+                return {
+                    ok: 1,
+                    message: 'Key rotated on-chain',
+                    keyOwner,
+                    oldKeyIndex,
+                    newKeyIndex: result.newKeyIndex,
+                    txHash: result.txHash,
+                };
+            }
+
+            // Fallback: log-only mode
+            console.log(`[Auth] Key rotation requested for ${keyOwner} (oldIndex: ${oldKeyIndex}) — contract not configured, logged only`);
+            return {
+                ok: 1,
+                message: 'Key rotation request received (contract not deployed — logged only)',
+                keyOwner,
+                oldKeyIndex,
             };
         } catch (err) {
             return handleError(err, reply);

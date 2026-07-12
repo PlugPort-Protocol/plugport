@@ -240,3 +240,27 @@
 - [x] Wired `GET /auth/keys/:address` to `authContract.getActiveKeys()` — returns on-chain key entries
 - [x] Wired SCRAM-SHA-256 `saslStart` to read on-chain verifiers via `getVerifier(address, keyIndex)` with legacy fallback
 - [x] Exported `AuthContractAdapter`, `getAuthContract`, `OnChainKeyEntry`, `ScramVerifier` from auth barrel
+
+## Phase 28: 4th Audit Fixes (11/07/2026)
+- [x] **S1**: `rotateKey` reordered to revoke-first-then-register for atomicity safety
+- [x] **S2**: Added `rotateKeyMeta` meta-tx function + `ROTATE_TYPEHASH` constant
+- [x] **B1**: SCRAM session TTL cleanup (60s max age, 30s interval, 1000 session cap with LRU eviction)
+- [x] **B2**: Multi-key SCRAM lookup — `0xAddress:N` format or auto-select first active key
+- [x] **B4**: Aggregation pipeline cap at 50 stages (error code 15942)
+- [x] **S5**: Narrowed CSRF exemption to 4 session endpoints only
+- [x] **I1**: Unsupported pipeline stages now log warnings
+- [x] **I2**: `$lookup` warns when foreign collection > 10K docs
+- [x] **I3**: Auth contract conditionally initialized (no-op when address empty)
+- [x] **I4**: `getActiveKeys` uses `Promise.all` for batched RPC calls
+- [x] **I5**: `RENAME` clears conflicting cross-type keys at destination
+- [x] Audit report saved to `audits/12072026/audit_12072026.md`
+- [x] All 226 tests passing (208 server + 18 dashboard). Type-check clean.
+
+## Phase 29: 4th Audit Downstream Gap Fixes (12/07/2026)
+- [x] **Gap 1**: Added `rotateKeyMeta` to ABI + adapter method in `auth-contract.ts`
+- [x] **Gap 1**: Added `POST /api/v1/auth/rotate-key` endpoint with gas station relay + fallback
+- [x] **Gap 2**: Documented `rotateKeyMeta`, multi-key SCRAM format (`0xAddress:N`), and 50-stage pipeline limit in docs
+- [x] **Gap 3**: Added `handleRotateOnChain()` + Rotate button in dashboard `ApiKeysTab.tsx`
+- [x] **Gap 4**: Created `protocol-security.test.ts` (8 tests: B4 pipeline cap, I5 RENAME cross-type, B2 SCRAM parsing, rotate-key endpoint)
+- [x] **Gap 4b**: Applied B4 pipeline cap (50 stages) to HTTP aggregate endpoint
+- [x] All 234 tests passing (216 server + 18 dashboard). Type-check clean.

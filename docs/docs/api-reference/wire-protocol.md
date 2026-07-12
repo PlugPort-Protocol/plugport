@@ -91,7 +91,7 @@ When a client connects, it sends a `hello` or `isMaster` command. PlugPort respo
 
 | Command | Status | Notes |
 |---------|--------|-------|
-| `aggregate` | ✅ Full | Pipeline stages: `$match`, `$lookup`, `$project`, `$sort`, `$limit`, `$skip`, `$unwind`, `$count` |
+| `aggregate` | ✅ Full | Pipeline stages: `$match`, `$lookup`, `$project`, `$sort`, `$limit`, `$skip`, `$unwind`, `$count`. Maximum 50 stages per pipeline. |
 | `count` | ✅ Full | |
 | `distinct` | ✅ Full | |
 

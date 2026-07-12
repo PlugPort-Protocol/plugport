@@ -58,6 +58,9 @@ contract PlugPortAuth {
     bytes32 public constant REVOKE_TYPEHASH = keccak256(
         "RevokeKey(address owner,uint8 keyIndex,uint256 nonce)"
     );
+    bytes32 public constant ROTATE_TYPEHASH = keccak256(
+        "RotateKey(address owner,uint8 oldKeyIndex,bytes32 newCommitment,bytes32 newSalt,bytes32 newStoredKey,bytes32 newServerKey,uint256 nonce)"
+    );
 
     // ---- State ----
 
@@ -166,8 +169,9 @@ contract PlugPortAuth {
         bytes32 newStoredKey,
         bytes32 newServerKey
     ) external {
-        uint8 newIndex = _registerKey(msg.sender, newCommitment, newSalt, newStoredKey, newServerKey);
+        // Revoke first to ensure atomicity — if revoke fails, no orphan key is created
         _revokeKey(msg.sender, oldKeyIndex);
+        uint8 newIndex = _registerKey(msg.sender, newCommitment, newSalt, newStoredKey, newServerKey);
         emit KeyRotated(msg.sender, oldKeyIndex, newIndex, block.timestamp);
     }
 
@@ -249,6 +253,55 @@ contract PlugPortAuth {
 
         // Revoke the key
         _revokeKey(keyOwner, keyIndex);
+    }
+
+    /**
+     * @notice Atomically rotate a key on behalf of a user via meta-transaction.
+     *         The gas station calls this with the user's EIP-712 signature.
+     * @param keyOwner        The wallet address.
+     * @param oldKeyIndex     The index of the key to revoke.
+     * @param newCommitment   keccak256(newApiKey).
+     * @param newSalt         SCRAM salt for the new key.
+     * @param newStoredKey    SCRAM StoredKey for the new key.
+     * @param newServerKey    SCRAM ServerKey for the new key.
+     * @param nonce           The user's current nonce (replay protection).
+     * @param signature       EIP-712 signature from the key owner.
+     */
+    function rotateKeyMeta(
+        address keyOwner,
+        uint8 oldKeyIndex,
+        bytes32 newCommitment,
+        bytes32 newSalt,
+        bytes32 newStoredKey,
+        bytes32 newServerKey,
+        uint256 nonce,
+        bytes calldata signature
+    ) external onlyGasStation {
+        // Verify nonce
+        require(nonce == nonces[keyOwner], "PlugPortAuth: invalid nonce");
+
+        // Verify EIP-712 signature
+        bytes32 structHash = keccak256(abi.encode(
+            ROTATE_TYPEHASH,
+            keyOwner,
+            oldKeyIndex,
+            newCommitment,
+            newSalt,
+            newStoredKey,
+            newServerKey,
+            nonce
+        ));
+        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, structHash));
+        address signer = _recoverSigner(digest, signature);
+        require(signer == keyOwner, "PlugPortAuth: invalid signature");
+
+        // Increment nonce
+        nonces[keyOwner]++;
+
+        // Revoke first, then register (atomic within single tx)
+        _revokeKey(keyOwner, oldKeyIndex);
+        uint8 newIndex = _registerKey(keyOwner, newCommitment, newSalt, newStoredKey, newServerKey);
+        emit KeyRotated(keyOwner, oldKeyIndex, newIndex, block.timestamp);
     }
 
     // ---- View Functions (free RPC reads) ----

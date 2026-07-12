@@ -49,7 +49,7 @@ For MongoDB wire protocol connections (`mongosh`, drivers), PlugPort supports SC
 
 ### How It Works
 
-1. **saslStart**: Client sends `client-first-message` with username (wallet address) and client nonce. Server reads SCRAM verifiers from the `PlugPortAuth` contract (free RPC call) and returns `server-first-message` with salt and iteration count.
+1. **saslStart**: Client sends `client-first-message` with username and client nonce. The username can be a wallet address (`0xAddress`) to use the first active key, or `0xAddress:N` to specify a specific key index. Server reads SCRAM verifiers from the `PlugPortAuth` contract (free RPC call) and returns `server-first-message` with salt and iteration count.
 
 2. **saslContinue**: Client computes `ClientProof` and sends `client-final-message`. Server verifies the proof against the on-chain `StoredKey`. If valid, server returns `ServerSignature` for mutual authentication.
 
@@ -78,9 +78,11 @@ graph TD
     A[Generate Key] -->|wallet.sign| B[Derive apiKey]
     B -->|compute| C[commitment + SCRAM verifiers]
     C -->|registerKey / registerKeyMeta| D[On-Chain Storage]
-    D -->|revokeKey| E[Deactivated]
-    D -->|rotateKey| F[New Key + Old Revoked]
+    D -->|revokeKey / revokeKeyMeta| E[Deactivated]
+    D -->|rotateKey / rotateKeyMeta| F[New Key + Old Revoked]
 ```
+
+All key management operations have both direct (user pays gas) and meta-transaction (gas station pays gas) variants.
 
 ### Gas Station (Meta-Transactions)
 
@@ -88,9 +90,9 @@ Users never need to hold MON to manage their API keys. The PlugPort server inclu
 
 1. User signs an EIP-712 typed message in the dashboard.
 2. Dashboard sends the signature + parameters to the server.
-3. Server's gas station wallet calls `registerKeyMeta()` on-chain.
+3. Server's gas station wallet calls the meta-transaction function (`registerKeyMeta`, `revokeKeyMeta`, or `rotateKeyMeta`) on-chain.
 4. Contract verifies the EIP-712 signature via `ecrecover`.
-5. Key is registered under the user's address. Gas is paid by the gas station.
+5. Operation executes under the user's address. Gas is paid by the gas station.
 
 Nonce-based replay protection prevents reuse of signed meta-transactions.
 

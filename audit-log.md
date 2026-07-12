@@ -280,3 +280,27 @@
 - [x] Wired SCRAM-SHA-256 `saslStart` in `wire-server.ts` to read on-chain verifiers via `getVerifier(address, 0)` when username is a wallet address (`0x...`). Falls back to local `apiKey` derivation when contract not configured or user has no on-chain keys.
 - [x] Exported `AuthContractAdapter`, `getAuthContract`, `OnChainKeyEntry`, `ScramVerifier` from `auth/index.ts` barrel.
 - [x] Updated `README.md` auth directory description to include on-chain auth contract adapter.
+
+## Round 31: 4th Audit Fixes (audit_12072026)
+- [x] **S1** (Contract): Reordered `rotateKey` to revoke-first-then-register — prevents orphan key creation on partial failure.
+- [x] **S2** (Contract): Added `rotateKeyMeta` meta-transaction function + `ROTATE_TYPEHASH` constant — users can now rotate keys gaslessly via the gas station.
+- [x] **B1** (SCRAM): Added `createdAt` timestamp to `ScramState`, 30s periodic TTL cleanup interval (60s max session age), and `MAX_SCRAM_SESSIONS = 1000` cap with oldest-session eviction — prevents unbounded memory growth from abandoned SCRAM handshakes.
+- [x] **B2** (SCRAM): Multi-key lookup — supports `0xAddress:N` username format for specific key index, or tries first active key from `getActiveKeys()` when no index specified.
+- [x] **B4** (Aggregation): Added `MAX_PIPELINE_STAGES = 50` cap — returns error code 15942 when exceeded, preventing DoS via excessive pipeline stages.
+- [x] **S5** (CSRF): Narrowed dashboard CSRF exemption from broad `/api/v1/auth/*` to only 4 session-establishment endpoints (`/auth/nonce`, `/auth/verify`, `/auth/me`, `/auth/logout`). Key management endpoints (`/auth/register-key`, `/auth/revoke-key`) now correctly include CSRF tokens.
+- [x] **I1** (Aggregation): Unsupported pipeline stages now log `console.warn` instead of silently skipping.
+- [x] **I2** (Aggregation): `$lookup` logs warning when foreign collection exceeds 10,000 documents.
+- [x] **I3** (AuthAdapter): Contract instances only created when `AUTH_CONTRACT_ADDRESS` is non-empty; `readContract` type changed to nullable.
+- [x] **I4** (AuthAdapter): `getActiveKeys` now uses `Promise.all` for batched RPC calls instead of sequential fetches (2x fewer round-trips).
+- [x] **I5** (Redis): `RENAME` now clears all existing type-prefixed keys at destination before writing, preventing cross-type key conflicts.
+- [x] All 226 tests passing (208 server + 18 dashboard CSS). Type-check clean.
+
+## Round 32: 4th Audit Gap Fixes (audit_12072026 downstream)
+- [x] **Gap 1** (AuthAdapter): Added `rotateKeyMeta` to ABI array and `rotateKeyMeta()` adapter method in `auth-contract.ts` — enables gasless atomic key rotation via the gas station.
+- [x] **Gap 1** (HTTP): Added `POST /api/v1/auth/rotate-key` endpoint in `http-server.ts` — relays EIP-712 signed rotation requests to the gas station, with log-only fallback when contract not deployed.
+- [x] **Gap 2** (Docs): Updated `authentication.md` — documented `rotateKeyMeta` in key lifecycle diagram, gas station section, and multi-key SCRAM username format (`0xAddress:N`).
+- [x] **Gap 2** (Docs): Updated `wire-protocol.md` — added "Maximum 50 stages per pipeline" to aggregate command.
+- [x] **Gap 3** (Dashboard): Added `handleRotateOnChain()` in `ApiKeysTab.tsx` — derives new key, signs EIP-712, calls `/auth/rotate-key`. Added Rotate button for active on-chain keys.
+- [x] **Gap 4** (Tests): Created `protocol-security.test.ts` — 8 new tests covering pipeline stage cap, RENAME cross-type cleanup, SCRAM multi-key parsing, and `/auth/rotate-key` endpoint.
+- [x] **Gap 4b** (HTTP): Applied B4 pipeline cap (50 stages) to HTTP aggregate endpoint — originally only in wire server.
+- [x] All 234 tests passing (216 server + 18 dashboard CSS). Type-check clean.

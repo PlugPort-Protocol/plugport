@@ -48,6 +48,16 @@ function getCsrfToken(): string | undefined {
     return match?.[1];
 }
 
+/**
+ * Check if a path is a session-establishment auth endpoint that should NOT send CSRF tokens.
+ * Only nonce, verify, me, and logout are exempt (they establish/destroy the session).
+ * Key management endpoints (register-key, revoke-key) MUST include CSRF tokens.
+ */
+const AUTH_SESSION_ENDPOINTS = ['/api/v1/auth/nonce', '/api/v1/auth/verify', '/api/v1/auth/me', '/api/v1/auth/logout'];
+function isAuthSessionEndpoint(path: string): boolean {
+    return AUTH_SESSION_ENDPOINTS.some(e => path === e || path.startsWith(e + '?'));
+}
+
 // ---- React Hook ----
 
 export function useApi<T>(path: string, options?: { autoFetch?: boolean }) {
@@ -103,7 +113,7 @@ export async function apiPost<T>(path: string, body: unknown): Promise<T> {
             headers: {
                 'Content-Type': 'application/json',
                 ...(common.headers as Record<string, string> || {}),
-                ...(csrfToken && !path.startsWith('/api/v1/auth/') ? { 'x-csrf-token': csrfToken } : {}),
+                ...(csrfToken && !isAuthSessionEndpoint(path) ? { 'x-csrf-token': csrfToken } : {}),
             },
             body: JSON.stringify(body),
             signal: controller.signal,

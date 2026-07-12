@@ -496,6 +496,11 @@ export class RedisServer implements ProtocolServerInstance {
                 for (const prefix of prefixes) {
                     const val = await this.kvStore.get(prefix + oldName);
                     if (val) {
+                        // I5: Clear any existing keys at destination across ALL type prefixes
+                        // to prevent cross-type conflicts (matching Redis RENAME behavior)
+                        for (const destPrefix of prefixes) {
+                            try { await this.kvStore.delete(destPrefix + newName); } catch { /* ignore */ }
+                        }
                         await this.kvStore.put(prefix + newName, val);
                         await this.kvStore.delete(prefix + oldName);
                         found = true;

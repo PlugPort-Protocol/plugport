@@ -19,6 +19,7 @@ const PLUGPORT_AUTH_ABI = [
     // Meta-transaction writes (gas station sends these)
     'function registerKeyMeta(address keyOwner, bytes32 commitment, bytes32 salt, bytes32 storedKey, bytes32 serverKey, uint256 nonce, bytes signature) external',
     'function revokeKeyMeta(address keyOwner, uint8 keyIndex, uint256 nonce, bytes signature) external',
+    'function rotateKeyMeta(address keyOwner, uint8 oldKeyIndex, bytes32 newCommitment, bytes32 newSalt, bytes32 newStoredKey, bytes32 newServerKey, uint256 nonce, bytes signature) external',
 
     // View functions (free reads)
     'function getActiveKeys(address addr) external view returns (uint8[])',
@@ -58,7 +59,7 @@ export interface ScramVerifier {
 export class AuthContractAdapter {
     private provider: ethers.JsonRpcProvider;
     private gasStationWallet: ethers.Wallet | null = null;
-    private readContract: ethers.Contract;
+    private readContract: ethers.Contract | null = null;
     private writeContract: ethers.Contract | null = null;
     private contractAddress: string;
 
@@ -69,14 +70,17 @@ export class AuthContractAdapter {
 
         this.provider = new ethers.JsonRpcProvider(rpcUrl);
 
-        // Read contract (no signer needed — free eth_call)
-        this.readContract = new ethers.Contract(this.contractAddress, PLUGPORT_AUTH_ABI, this.provider);
+        // Only create contract instances when address is configured (I3)
+        if (this.contractAddress) {
+            // Read contract (no signer needed — free eth_call)
+            this.readContract = new ethers.Contract(this.contractAddress, PLUGPORT_AUTH_ABI, this.provider);
 
-        // Write contract (requires gas station wallet)
-        if (gasStationKey) {
-            this.gasStationWallet = new ethers.Wallet(gasStationKey, this.provider);
-            this.writeContract = new ethers.Contract(this.contractAddress, PLUGPORT_AUTH_ABI, this.gasStationWallet);
-            console.log(`[AuthContract] Gas station wallet: ${this.gasStationWallet.address}`);
+            // Write contract (requires gas station wallet)
+            if (gasStationKey) {
+                this.gasStationWallet = new ethers.Wallet(gasStationKey, this.provider);
+                this.writeContract = new ethers.Contract(this.contractAddress, PLUGPORT_AUTH_ABI, this.gasStationWallet);
+                console.log(`[AuthContract] Gas station wallet: ${this.gasStationWallet.address}`);
+            }
         }
 
         console.log(`[AuthContract] Initialized with contract: ${this.contractAddress || '(not configured)'}`);
@@ -89,7 +93,7 @@ export class AuthContractAdapter {
 
     /** Whether read-only operations are available */
     get isReadable(): boolean {
-        return !!this.contractAddress;
+        return !!this.contractAddress && !!this.readContract;
     }
 
     // ---- Write Operations (gas station sends tx) ----
@@ -130,7 +134,7 @@ export class AuthContractAdapter {
         let keyIndex = -1;
         for (const log of receipt.logs) {
             try {
-                const parsed = this.readContract.interface.parseLog({
+                const parsed = this.readContract!.interface.parseLog({
                     topics: log.topics as string[],
                     data: log.data,
                 });
@@ -167,6 +171,51 @@ export class AuthContractAdapter {
         return { txHash: receipt.hash };
     }
 
+    /**
+     * Atomically rotate a key on behalf of a user via meta-transaction.
+     * Revokes the old key and registers a new one in a single transaction.
+     */
+    async rotateKeyMeta(
+        keyOwner: string,
+        oldKeyIndex: number,
+        newCommitment: string,
+        newSalt: string,
+        newStoredKey: string,
+        newServerKey: string,
+        nonce: number,
+        signature: string,
+    ): Promise<{ txHash: string; newKeyIndex: number }> {
+        if (!this.writeContract) {
+            throw new Error('Auth contract not configured (missing AUTH_CONTRACT_ADDRESS or AUTH_GAS_STATION_PRIVATE_KEY)');
+        }
+
+        console.log(`[AuthContract] rotateKeyMeta for ${keyOwner} (oldKeyIndex: ${oldKeyIndex}, nonce: ${nonce})`);
+
+        const tx = await this.writeContract.rotateKeyMeta(
+            keyOwner, oldKeyIndex, newCommitment, newSalt, newStoredKey, newServerKey, nonce, signature,
+        );
+        const receipt = await tx.wait();
+        console.log(`[AuthContract] Key rotated — tx: ${receipt.hash}`);
+
+        // Parse KeyRotated event to get the new key index
+        let newKeyIndex = -1;
+        for (const log of receipt.logs) {
+            try {
+                const parsed = this.readContract!.interface.parseLog({
+                    topics: log.topics as string[],
+                    data: log.data,
+                });
+                if (parsed?.name === 'KeyRotated') {
+                    newKeyIndex = Number(parsed.args.newKeyIndex);
+                }
+            } catch {
+                // Skip logs from other contracts
+            }
+        }
+
+        return { txHash: receipt.hash, newKeyIndex };
+    }
+
     // ---- Read Operations (free RPC reads) ----
 
     /**
@@ -176,24 +225,27 @@ export class AuthContractAdapter {
         if (!this.isReadable) return [];
 
         try {
-            const activeIndices: number[] = (await this.readContract.getActiveKeys(address))
+            const activeIndices: number[] = (await this.readContract!.getActiveKeys(address))
                 .map((n: bigint) => Number(n));
 
-            // Fetch full details for each active key
-            const entries: OnChainKeyEntry[] = [];
-            for (const idx of activeIndices) {
-                const commitment = await this.readContract.getCommitment(address, idx);
-                const verifier = await this.readContract.getVerifier(address, idx);
-                entries.push({
-                    keyIndex: idx,
-                    commitment,
-                    salt: verifier.salt,
-                    storedKey: verifier.storedKey,
-                    serverKey: verifier.serverKey,
-                    active: verifier.active,
-                    createdAt: 0, // On-chain createdAt would need a separate view function
-                });
-            }
+            // I4: Batch RPC calls with Promise.all instead of sequential fetches
+            const entries = await Promise.all(
+                activeIndices.map(async (idx) => {
+                    const [commitment, verifier] = await Promise.all([
+                        this.readContract!.getCommitment(address, idx),
+                        this.readContract!.getVerifier(address, idx),
+                    ]);
+                    return {
+                        keyIndex: idx,
+                        commitment,
+                        salt: verifier.salt,
+                        storedKey: verifier.storedKey,
+                        serverKey: verifier.serverKey,
+                        active: verifier.active,
+                        createdAt: 0,
+                    } satisfies OnChainKeyEntry;
+                }),
+            );
 
             return entries;
         } catch (err) {
@@ -209,7 +261,7 @@ export class AuthContractAdapter {
         if (!this.isReadable) return null;
 
         try {
-            const result = await this.readContract.getVerifier(address, keyIndex);
+            const result = await this.readContract!.getVerifier(address, keyIndex);
             return {
                 salt: result.salt,
                 storedKey: result.storedKey,
@@ -230,7 +282,7 @@ export class AuthContractAdapter {
         if (!this.isReadable) return false;
 
         try {
-            return await this.readContract.validateKey(address, keyHash);
+            return await this.readContract!.validateKey(address, keyHash);
         } catch (err) {
             console.error(`[AuthContract] validateKey failed:`, err);
             return false;
@@ -244,7 +296,7 @@ export class AuthContractAdapter {
         if (!this.isReadable) return false;
 
         try {
-            return await this.readContract.isKeyActive(address, keyIndex);
+            return await this.readContract!.isKeyActive(address, keyIndex);
         } catch (err) {
             return false;
         }
@@ -257,7 +309,7 @@ export class AuthContractAdapter {
         if (!this.isReadable) return 0;
 
         try {
-            return Number(await this.readContract.nonces(address));
+            return Number(await this.readContract!.nonces(address));
         } catch (err) {
             return 0;
         }
@@ -270,7 +322,7 @@ export class AuthContractAdapter {
         if (!this.isReadable) return 0;
 
         try {
-            return Number(await this.readContract.getKeyCount(address));
+            return Number(await this.readContract!.getKeyCount(address));
         } catch (err) {
             return 0;
         }

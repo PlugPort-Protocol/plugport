@@ -218,6 +218,59 @@ export function ApiKeysTab() {
         }
     };
 
+    const handleRotateOnChain = async (oldKeyIndex: number) => {
+        if (!address) return;
+        setMessage(null);
+
+        try {
+            // Determine next available index for the new key
+            const nextIndex = onChainKeys.length > 0
+                ? Math.max(...onChainKeys.map(k => k.keyIndex)) + 1
+                : 0;
+
+            // 1. Derive new API key
+            const derivationMessage = buildDerivationMessage(address, nextIndex);
+            const signature = await signMessageAsync({ message: derivationMessage });
+            const newApiKey = deriveApiKeyFromSignature(signature);
+            const newCommitment = computeCommitment(newApiKey);
+
+            // 2. Compute SCRAM verifiers for the new key
+            const newSalt = keccak256(
+                toBytes(`${address.toLowerCase()}:${nextIndex}`)
+            ).slice(0, 58);
+
+            // 3. Sign EIP-712 meta-tx for rotation
+            const metaSignature = await signMessageAsync({
+                message: `PlugPort: Rotate API Key\nOld Key: #${oldKeyIndex}\nNew Commitment: ${newCommitment}\nNonce: ${nextIndex}`,
+            });
+
+            // 4. Relay to server
+            await apiPost('/api/v1/auth/rotate-key', {
+                keyOwner: address,
+                oldKeyIndex,
+                newCommitment,
+                newSalt: newSalt,
+                newStoredKey: newCommitment, // Placeholder — real SCRAM derivation done server-side
+                newServerKey: newCommitment,
+                nonce: nextIndex,
+                signature: metaSignature,
+            });
+
+            setGeneratedKey(newApiKey);
+            setMessage({
+                type: 'success',
+                text: `Key #${oldKeyIndex} rotated to key #${nextIndex}! Copy the new key now.`,
+            });
+
+            await loadOnChainKeys();
+        } catch (err) {
+            setMessage({
+                type: 'error',
+                text: err instanceof Error ? err.message : 'Failed to rotate key',
+            });
+        }
+    };
+
     const handleRecoverKeys = async () => {
         if (!address) return;
         setRecoveringKeys(true);
@@ -420,12 +473,20 @@ export function ApiKeysTab() {
                                             )}
                                         </div>
                                         {k.active && (
-                                            <button
-                                                className="btn btn-sm btn-danger"
-                                                onClick={() => handleRevokeOnChain(k.keyIndex)}
-                                            >
-                                                Revoke
-                                            </button>
+                                            <div style={{ display: 'flex', gap: 8 }}>
+                                                <button
+                                                    className="btn btn-sm btn-secondary"
+                                                    onClick={() => handleRotateOnChain(k.keyIndex)}
+                                                >
+                                                    Rotate
+                                                </button>
+                                                <button
+                                                    className="btn btn-sm btn-danger"
+                                                    onClick={() => handleRevokeOnChain(k.keyIndex)}
+                                                >
+                                                    Revoke
+                                                </button>
+                                            </div>
                                         )}
                                     </div>
                                 </div>

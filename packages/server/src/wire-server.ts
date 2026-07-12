@@ -31,8 +31,26 @@ interface ScramState {
     storedKey: Buffer;
     serverKey: Buffer;
     iterationCount: number;
+    createdAt: number; // Unix timestamp for TTL cleanup
 }
 const scramSessions = new Map<number, ScramState>();
+
+/** Maximum age for SCRAM sessions before cleanup (60 seconds) */
+const SCRAM_SESSION_TTL_MS = 60_000;
+/** Maximum number of concurrent SCRAM sessions (DoS protection) */
+const MAX_SCRAM_SESSIONS = 1000;
+/** Maximum number of aggregation pipeline stages */
+const MAX_PIPELINE_STAGES = 50;
+
+/** Periodically clean up expired SCRAM sessions */
+setInterval(() => {
+    const now = Date.now();
+    for (const [id, state] of scramSessions) {
+        if (now - state.createdAt > SCRAM_SESSION_TTL_MS) {
+            scramSessions.delete(id);
+        }
+    }
+}, 30_000).unref(); // unref so timer doesn't prevent process exit
 
 const { OP_MSG, HEADER_SIZE, MAX_WIRE_VERSION, MIN_WIRE_VERSION } = WireProtocol;
 
@@ -392,15 +410,39 @@ async function handleCommand(
                     const authContract = getAuthContract();
                     if (authContract.isReadable && username.startsWith('0x')) {
                         // Username is a wallet address — try to read on-chain verifiers
+                        // Support format "0xAddress" (defaults to key 0) or "0xAddress:N" (specific key index)
+                        let walletAddress = username;
+                        let requestedKeyIndex = -1; // -1 = try all active keys
+                        const colonIdx = username.indexOf(':', 2);
+                        if (colonIdx > 0) {
+                            walletAddress = username.substring(0, colonIdx);
+                            requestedKeyIndex = parseInt(username.substring(colonIdx + 1), 10);
+                        }
+
                         try {
-                            // Default to keyIndex 0; could parse from username if needed
-                            const verifier = await authContract.getVerifier(username, 0);
-                            if (verifier && verifier.active) {
-                                // On-chain verifiers are bytes32 — convert to Buffer
-                                salt = Buffer.from(verifier.salt.replace('0x', ''), 'hex').subarray(0, 16);
-                                storedKey = Buffer.from(verifier.storedKey.replace('0x', ''), 'hex');
-                                serverKey = Buffer.from(verifier.serverKey.replace('0x', ''), 'hex');
-                                usedOnChain = true;
+                            if (requestedKeyIndex >= 0) {
+                                // Specific key index requested
+                                const verifier = await authContract.getVerifier(walletAddress, requestedKeyIndex);
+                                if (verifier && verifier.active) {
+                                    salt = Buffer.from(verifier.salt.replace('0x', ''), 'hex').subarray(0, 16);
+                                    storedKey = Buffer.from(verifier.storedKey.replace('0x', ''), 'hex');
+                                    serverKey = Buffer.from(verifier.serverKey.replace('0x', ''), 'hex');
+                                    usedOnChain = true;
+                                }
+                            } else {
+                                // Try all active keys — find the first active one
+                                const activeKeys = await authContract.getActiveKeys(walletAddress);
+                                if (activeKeys.length > 0) {
+                                    // Use the first active key (index 0 is most common)
+                                    const firstKey = activeKeys[0];
+                                    const verifier = await authContract.getVerifier(walletAddress, firstKey.keyIndex);
+                                    if (verifier && verifier.active) {
+                                        salt = Buffer.from(verifier.salt.replace('0x', ''), 'hex').subarray(0, 16);
+                                        storedKey = Buffer.from(verifier.storedKey.replace('0x', ''), 'hex');
+                                        serverKey = Buffer.from(verifier.serverKey.replace('0x', ''), 'hex');
+                                        usedOnChain = true;
+                                    }
+                                }
                             }
                         } catch {
                             // On-chain lookup failed — fall through to local derivation
@@ -420,6 +462,19 @@ async function handleCommand(
                     const serverFirstMessage = `r=${serverNonce},s=${salt!.toString('base64')},i=${iterationCount}`;
 
                     // Store SCRAM state for saslContinue
+                    // Enforce max concurrent sessions to prevent memory abuse
+                    if (scramSessions.size >= MAX_SCRAM_SESSIONS) {
+                        // Evict oldest session
+                        let oldestId = -1;
+                        let oldestTime = Infinity;
+                        for (const [id, state] of scramSessions) {
+                            if (state.createdAt < oldestTime) {
+                                oldestTime = state.createdAt;
+                                oldestId = id;
+                            }
+                        }
+                        if (oldestId >= 0) scramSessions.delete(oldestId);
+                    }
                     scramSessions.set(connectionId, {
                         clientFirstBare,
                         serverFirstMessage,
@@ -428,6 +483,7 @@ async function handleCommand(
                         storedKey: storedKey!,
                         serverKey: serverKey!,
                         iterationCount,
+                        createdAt: Date.now(),
                     });
 
                     return {
@@ -747,6 +803,15 @@ async function handleCommand(
             const collName = body.aggregate as string;
             const pipeline = (body.pipeline || []) as Record<string, unknown>[];
 
+            // B4: Cap pipeline stage count to prevent DoS
+            if (pipeline.length > MAX_PIPELINE_STAGES) {
+                return {
+                    ok: 0,
+                    errmsg: `Pipeline exceeds maximum of ${MAX_PIPELINE_STAGES} stages (got ${pipeline.length})`,
+                    code: 15942,
+                };
+            }
+
             // Execute pipeline stages sequentially
             let docs: Record<string, unknown>[] = [];
 
@@ -783,6 +848,11 @@ async function handleCommand(
                                 [lookup.foreignField]: { $in: localValues },
                             });
                             foreignDocs = foreignResult.cursor.firstBatch as Record<string, unknown>[];
+                        }
+
+                        // I2: Warn when foreign collection is large
+                        if (foreignDocs.length > 10_000) {
+                            console.warn(`[Wire] $lookup: foreign collection "${lookup.from}" returned ${foreignDocs.length} documents — consider filtering or indexing`);
                         }
 
                         // Build lookup index: foreignField value → matching docs
@@ -879,7 +949,8 @@ async function handleCommand(
                     }
 
                     default:
-                        // Unsupported stage — skip silently
+                        // I1: Warn on unsupported pipeline stages instead of silently skipping
+                        console.warn(`[Wire] Unsupported aggregation stage: "${stageKey}" — skipped`);
                         break;
                 }
             }
