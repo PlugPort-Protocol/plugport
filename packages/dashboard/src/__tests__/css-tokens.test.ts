@@ -1,11 +1,11 @@
-// T3: Visual regression tests for CSS token correctness
-// Validates that CSS custom properties are correctly defined in :root and [data-theme='dark']
-// and that button classes use CSS variables instead of hardcoded values.
+// T3: Visual regression tests for CSS token correctness ("Statecraft" theme)
+// Validates that CSS custom properties are correctly defined in :root (dark-first)
+// and [data-theme='light'], and that button classes use CSS variables.
 //
 // These tests parse the raw CSS file to assert:
-// 1. Layout/spacing tokens are in :root (not only in dark theme)
-// 2. Dark theme only overrides color/shadow tokens
-// 3. Button classes use CSS variables, not hardcoded colors
+// 1. Layout/spacing tokens are in :root (not re-defined per theme)
+// 2. Light theme only overrides color/shadow tokens
+// 3. Button classes use CSS variables, not hardcoded backgrounds
 
 import { describe, it, expect, beforeAll } from 'vitest';
 import { readFileSync } from 'fs';
@@ -62,11 +62,11 @@ function extractCustomProperties(block: string): Map<string, string> {
 
 describe('T3: CSS Token Correctness', () => {
     describe(':root layout and spacing tokens', () => {
-        it('should define --sidebar-width in :root', () => {
+        it('should define --sidebar-width in :root (84px dock rail)', () => {
             const block = extractBlock(cssContent, ':root');
             const rootProps = extractCustomProperties(block);
             expect(rootProps.has('--sidebar-width')).toBe(true);
-            expect(rootProps.get('--sidebar-width')).toBe('260px');
+            expect(rootProps.get('--sidebar-width')).toContain('84px');
         });
 
         it('should define --header-height in :root', () => {
@@ -101,63 +101,76 @@ describe('T3: CSS Token Correctness', () => {
         });
     });
 
-    describe('[data-theme="dark"] overrides only color/shadow tokens', () => {
-        it('should NOT re-define --sidebar-width in dark theme', () => {
-            const block = extractBlock(cssContent, "\\[data-theme='dark'\\]");
-            const darkProps = extractCustomProperties(block);
-            expect(darkProps.has('--sidebar-width')).toBe(false);
+    describe(':root is the dark palette (dark-first)', () => {
+        it('should use a dark --bg-primary in :root', () => {
+            const block = extractBlock(cssContent, ':root');
+            const rootProps = extractCustomProperties(block);
+            expect(rootProps.get('--bg-primary')).toBe('#0a0d14');
         });
 
-        it('should NOT re-define --radius-* tokens in dark theme', () => {
-            const block = extractBlock(cssContent, "\\[data-theme='dark'\\]");
-            const darkProps = extractCustomProperties(block);
-            expect(darkProps.has('--radius-sm')).toBe(false);
-            expect(darkProps.has('--radius-md')).toBe(false);
-            expect(darkProps.has('--radius-lg')).toBe(false);
-            expect(darkProps.has('--radius-xl')).toBe(false);
+        it('should use a light --text-primary in :root', () => {
+            const block = extractBlock(cssContent, ':root');
+            const rootProps = extractCustomProperties(block);
+            expect(rootProps.get('--text-primary')).toBe('#e8ecf4');
+        });
+    });
+
+    describe("[data-theme='light'] overrides only color/shadow tokens", () => {
+        it('should NOT re-define --sidebar-width in light theme', () => {
+            const block = extractBlock(cssContent, "\\[data-theme='light'\\]");
+            const lightProps = extractCustomProperties(block);
+            expect(lightProps.has('--sidebar-width')).toBe(false);
         });
 
-        it('should NOT re-define --transition-* tokens in dark theme', () => {
-            const block = extractBlock(cssContent, "\\[data-theme='dark'\\]");
-            const darkProps = extractCustomProperties(block);
-            expect(darkProps.has('--transition-fast')).toBe(false);
-            expect(darkProps.has('--transition-base')).toBe(false);
-            expect(darkProps.has('--transition-slow')).toBe(false);
+        it('should NOT re-define --radius-* tokens in light theme', () => {
+            const block = extractBlock(cssContent, "\\[data-theme='light'\\]");
+            const lightProps = extractCustomProperties(block);
+            expect(lightProps.has('--radius-sm')).toBe(false);
+            expect(lightProps.has('--radius-md')).toBe(false);
+            expect(lightProps.has('--radius-lg')).toBe(false);
+            expect(lightProps.has('--radius-xl')).toBe(false);
         });
 
-        it('should NOT re-define --header-height in dark theme', () => {
-            const block = extractBlock(cssContent, "\\[data-theme='dark'\\]");
-            const darkProps = extractCustomProperties(block);
-            expect(darkProps.has('--header-height')).toBe(false);
+        it('should NOT re-define --transition-* tokens in light theme', () => {
+            const block = extractBlock(cssContent, "\\[data-theme='light'\\]");
+            const lightProps = extractCustomProperties(block);
+            expect(lightProps.has('--transition-fast')).toBe(false);
+            expect(lightProps.has('--transition-base')).toBe(false);
+            expect(lightProps.has('--transition-slow')).toBe(false);
         });
 
-        it('should override --bg-primary in dark theme', () => {
-            const block = extractBlock(cssContent, "\\[data-theme='dark'\\]");
-            const darkProps = extractCustomProperties(block);
-            expect(darkProps.has('--bg-primary')).toBe(true);
-            // Dark theme bg should be a dark color, not the light theme white
-            expect(darkProps.get('--bg-primary')).not.toBe('#ffffff');
+        it('should NOT re-define --header-height in light theme', () => {
+            const block = extractBlock(cssContent, "\\[data-theme='light'\\]");
+            const lightProps = extractCustomProperties(block);
+            expect(lightProps.has('--header-height')).toBe(false);
         });
 
-        it('should override --text-primary in dark theme', () => {
-            const block = extractBlock(cssContent, "\\[data-theme='dark'\\]");
-            const darkProps = extractCustomProperties(block);
-            expect(darkProps.has('--text-primary')).toBe(true);
-            expect(darkProps.get('--text-primary')).toBe('#ffffff');
+        it('should override --bg-primary in light theme with a light color', () => {
+            const block = extractBlock(cssContent, "\\[data-theme='light'\\]");
+            const lightProps = extractCustomProperties(block);
+            expect(lightProps.has('--bg-primary')).toBe(true);
+            expect(lightProps.get('--bg-primary')).not.toBe('#0a0d14');
         });
 
-        it('should override shadow tokens in dark theme', () => {
-            const block = extractBlock(cssContent, "\\[data-theme='dark'\\]");
-            const darkProps = extractCustomProperties(block);
-            expect(darkProps.has('--shadow-sm')).toBe(true);
-            expect(darkProps.has('--shadow-md')).toBe(true);
+        it('should override --text-primary in light theme with a dark color', () => {
+            const block = extractBlock(cssContent, "\\[data-theme='light'\\]");
+            const lightProps = extractCustomProperties(block);
+            expect(lightProps.has('--text-primary')).toBe(true);
+            expect(lightProps.get('--text-primary')).not.toBe('#e8ecf4');
+        });
+
+        it('should override shadow tokens in light theme', () => {
+            const block = extractBlock(cssContent, "\\[data-theme='light'\\]");
+            const lightProps = extractCustomProperties(block);
+            expect(lightProps.has('--shadow-sm')).toBe(true);
+            expect(lightProps.has('--shadow-md')).toBe(true);
         });
     });
 
     describe('Button classes use CSS variables', () => {
-        it('.btn-primary should use var(--gradient-primary), not hardcoded background', () => {
+        it('.btn-primary should use var(--accent-primary), not hardcoded background', () => {
             const block = extractBlock(cssContent, '\\.btn-primary(?!:)');
-            expect(block).toContain('var(--gradient-primary)');
+            expect(block).toContain('var(--accent-primary)');
             // Should NOT contain hardcoded hex colors for background
             expect(block).not.toMatch(/background:\s*#[0-9a-fA-F]{3,8}\s*;/);
             expect(block).not.toMatch(/background:\s*black\s*;/);
@@ -166,15 +179,14 @@ describe('T3: CSS Token Correctness', () => {
         it('.btn-secondary should use var(--bg-card), not hardcoded background', () => {
             const block = extractBlock(cssContent, '\\.btn-secondary(?!:)');
             expect(block).toContain('var(--bg-card)');
-            expect(block).toContain('var(--border-primary)');
             // Should NOT contain hardcoded hex colors for background
             expect(block).not.toMatch(/background:\s*#[0-9a-fA-F]{3,8}\s*;/);
             expect(block).not.toMatch(/background:\s*blue\s*;/);
         });
 
-        it('.btn-secondary should use var(--text-primary) for color', () => {
+        it('.btn-secondary should use var(--text-secondary) for color', () => {
             const block = extractBlock(cssContent, '\\.btn-secondary(?!:)');
-            expect(block).toContain('var(--text-primary)');
+            expect(block).toContain('var(--text-secondary)');
         });
     });
 
