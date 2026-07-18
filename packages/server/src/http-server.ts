@@ -837,6 +837,9 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
         try {
             const { query } = req.body;
             if (!query) return reply.status(400).send({ ok: 0, errmsg: 'query required' });
+            if (typeof query === 'string' && query.length > 10000) {
+                return reply.status(400).send({ ok: 0, errmsg: 'query exceeds maximum length of 10000 characters' });
+            }
 
             const translator = new SQLTranslator();
             const translated = translator.translate(query) as TranslatedQuery;
@@ -998,8 +1001,24 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
 
         await redisServer.executeCommand(fakeSocket as any, ['SUBSCRIBE', ...channels]);
 
+        const heartbeatInterval = setInterval(() => {
+            if (destroyed) {
+                clearInterval(heartbeatInterval);
+                return;
+            }
+            try {
+                // Send an SSE comment as a heartbeat to test TCP socket health
+                reply.raw.write(':\\n\\n');
+            } catch (err) {
+                destroyed = true;
+                clearInterval(heartbeatInterval);
+                redisServer.executeCommand(fakeSocket as any, ['UNSUBSCRIBE', ...channels]).catch(() => {});
+            }
+        }, 15000);
+
         req.raw.on('close', () => {
             destroyed = true;
+            clearInterval(heartbeatInterval);
             redisServer.executeCommand(fakeSocket as any, ['UNSUBSCRIBE', ...channels]).catch(() => {});
         });
         
@@ -1457,6 +1476,22 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
     // ════════════════════════════════════════════════════════
     // Contract Registration (Deployment Wizard)
     // ════════════════════════════════════════════════════════
+
+    app.get('/api/v1/deploy/system-gas-station', async (req: FastifyRequest, reply: FastifyReply) => {
+        try {
+            const authContract = getAuthContract();
+            if (!authContract.isConfigured) {
+                return reply.status(503).send({ ok: 0, errmsg: 'System gas station not configured on backend.' });
+            }
+            const address = authContract.getSystemGasStationAddress();
+            if (!address) {
+                return reply.status(503).send({ ok: 0, errmsg: 'All system gas stations are depleted.' });
+            }
+            return { ok: 1, address };
+        } catch (err) {
+            return reply.status(500).send({ ok: 0, errmsg: err instanceof Error ? err.message : 'Internal error' });
+        }
+    });
 
     app.post('/api/v1/deploy/register', async (
         req: FastifyRequest<{ Body: { contractAddress: string; contractType: string } }>,

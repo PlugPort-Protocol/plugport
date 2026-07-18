@@ -183,9 +183,12 @@ export function ApiKeysTab() {
 
             await loadOnChainKeys();
         } catch (err) {
+            const isNetworkError = err instanceof TypeError && err.message.includes('fetch');
             setMessage({
                 type: 'error',
-                text: err instanceof Error ? err.message : 'Failed to generate key',
+                text: isNetworkError 
+                    ? 'Failed to reach backend for SCRAM derivation. Is the server running?' 
+                    : (err instanceof Error ? err.message : 'Failed to generate key'),
             });
         } finally {
             setGeneratingOnChain(false);
@@ -211,9 +214,12 @@ export function ApiKeysTab() {
             setMessage({ type: 'success', text: `Key #${keyIndex} revoked on-chain` });
             await loadOnChainKeys();
         } catch (err) {
+            const isNetworkError = err instanceof TypeError && err.message.includes('fetch');
             setMessage({
                 type: 'error',
-                text: err instanceof Error ? err.message : 'Failed to revoke key',
+                text: isNetworkError 
+                    ? 'Failed to reach backend. Is the server running?' 
+                    : (err instanceof Error ? err.message : 'Failed to revoke key'),
             });
         }
     };
@@ -264,9 +270,12 @@ export function ApiKeysTab() {
 
             await loadOnChainKeys();
         } catch (err) {
+            const isNetworkError = err instanceof TypeError && err.message.includes('fetch');
             setMessage({
                 type: 'error',
-                text: err instanceof Error ? err.message : 'Failed to rotate key',
+                text: isNetworkError 
+                    ? 'Failed to reach backend for SCRAM derivation. Is the server running?' 
+                    : (err instanceof Error ? err.message : 'Failed to rotate key'),
             });
         }
     };

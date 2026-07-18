@@ -171,7 +171,7 @@ The orchestrator that ties everything together:
 
 Granular access control and encryption at the collection level:
 - **Public/Private Modes:** Collections default to public. Setting a collection to private creates a unique AES-256-GCM key.
-- **On-Chain Gas Station:** Private collections deploy a `PlugPortPrivateStore` smart contract via the dashboard Wizard, funded by the owner to sponsor user transactions on MonadDb.
+- **On-Chain Gas Station:** Private collections deploy a `PlugPortPrivateStore` smart contract via the dashboard Wizard. The gas for user transactions on MonadDb is fully subsidized by PlugPort's configured system gas stations (`AUTH_GAS_STATION_PRIVATE_KEYS`).
 - **Whitelists:** Owners can whitelist wallet addresses to grant read/write access to private collections.
 
 ### 7. HTTP Server (`http-server.ts`)

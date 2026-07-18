@@ -33,10 +33,21 @@ railway init
 railway up
 ```
 
-## Quick Deploy: Docker
+## Quick Deploy: Docker & Kubernetes
+
+The easiest way to scaffold production-ready deployments is using the CLI:
 
 ```bash
-docker run -p 8080:8080 -p 27017:27017 plugport/server:latest
+# Interactive deployment scaffolding
+npx @plugport/cli deploy
+```
+
+This command will prompt you to select either **Docker Compose** or **Kubernetes** and generate the necessary templates in your current directory (either `.deploy/` or `k8s/`).
+
+You can also run the pre-built Docker image directly:
+
+```bash
+docker run -p 8080:8080 -p 27017:27017 ghcr.io/plugport/server:latest
 ```
 
 ## Environment Variables

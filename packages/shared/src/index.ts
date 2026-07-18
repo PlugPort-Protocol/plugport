@@ -291,6 +291,7 @@ export interface PlugPortConfig {
     maxCollections: number;
     logLevel: 'debug' | 'info' | 'warn' | 'error';
     metricsEnabled: boolean;
+    sqlStatementTimeoutMs?: number;
     // Protocol frontends
     protocols: Record<ProtocolType, ProtocolConfig>;
 

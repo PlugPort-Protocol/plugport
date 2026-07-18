@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: plugport-server
+  labels:
+    app: plugport-server
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: plugport-server
+  template:
+    metadata:
+      labels:
+        app: plugport-server
+    spec:
+      containers:
+      - name: server
+        image: ghcr.io/yourorg/plugport-server:latest
+        ports:
+        - containerPort: 8080
+        - containerPort: 27017
+        - containerPort: 5432
+        - containerPort: 3306
+        - containerPort: 6379
+        envFrom:
+        - secretRef:
+            name: plugport-secrets
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "200m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 15
+          periodSeconds: 20

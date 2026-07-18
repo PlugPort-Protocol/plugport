@@ -204,6 +204,9 @@ main().catch(console.error);`,
                 'MONAD_CHAIN_ID=10143',
                 'MONAD_PRIVATE_KEY=',
                 'MONAD_CONTRACT_ADDRESS=', '',
+                '# Authentication & Meta-Transactions',
+                'AUTH_CONTRACT_ADDRESS=',
+                'AUTH_GAS_STATION_PRIVATE_KEYS=', '',
                 '# Protocol Frontends',
                 `MONGODB_ENABLED=${selectedProtocols.includes('mongodb')}`,
                 `PG_ENABLED=${selectedProtocols.includes('postgresql')}`,
@@ -257,6 +260,9 @@ program
             ...process.env,
             HTTP_PORT: options.port,
             WIRE_PORT: options.wirePort,
+            MAX_PIPELINE_STAGES: '50',
+            MAX_SCRAM_SESSIONS: '1000',
+            SQL_STATEMENT_TIMEOUT_MS: '30000'
         };
 
         try {
@@ -746,6 +752,126 @@ whitelistCmd
             console.log('');
         } catch {
             console.log(chalk.red('\n  Server not reachable\n'));
+        }
+    });
+
+// ---- Deploy Command ----
+program
+    .command('deploy')
+    .description('Scaffold production deployment templates (Docker / Kubernetes)')
+    .action(async () => {
+        console.log(chalk.cyan.bold('\n  PlugPort Deployment Scaffolding\n'));
+        const { default: inquirer } = await import('inquirer');
+        const fs = await import('fs/promises');
+        const path = await import('path');
+
+        const { target } = await inquirer.prompt([
+            {
+                type: 'list',
+                name: 'target',
+                message: 'Select deployment target:',
+                choices: ['Docker Compose', 'Kubernetes'],
+            }
+        ]);
+
+        if (target === 'Docker Compose') {
+            const deployDir = path.join(process.cwd(), '.deploy');
+            await fs.mkdir(deployDir, { recursive: true });
+            
+            const dockerComposeContent = `version: '3.8'
+
+services:
+  server:
+    image: ghcr.io/plugport/server:latest
+    ports:
+      - "8080:8080" # HTTP API
+      - "27017:27017" # MongoDB Wire
+      - "5432:5432" # PostgreSQL Wire
+      - "3306:3306" # MySQL Wire
+      - "6379:6379" # Redis Wire
+    environment:
+      - NODE_ENV=production
+      - MONAD_RPC_URL=https://monad-testnet.drpc.org
+      - MONAD_CHAIN_ID=10143
+      - MONAD_PRIVATE_KEY=\${MONAD_PRIVATE_KEY}
+      - MONGODB_ENABLED=true
+      - PG_ENABLED=true
+      - MYSQL_ENABLED=true
+      - REDIS_ENABLED=true
+      - SQL_STATEMENT_TIMEOUT_MS=30000
+    restart: unless-stopped
+
+  dashboard:
+    image: ghcr.io/plugport/dashboard:latest
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://server:8080
+      - NEXT_PUBLIC_CHAIN_ID=10143
+    depends_on:
+      - server
+    restart: unless-stopped
+`;
+            await fs.writeFile(path.join(deployDir, 'docker-compose.yml'), dockerComposeContent);
+            console.log(chalk.green(`\n  Successfully scaffolded Docker Compose files in ${chalk.bold('.deploy/')}`));
+            console.log(chalk.cyan('\n  Next steps:'));
+            console.log(chalk.white('    1. cd .deploy'));
+            console.log(chalk.white('    2. Export MONAD_PRIVATE_KEY=your_key'));
+            console.log(chalk.white('    3. docker-compose up -d\n'));
+
+        } else if (target === 'Kubernetes') {
+            const k8sDir = path.join(process.cwd(), 'k8s');
+            await fs.mkdir(k8sDir, { recursive: true });
+
+            const deploymentContent = `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: plugport-server
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: plugport-server
+  template:
+    metadata:
+      labels:
+        app: plugport-server
+    spec:
+      containers:
+      - name: server
+        image: ghcr.io/plugport/server:latest
+        ports:
+        - containerPort: 8080
+        - containerPort: 27017
+        env:
+        - name: NODE_ENV
+          value: "production"
+        - name: SQL_STATEMENT_TIMEOUT_MS
+          value: "30000"
+`;
+            const serviceContent = `apiVersion: v1
+kind: Service
+metadata:
+  name: plugport-server
+spec:
+  type: ClusterIP
+  selector:
+    app: plugport-server
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+    - name: mongo
+      port: 27017
+      targetPort: 27017
+`;
+            await fs.writeFile(path.join(k8sDir, 'deployment.yaml'), deploymentContent);
+            await fs.writeFile(path.join(k8sDir, 'service.yaml'), serviceContent);
+            
+            console.log(chalk.green(`\n  Successfully scaffolded Kubernetes manifests in ${chalk.bold('k8s/')}`));
+            console.log(chalk.cyan('\n  Next steps:'));
+            console.log(chalk.white('    1. cd k8s'));
+            console.log(chalk.white('    2. kubectl apply -f .\n'));
         }
     });
 

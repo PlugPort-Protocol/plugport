@@ -304,3 +304,35 @@
 - [x] **Gap 4** (Tests): Created `protocol-security.test.ts` — 8 new tests covering pipeline stage cap, RENAME cross-type cleanup, SCRAM multi-key parsing, and `/auth/rotate-key` endpoint.
 - [x] **Gap 4b** (HTTP): Applied B4 pipeline cap (50 stages) to HTTP aggregate endpoint — originally only in wire server.
 - [x] All 234 tests passing (216 server + 18 dashboard CSS). Type-check clean.
+
+## Round 33: v4 genesis: multi-relayer, security upgrades, improved error handling, cli sync and production templates (13/07/2026)
+- [x] (Contract): Refactored `PlugPortAuth.sol` to use an `isGasStation` mapping instead of a single address, supporting multiple decentralized relayers. Added slot reuse in `_registerKey` to fix the 10-key cap.
+- [x] (Server): Added Server-Sent Events (SSE) heartbeat every 15s to detect half-open TCP connections. 
+- [x] (Server): Implemented AST depth/complexity limit (max 5) and SQL string buffer limit (max 10000 chars) to prevent query parsing DoS.
+- [x] (Dashboard): Enhanced error toast handling in `ApiKeysTab` to explicitly catch unreachable backend network errors.
+- [x] (Deploy): Synced CLI dev server config with production limits. Created `Dockerfile.server`, `Dockerfile.dashboard`, `docker-compose.yml`, K8s manifests, and GitHub Actions CI/CD pipeline.
+- [x] (Tests): Expanded k6 load test (`crud-mix.js`) to bombard `/api/v1/auth/verify` and `/api/v1/sql` endpoints.
+- [x] All 234 tests passing (216 server + 18 dashboard CSS). Type-check clean.
+
+## Round 34: Fully Subsidized Gas Model (13/07/2026)
+- [x] (Server): Upgraded `AUTH_GAS_STATION_PRIVATE_KEY` to `AUTH_GAS_STATION_PRIVATE_KEYS` in `auth-contract.ts` to support an array of comma-separated wallets.
+- [x] (Server): Added background balance polling to dynamically filter out depleted gas station wallets (< 0.05 MON).
+- [x] (Server): Replaced static contract writes with a round-robin `getNextWriteContract()` router across all well-funded wallets, maximizing transaction throughput.
+- [x] (Server): Added `GET /api/v1/deploy/system-gas-station` endpoint to fetch the PlugPort sponsor wallet without exposing private keys.
+- [x] (Dashboard): Completely removed the user-provided Gas Station input and balance checking in `DeployTab.tsx`. Replaced with a 'PlugPort Subsidized' badge.
+- [x] (Dashboard): `useContractDeployer` hook automatically queries the system gas station endpoint.
+- [x] All 234 tests passing (216 server + 18 dashboard CSS). Type-check clean.
+
+## Round 35: Final v4 Scope Docs & Testing Cleanups (13/07/2026)
+- [x] (Docs): Updated `architecture.md`, `private-store.md`, and `message-broker.md` to reflect PlugPort-subsidized gas stations.
+- [x] (Docs): Updated `README.md` to clarify the subsidized gas model.
+- [x] (Tests): Scaled `crud-mix.js` to 1500 concurrent users and blasted `/api/v1/auth/nonce` and `/api/v1/auth/verify`.
+- [x] (Tests): Fixed legacy bug in `aggregate.test.ts` where it was hitting the deprecated `/insert` endpoint instead of `/insertMany`.
+- [x] (CLI): Fixed `plugport init` to scaffold `.env` with `AUTH_CONTRACT_ADDRESS` and `AUTH_GAS_STATION_PRIVATE_KEYS`.
+- [x] (CLI): Implemented the missing `plugport deploy` command to interactively scaffold Docker Compose and Kubernetes deployment templates.
+- [x] All 234 tests passing (216 server + 18 dashboard CSS). Type-check clean.
+
+## Round 36: SQL Server Security Hardening (17/07/2026)
+- [x] (Server): Implemented missing 10,000 character limit on raw SQL query strings in `sql-translator.ts` to prevent OOM DOS via large parser payloads.
+- [x] (Server): Implemented missing statement timeout limit in both `pg-server.ts` and `mysql-server.ts`. Wraps query translation and execution in `Promise.race` against a timeout.
+- [x] (Config): Added `SQL_STATEMENT_TIMEOUT_MS` (default 30000ms / 30s) to `process.env` reading, shared `PlugPortConfig` interface, and `.env.example`.

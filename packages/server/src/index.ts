@@ -30,6 +30,7 @@ function getConfig(): PlugPortConfig {
         monadRpcUrl: process.env.MONAD_RPC_URL || undefined,
         monadChainId: process.env.MONAD_CHAIN_ID ? parseInt(process.env.MONAD_CHAIN_ID, 10) : undefined,
         monadContractAddress: process.env.MONAD_CONTRACT_ADDRESS || undefined,
+        sqlStatementTimeoutMs: parseInt(process.env.SQL_STATEMENT_TIMEOUT_MS || '30000', 10),
         // Protocol ports
         protocols: {
             http: { enabled: true, port: parseInt(process.env.HTTP_PORT || process.env.PORT || '8080', 10) },
@@ -224,6 +225,7 @@ async function main() {
             store,
             port: config.protocols.postgresql.port,
             host: config.host,
+            timeoutMs: config.sqlStatementTimeoutMs,
         });
         protocolManager.register(pgServer);
         await pgServer.start();
@@ -236,6 +238,7 @@ async function main() {
             store,
             port: config.protocols.mysql.port,
             host: config.host,
+            timeoutMs: config.sqlStatementTimeoutMs,
         });
         protocolManager.register(mysqlServer);
         await mysqlServer.start();

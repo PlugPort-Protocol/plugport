@@ -27,8 +27,9 @@ PlugPort is a Web3 protocol port for every major database. It helps developers c
 | **Aggregation Pipeline** | Full `$lookup`, `$match`, `$project`, `$sort`, `$limit`, `$skip`, `$unwind`, `$count` support (max 50 stages) |
 | **Transactions** | Best-effort transactions: buffered writes, sequential flush on commit, discard on abort |
 | **Pub/Sub SSE** | Real-time messaging via Redis Pub/Sub mapping to HTTP Server-Sent Events (`/api/v1/redis/stream`) |
-| **Web3 Native Auth** | SIWE + wallet-derived API keys + SCRAM-SHA-256 with on-chain `PlugPortAuth` contract + gasless meta-transactions |
-| **Smart Contract RBAC** | On-chain Role-Based Access Control (`PlugPortPrivateStore`) for granular read/write permissions |
+| **Web3 Native Auth** | SIWE + wallet-derived API keys + SCRAM-SHA-256 with on-chain `PlugPortAuth` contract + gasless meta-transactions (Round-robin multi-wallet subsidized) |
+| **Smart Contract RBAC** | On-chain Role-Based Access Control (`PlugPortPrivateStore`) for granular read/write permissions. Deployments and gas are fully subsidized by PlugPort via a multi-relayer system. |
+| **Security & DoS Protection** | Configurable execution timeouts, AST depth parsing limits (max 5), and SQL buffer length caps (10,000 chars) prevent connection hanging and parser OOM attacks. |
 | **Encryption** | AES-256-GCM encryption with ECDH key sharing for private collections |
 | **Join Engine** | Hash, Left, Right, and Cross joins for SQL and NoSQL aggregations |
 | **Dashboard** | Next.js 15 UI with universal protocol pivot, 3-way scoped metrics (Global/Personal/Comparison), query builder, and privacy toggles |
@@ -71,6 +72,9 @@ npx @plugport/cli query users --filter '{"age": {"$gte": 25}}'
 
 # Run an aggregation pipeline
 npx @plugport/cli aggregate orders --pipeline '[{"$match": {"status": "completed"}}, {"$lookup": {"from": "users", "localField": "userId", "foreignField": "_id", "as": "user"}}]'
+
+# Scaffold production deployment templates (Docker/K8s)
+npx @plugport/cli deploy
 ```
 
 ### Using Docker
@@ -80,7 +84,7 @@ npx @plugport/cli aggregate orders --pipeline '[{"$match": {"status": "completed
 docker run -p 8080:8080 -p 27017:27017 plugport/server
 
 # Full stack (server + dashboard + Prometheus + Grafana)
-cd deploy/docker
+cd deploy
 docker-compose up
 ```
 
@@ -399,7 +403,9 @@ plugport/
 │   └── load/                # k6 load test scripts (crud-mix.js)
 ├── docs/                    # Docusaurus documentation site (wiki.plugport.wtf)
 ├── deploy/
-│   ├── docker/              # Dockerfiles + docker-compose
+│   ├── Dockerfile.server    # Server Docker build
+│   ├── Dockerfile.dashboard # Dashboard Next.js build
+│   ├── docker-compose.yml   # Full-stack local deployment
 │   ├── k8s/                 # Kubernetes manifests
 │   └── terraform/           # Terraform templates
 ├── audits/                  # Security & code audit reports

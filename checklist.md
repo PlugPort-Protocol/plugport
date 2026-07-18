@@ -185,7 +185,6 @@
 - [x] I2 N/A: JWT replaced by iron-session — no `JWT_SECRET` needed
 - [x] PrivacyManager TTL cache (30s) eliminates repeated KV reads per request
 - [x] Silent `catch {}` blocks audited — structured `console.warn` added to critical paths
-- [x] All 200 tests passing across 9 test files; dashboard build verified clean
 
 ## Phase 23: 2nd Audit Fixes (T3, R1–R3, N1–N6)
 - [x] **R1–R3**: Silent catch blocks in `monaddb-adapter.ts`, `routing-adapter.ts`, and `http-server.ts` now log `console.warn` with structured context
@@ -197,7 +196,6 @@
 - [x] **N6**: Balance endpoint uses pure BigInt string arithmetic — no `Number()` precision loss at any scale
 - [x] **T3**: 18 CSS token validation tests added to dashboard (`css-tokens.test.ts` + `vitest.config.ts`)
 - [x] Test suite updated for new auth requirements: `access-control.test.ts` (+3 tests), `protocol-integration.test.ts` (whitelist auth headers)
-- [x] All 244 tests passing (203 server + 18 dashboard CSS + 23 integration)
 
 ## Phase 24: Auth Hardening (Rate Limiting + CSRF)
 - [x] Per-route rate limits on auth endpoints: `/auth/nonce` (10/min), `/auth/verify` (5/min), `/auth/me` (30/min), `/auth/logout` (10/min)
@@ -208,7 +206,6 @@
 - [x] Dashboard `api.ts` reads `plugport_csrf` cookie and attaches `x-csrf-token` header on mutations
 - [x] CSRF cookie cleared on `/auth/logout` alongside session destruction
 - [x] Auth security tests: 5 new tests (rate limit 429 enforcement, CSRF exemptions)
-- [x] All 249 tests passing (208 server + 18 dashboard CSS + 23 integration)
 
 ## Phase 25: Redis Command Expansion (HMSET, HMGET, RENAME)
 - [x] Implemented `HMSET` — multi-field hash write (merges into existing hash document in KV store)
@@ -254,7 +251,6 @@
 - [x] **I4**: `getActiveKeys` uses `Promise.all` for batched RPC calls
 - [x] **I5**: `RENAME` clears conflicting cross-type keys at destination
 - [x] Audit report saved to `audits/12072026/audit_12072026.md`
-- [x] All 226 tests passing (208 server + 18 dashboard). Type-check clean.
 
 ## Phase 29: 4th Audit Downstream Gap Fixes (12/07/2026)
 - [x] **Gap 1**: Added `rotateKeyMeta` to ABI + adapter method in `auth-contract.ts`
@@ -263,4 +259,32 @@
 - [x] **Gap 3**: Added `handleRotateOnChain()` + Rotate button in dashboard `ApiKeysTab.tsx`
 - [x] **Gap 4**: Created `protocol-security.test.ts` (8 tests: B4 pipeline cap, I5 RENAME cross-type, B2 SCRAM parsing, rotate-key endpoint)
 - [x] **Gap 4b**: Applied B4 pipeline cap (50 stages) to HTTP aggregate endpoint
-- [x] All 234 tests passing (216 server + 18 dashboard). Type-check clean.
+
+## Phase 30: v4 genesis: multi-relayer, security upgrades, improved error handling, cli sync and production templates (13/07/2026)
+- [x] `PlugPortAuth.sol` decentralized relayers + slot reuse
+- [x] SSE heartbeat added for half-open TCP connections
+- [x] AST depth/complexity and buffer limits added
+- [x] `ApiKeysTab` network error toast handling improved
+- [x] K8s, Docker, CI/CD and CLI production limits synced
+- [x] k6 load test bombardment for `/verify` and `/sql`
+
+## Phase 31: Fully Subsidized Gas Model (13/07/2026)
+- [x] Upgraded to comma-separated `AUTH_GAS_STATION_PRIVATE_KEYS` array
+- [x] Background balance polling for gas station wallets
+- [x] Round-robin `getNextWriteContract()` router implementation
+- [x] Added `GET /api/v1/deploy/system-gas-station` endpoint
+- [x] Replaced dashboard Gas Station input with 'PlugPort Subsidized' badge
+- [x] `useContractDeployer` hook automated querying system endpoint
+
+## Phase 32: Final v4 Scope Docs & Testing Cleanups (13/07/2026)
+- [x] Updated `architecture.md`, `private-store.md`, and `message-broker.md` to reflect PlugPort-subsidized gas stations
+- [x] Updated `README.md` to clarify the subsidized gas model
+- [x] Scaled `crud-mix.js` to 1500 concurrent users and blasted `/api/v1/auth/nonce` and `/api/v1/auth/verify`
+- [x] Fixed legacy bug in `aggregate.test.ts` where it was hitting the deprecated `/insert` endpoint instead of `/insertMany`
+- [x] Fixed `plugport init` to scaffold `.env` with `AUTH_CONTRACT_ADDRESS` and `AUTH_GAS_STATION_PRIVATE_KEYS`
+- [x] Implemented `plugport deploy` to interactively scaffold Docker/K8s deployment templates
+
+## Phase 33: SQL Server Security Hardening (17/07/2026)
+- [x] Implemented missing 10,000 character limit on raw SQL query strings in `sql-translator.ts`
+- [x] Implemented missing statement timeout limit in `pg-server.ts` and `mysql-server.ts`
+- [x] Added `SQL_STATEMENT_TIMEOUT_MS` to server config and `.env.example`

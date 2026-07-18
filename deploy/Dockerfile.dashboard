@@ -1,0 +1,48 @@
+FROM node:20-alpine AS builder
+
+WORKDIR /app
+
+# Install pnpm
+RUN corepack enable && corepack prepare pnpm@latest --activate
+
+# Copy monorepo workspace configs
+COPY package.json pnpm-workspace.yaml ./
+COPY packages/dashboard/package.json ./packages/dashboard/
+COPY packages/shared/package.json ./packages/shared/
+
+# Install dependencies
+RUN pnpm install --frozen-lockfile
+
+# Copy source code
+COPY packages/dashboard ./packages/dashboard
+COPY packages/shared ./packages/shared
+
+# Build shared first
+WORKDIR /app/packages/shared
+RUN pnpm run build
+
+# Build dashboard
+WORKDIR /app/packages/dashboard
+# Next.js standalone output requires this
+ENV NEXT_TELEMETRY_DISABLED=1
+RUN pnpm run build
+
+# --- Production Image ---
+FROM node:20-alpine
+
+WORKDIR /app
+ENV NODE_ENV=production
+ENV NEXT_TELEMETRY_DISABLED=1
+ENV PORT=3000
+
+# Copy Next.js standalone output
+COPY --from=builder /app/packages/dashboard/.next/standalone ./
+COPY --from=builder /app/packages/dashboard/.next/static ./.next/static
+COPY --from=builder /app/packages/dashboard/public ./public
+
+# Non-root user
+USER node
+
+EXPOSE 3000
+
+CMD ["node", "packages/dashboard/server.js"]

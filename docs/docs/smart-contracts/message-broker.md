@@ -63,19 +63,17 @@ sidebar_position: 1
 
 ## Gas Station
 
-> **IMPORTANT**: The MessageBroker uses a **DEDICATED** gas station wallet, separate from the PlugPortStore gas station.
+> **IMPORTANT**: The MessageBroker operations use PlugPort's subsidized system gas stations (`AUTH_GAS_STATION_PRIVATE_KEYS`).
 
-This separation ensures that:
-- Pub/Sub gas costs don't affect database operations
-- Each gas station can be independently funded and monitored
-- Rate limiting can be applied per-gas-station
+This means:
+- You do not need to fund your own gas station wallet.
+- Pub/Sub gas costs are covered by the PlugPort proxy.
+- Rate limiting is applied dynamically by the HTTP API server.
 
 ### Setting Up
 
-1. Generate a new keypair for the Pub/Sub gas station
-2. Fund it with MON on the Monad testnet
-3. Deploy `PlugPortMessageBroker.sol` with the gas station address as constructor arg
-4. Set `MESSAGEBROKER_CONTRACT_ADDRESS` and `MONAD_WS_URL` in `.env`
+1. Deploy `PlugPortMessageBroker.sol` on Monad testnet. (Gas is subsidized automatically by PlugPort during proxy execution).
+2. Set `MESSAGEBROKER_CONTRACT_ADDRESS` and `MONAD_WS_URL` in `.env`
 
 ## Usage Examples
 
@@ -132,9 +130,8 @@ for (const msg of messages) {
 
 ```bash
 # Using Hardhat or Remix:
-# 1. Deploy PlugPortMessageBroker.sol with gas station address
-# 2. Fund the gas station with MON
-# 3. Update .env:
+# 1. Deploy PlugPortMessageBroker.sol
+# 2. Update .env:
 
 MESSAGEBROKER_CONTRACT_ADDRESS=0x...deployed_address...
 MONAD_WS_URL=wss://monad-testnet.drpc.org

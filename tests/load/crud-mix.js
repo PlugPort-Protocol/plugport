@@ -20,11 +20,11 @@ const deleteLatency = new Trend('delete_latency', true);
 
 export const options = {
     stages: [
-        { duration: '10s', target: 10 },   // Ramp up to 10 users
-        { duration: '30s', target: 50 },   // Ramp up to 50 users
-        { duration: '60s', target: 100 },  // Sustained 100 users
-        { duration: '30s', target: 200 },  // Peak at 200 users
-        { duration: '20s', target: 50 },   // Cool down
+        { duration: '10s', target: 50 },   // Ramp up to 50 users
+        { duration: '30s', target: 500 },  // Ramp up to 500 users
+        { duration: '60s', target: 1500 }, // Sustained 1500 users (tests 1000 SCRAM session limit)
+        { duration: '30s', target: 2000 }, // Peak at 2000 users
+        { duration: '20s', target: 500 },  // Cool down
         { duration: '10s', target: 0 },    // Ramp down
     ],
     thresholds: {
@@ -132,6 +132,37 @@ export default function (data) {
     }
 
     sleep(0.2);
+
+    group('Auth Verify', () => {
+        const start = Date.now();
+        // 1. Get Nonce (starts SCRAM session)
+        const nonceRes = http.post(
+            `${BASE_URL}/api/v1/auth/nonce`,
+            JSON.stringify({ address: `0xAlice${__VU}`, protocol: 'http' }),
+            { headers }
+        );
+        
+        // 2. Verify
+        const res = http.post(
+            `${BASE_URL}/api/v1/auth/verify`,
+            JSON.stringify({ apiKey: `test_api_key_${userId}` }),
+            { headers }
+        );
+        check(res, {
+            'verify auth handled': (r) => r.status === 401 || r.status === 200, // Typically 401 for dummy keys
+        });
+    });
+
+    group('SQL Parsing', () => {
+        const res = http.post(
+            `${BASE_URL}/api/v1/sql`,
+            JSON.stringify({ query: `SELECT * FROM ${coll} WHERE userId = '${userId}' LIMIT 10` }),
+            { headers }
+        );
+        check(res, {
+            'sql status 200': (r) => r.status === 200,
+        });
+    });
 }
 
 export function teardown(data) {

@@ -68,7 +68,7 @@ contract PlugPortAuth {
     address public owner;
 
     /// @dev Gas station address — authorized to relay meta-transactions
-    address public gasStation;
+    mapping(address => bool) public isGasStation;
 
     /// @dev Per-wallet API key storage
     mapping(address => KeyEntry[]) private keys;
@@ -87,7 +87,8 @@ contract PlugPortAuth {
     event KeyRegistered(address indexed keyOwner, uint8 keyIndex, uint256 timestamp);
     event KeyRevoked(address indexed keyOwner, uint8 keyIndex, uint256 timestamp);
     event KeyRotated(address indexed keyOwner, uint8 oldKeyIndex, uint8 newKeyIndex, uint256 timestamp);
-    event GasStationTransferred(address indexed previousGasStation, address indexed newGasStation);
+    event GasStationAdded(address indexed station);
+    event GasStationRemoved(address indexed station);
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
 
     // ---- Modifiers ----
@@ -98,7 +99,7 @@ contract PlugPortAuth {
     }
 
     modifier onlyGasStation() {
-        require(msg.sender == gasStation, "PlugPortAuth: not gas station");
+        require(isGasStation[msg.sender], "PlugPortAuth: not gas station");
         _;
     }
 
@@ -106,13 +107,13 @@ contract PlugPortAuth {
 
     /**
      * @notice Deploy the PlugPortAuth contract.
-     * @param _gasStation The address of the gas station wallet.
+     * @param _gasStation The address of the initial gas station wallet.
      *                    Pass address(0) to default to msg.sender.
      */
     constructor(address _gasStation) {
         owner = msg.sender;
         address station = _gasStation == address(0) ? msg.sender : _gasStation;
-        gasStation = station;
+        isGasStation[station] = true;
 
         DOMAIN_SEPARATOR = keccak256(
             abi.encode(
@@ -125,7 +126,7 @@ contract PlugPortAuth {
         );
 
         emit OwnershipTransferred(address(0), msg.sender);
-        emit GasStationTransferred(address(0), station);
+        emit GasStationAdded(station);
     }
 
     // ---- Direct Key Management (user pays gas) ----
@@ -403,14 +404,26 @@ contract PlugPortAuth {
     // ---- Admin Functions ----
 
     /**
-     * @notice Transfer gas station role to a new address.
+     * @notice Add a new gas station relayer.
      *         Only the contract owner can call this.
      * @param newGasStation The new gas station address.
      */
-    function transferGasStation(address newGasStation) external onlyOwner {
+    function addGasStation(address newGasStation) external onlyOwner {
         require(newGasStation != address(0), "PlugPortAuth: zero address");
-        emit GasStationTransferred(gasStation, newGasStation);
-        gasStation = newGasStation;
+        require(!isGasStation[newGasStation], "PlugPortAuth: already added");
+        isGasStation[newGasStation] = true;
+        emit GasStationAdded(newGasStation);
+    }
+
+    /**
+     * @notice Remove an existing gas station relayer.
+     *         Only the contract owner can call this.
+     * @param station The gas station address to remove.
+     */
+    function removeGasStation(address station) external onlyOwner {
+        require(isGasStation[station], "PlugPortAuth: not a gas station");
+        isGasStation[station] = false;
+        emit GasStationRemoved(station);
     }
 
     /**
@@ -438,6 +451,23 @@ contract PlugPortAuth {
         bytes32 serverKey
     ) internal returns (uint8) {
         require(commitment != bytes32(0), "PlugPortAuth: empty commitment");
+
+        // Attempt to find an inactive slot to reuse
+        for (uint8 i = 0; i < keys[keyOwner].length; i++) {
+            if (!keys[keyOwner][i].active) {
+                keys[keyOwner][i].commitment = commitment;
+                keys[keyOwner][i].salt = salt;
+                keys[keyOwner][i].storedKey = storedKey;
+                keys[keyOwner][i].serverKey = serverKey;
+                keys[keyOwner][i].active = true;
+                keys[keyOwner][i].createdAt = block.timestamp;
+                
+                emit KeyRegistered(keyOwner, keys[keyOwner][i].keyIndex, block.timestamp);
+                return keys[keyOwner][i].keyIndex;
+            }
+        }
+
+        // If no slot is free, ensure we haven't hit the hard limit
         require(keyCount[keyOwner] < MAX_KEYS_PER_ADDRESS, "PlugPortAuth: max keys reached");
 
         uint8 newIndex = keyCount[keyOwner];

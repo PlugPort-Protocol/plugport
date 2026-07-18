@@ -3,7 +3,7 @@
 import { useState, useCallback } from 'react';
 import { usePublicClient, useWalletClient } from 'wagmi';
 import { parseEther, formatEther, type Hash, type Address } from 'viem';
-import { apiPost } from './api';
+import { apiPost, apiGet } from './api';
 
 // ---- Contract ABIs (minimal) ----
 
@@ -65,17 +65,29 @@ export function useContractDeployer(factoryAddress?: string) {
 
     /**
      * Deploy a new PlugPortPrivateStore via the factory contract.
-     * @param gasStationAddress The gas station wallet that will pay for future txs
+     * Uses PlugPort's system gas station automatically.
      */
-    const deployPrivateStore = useCallback(async (gasStationAddress: string) => {
+    const deployPrivateStore = useCallback(async () => {
         if (!walletClient || !publicClient || !factoryAddress) {
             setState({ step: 'error', error: 'Wallet not connected or factory address not configured' });
             return null;
         }
 
         try {
-            // Step 1: Estimate gas
+
+            // Step 1: Fetch system gas station
             setState({ step: 'estimating' });
+            let gasStationAddress: string;
+            try {
+                const res = await apiGet<{ address: string }>('/api/v1/deploy/system-gas-station');
+                if (!res.address) throw new Error('No gas station provided by backend');
+                gasStationAddress = res.address;
+            } catch (err) {
+                setState({ step: 'error', error: 'Failed to fetch PlugPort system gas station' });
+                return null;
+            }
+
+            // Step 2: Estimate gas
             let gasEstimate: bigint;
             try {
                 gasEstimate = await publicClient.estimateContractGas({
@@ -95,7 +107,7 @@ export function useContractDeployer(factoryAddress?: string) {
                 gasEstimate: formatEther(gasEstimate * 50_000_000n), // rough cost at ~50 gwei
             });
 
-            // Step 2: Send deploy transaction
+            // Step 3: Send deploy transaction
             setState(prev => ({ ...prev, step: 'deploying' }));
             const txHash = await walletClient.writeContract({
                 address: factoryAddress as Address,
@@ -107,7 +119,7 @@ export function useContractDeployer(factoryAddress?: string) {
 
             setState(prev => ({ ...prev, step: 'confirming', txHash }));
 
-            // Step 3: Wait for confirmation
+            // Step 4: Wait for confirmation
             const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash });
 
             // Extract deployed contract address from logs

@@ -1,0 +1,37 @@
+version: '3.8'
+
+services:
+  server:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.server
+    ports:
+      - "8080:8080" # HTTP API
+      - "27017:27017" # MongoDB Wire
+      - "5432:5432" # PostgreSQL Wire
+      - "3306:3306" # MySQL Wire
+      - "6379:6379" # Redis Wire
+    environment:
+      - NODE_ENV=production
+      - MONAD_RPC_URL=https://monad-testnet.drpc.org
+      - MONAD_CHAIN_ID=10143
+      - MONAD_PRIVATE_KEY=${MONAD_PRIVATE_KEY}
+      - MONGODB_ENABLED=true
+      - PG_ENABLED=true
+      - MYSQL_ENABLED=true
+      - REDIS_ENABLED=true
+      - SQL_STATEMENT_TIMEOUT_MS=30000
+    restart: unless-stopped
+
+  dashboard:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.dashboard
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8080
+      - NEXT_PUBLIC_CHAIN_ID=10143
+    depends_on:
+      - server
+    restart: unless-stopped

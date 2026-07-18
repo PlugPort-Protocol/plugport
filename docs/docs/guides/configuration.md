@@ -36,6 +36,7 @@ All PlugPort configuration is done via environment variables. No config files ar
 | `MYSQL_PORT` | `number` | `3306` | MySQL port |
 | `REDIS_ENABLED` | `boolean` | `false` | Enable Redis RESP protocol |
 | `REDIS_PORT` | `number` | `6379` | Redis port |
+| `SQL_STATEMENT_TIMEOUT_MS` | `number` | `30000` | Max execution time for SQL queries in ms |
 
 ### Monad / MonadDb
 

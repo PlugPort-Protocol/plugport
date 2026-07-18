@@ -46,15 +46,18 @@ export class MySQLServer implements ProtocolServerInstance {
     private joinEngine: JoinEngine;
     private activeConnections: Set<net.Socket> = new Set();
     private connectionIdCounter: number = 1;
+    private timeoutMs: number;
 
     constructor(options: {
         store: DocumentStore;
         port?: number;
         host?: string;
+        timeoutMs?: number;
     }) {
         this.store = options.store;
         this.port = options.port || 3306;
         this.host = options.host || '0.0.0.0';
+        this.timeoutMs = options.timeoutMs || 30000;
         this.translator = new SQLTranslator();
         this.joinEngine = new JoinEngine();
     }
@@ -161,7 +164,15 @@ export class MySQLServer implements ProtocolServerInstance {
 
                 try {
                     const translated = this.translator.translate(sql);
-                    await this.executeTranslated(socket, translated, seqId);
+
+                    const timeoutPromise = new Promise<never>((_, reject) => {
+                        setTimeout(() => reject(new Error('SQL execution timeout')), this.timeoutMs);
+                    });
+
+                    await Promise.race([
+                        this.executeTranslated(socket, translated, seqId),
+                        timeoutPromise
+                    ]);
                 } catch (err: any) {
                     this.sendERR(socket, seqId, err.message);
                 }

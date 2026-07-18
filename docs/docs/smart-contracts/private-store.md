@@ -131,7 +131,7 @@ Encryption is transparent to the protocol frontends. The `EncryptionLayer` sits 
 
 ### 1. Deploy the Contract
 
-Deploy `PlugPortPrivateStore.sol` on Monad testnet with your gas station address.
+Deploy `PlugPortPrivateStore.sol` on Monad testnet. (Note: The PlugPort proxy automatically handles gas payments via its configured `AUTH_GAS_STATION_PRIVATE_KEYS`.)
 
 ### 2. Configure via Dashboard
 

@@ -119,6 +119,13 @@ GROUP BY country
 HAVING COUNT(*) > 5;
 ```
 
+### Security Limits
+
+To prevent query parsing Denial-of-Service (DoS) attacks, the following limits apply to all SQL operations (both PostgreSQL and MySQL):
+- **AST Depth Limit:** Maximum nesting depth of 5 for subqueries and JOINs.
+- **String Buffer Limit:** Maximum 10,000 characters per raw SQL query string.
+- **Execution Timeout:** Configurable statement timeout (default 30,000ms), configured via `SQL_STATEMENT_TIMEOUT_MS`.
+
 ### Client Libraries
 
 - **Node.js**: `pg` (node-postgres), Prisma, Sequelize, Knex, TypeORM

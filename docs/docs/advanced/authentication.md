@@ -122,7 +122,7 @@ To recover your API keys:
 | Variable | Description |
 |----------|-------------|
 | `AUTH_CONTRACT_ADDRESS` | Deployed PlugPortAuth contract address on Monad |
-| `AUTH_GAS_STATION_PRIVATE_KEY` | Private key for the gas station wallet (separate from `MONAD_PRIVATE_KEY` for production isolation) |
+| `AUTH_GAS_STATION_PRIVATE_KEYS` | Comma-separated list of private keys for the gas station wallets (enables round-robin load balancing, separate from `MONAD_PRIVATE_KEY` for production isolation) |
 
 ## HTTP API Authentication
 

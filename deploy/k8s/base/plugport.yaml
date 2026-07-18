@@ -24,6 +24,7 @@ data:
   PG_ENABLED: "false"
   MYSQL_ENABLED: "false"
   REDIS_ENABLED: "false"
+  SQL_STATEMENT_TIMEOUT_MS: "30000"
 ---
 apiVersion: apps/v1
 kind: Deployment

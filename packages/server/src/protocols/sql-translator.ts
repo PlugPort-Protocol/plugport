@@ -92,6 +92,10 @@ export class SQLTranslator {
      * @returns TranslatedQuery ready for DocumentStore execution
      */
     translate(sql: string): TranslatedQuery {
+        if (sql.length > 10000) {
+            throw new Error('SQL parse error: Query exceeds maximum allowed length of 10000 characters');
+        }
+
         const trimmed = sql.trim().replace(/;$/, '').trim();
         if (!trimmed) {
             return { type: 'noop', message: 'Empty query' };
@@ -141,6 +145,24 @@ export class SQLTranslator {
         } catch (err: any) {
             throw new Error(`SQL parse error: ${err.message}`);
         }
+
+        // Depth/Complexity Check (Max depth 5 for nested queries / joins)
+        const checkDepth = (node: any, currentDepth: number): number => {
+            if (!node || typeof node !== 'object') return currentDepth;
+            let maxDepth = currentDepth;
+            if (node.type === 'select' || node.type === 'sub_expr' || node.type === 'dual' || node.join) {
+                maxDepth++;
+            }
+            if (maxDepth > 5) throw new Error('SQL Complexity Limit Exceeded: Query is too deep or contains too many JOINs (Max 5)');
+            
+            for (const key in node) {
+                if (node[key] && typeof node[key] === 'object') {
+                    maxDepth = Math.max(maxDepth, checkDepth(node[key], currentDepth));
+                }
+            }
+            return maxDepth;
+        };
+        checkDepth(ast, 0);
 
         // Handle multiple statements
         if (Array.isArray(ast)) {

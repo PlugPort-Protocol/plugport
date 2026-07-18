@@ -9,7 +9,7 @@
 // Configuration (env vars):
 //   - MONAD_RPC_URL              — Monad RPC endpoint (reused from storage adapter)
 //   - AUTH_CONTRACT_ADDRESS      — Deployed PlugPortAuth contract address
-//   - AUTH_GAS_STATION_PRIVATE_KEY — 64-char hex private key for the gas station wallet
+//   - AUTH_GAS_STATION_PRIVATE_KEYS — Comma-separated list of 64-char hex private keys for gas station wallets
 
 import { ethers } from 'ethers';
 
@@ -58,37 +58,109 @@ export interface ScramVerifier {
 
 export class AuthContractAdapter {
     private provider: ethers.JsonRpcProvider;
-    private gasStationWallet: ethers.Wallet | null = null;
+    private gasStationWallets: ethers.Wallet[] = [];
+    private writeContracts: ethers.Contract[] = [];
+    private walletBalances: Map<string, bigint> = new Map();
+    private currentWalletIndex = 0;
+    
     private readContract: ethers.Contract | null = null;
-    private writeContract: ethers.Contract | null = null;
     private contractAddress: string;
 
     constructor() {
         const rpcUrl = process.env.MONAD_RPC_URL || 'https://monad-testnet.drpc.org';
         this.contractAddress = process.env.AUTH_CONTRACT_ADDRESS || '';
-        const gasStationKey = process.env.AUTH_GAS_STATION_PRIVATE_KEY || '';
+        
+        // Support comma-separated keys or fallback to the old env var
+        const keysEnv = process.env.AUTH_GAS_STATION_PRIVATE_KEYS || process.env.AUTH_GAS_STATION_PRIVATE_KEY || '';
+        const keys = keysEnv.split(',').map(k => k.trim()).filter(k => k.length > 0);
 
         this.provider = new ethers.JsonRpcProvider(rpcUrl);
 
-        // Only create contract instances when address is configured (I3)
         if (this.contractAddress) {
-            // Read contract (no signer needed — free eth_call)
             this.readContract = new ethers.Contract(this.contractAddress, PLUGPORT_AUTH_ABI, this.provider);
 
-            // Write contract (requires gas station wallet)
-            if (gasStationKey) {
-                this.gasStationWallet = new ethers.Wallet(gasStationKey, this.provider);
-                this.writeContract = new ethers.Contract(this.contractAddress, PLUGPORT_AUTH_ABI, this.gasStationWallet);
-                console.log(`[AuthContract] Gas station wallet: ${this.gasStationWallet.address}`);
+            if (keys.length > 0) {
+                for (const key of keys) {
+                    try {
+                        const wallet = new ethers.Wallet(key, this.provider);
+                        this.gasStationWallets.push(wallet);
+                        this.writeContracts.push(new ethers.Contract(this.contractAddress, PLUGPORT_AUTH_ABI, wallet));
+                        console.log(`[AuthContract] Loaded gas station wallet: ${wallet.address}`);
+                    } catch (err) {
+                        console.warn(`[AuthContract] Failed to load a wallet key: ${err}`);
+                    }
+                }
+                
+                // Start background balance poller
+                this.pollBalances();
+                setInterval(() => this.pollBalances(), 60000); // every 60s
+            }
+        }
+        console.log(`[AuthContract] Initialized with contract: ${this.contractAddress || '(not configured)'}`);
+    }
+
+    private async pollBalances() {
+        for (const wallet of this.gasStationWallets) {
+            try {
+                const bal = await this.provider.getBalance(wallet.address);
+                this.walletBalances.set(wallet.address, bal);
+            } catch (err) {
+                // Ignore transient RPC errors during polling
+            }
+        }
+    }
+
+    /** 
+     * Get the next well-funded gas station wallet contract using round-robin.
+     */
+    private getNextWriteContract(): ethers.Contract {
+        if (this.writeContracts.length === 0) {
+            throw new Error('Auth contract not configured (missing AUTH_CONTRACT_ADDRESS or AUTH_GAS_STATION_PRIVATE_KEYS)');
+        }
+
+        // Find wallets with > 0.05 MON (50,000,000,000,000,000 wei)
+        const MIN_BALANCE = 50000000000000000n; // 0.05 ether
+        const validIndices: number[] = [];
+
+        for (let i = 0; i < this.gasStationWallets.length; i++) {
+            const addr = this.gasStationWallets[i].address;
+            const bal = this.walletBalances.get(addr);
+            // If balance is unknown (not polled yet), assume it's valid for now to avoid blocking startup
+            if (bal === undefined || bal > MIN_BALANCE) {
+                validIndices.push(i);
             }
         }
 
-        console.log(`[AuthContract] Initialized with contract: ${this.contractAddress || '(not configured)'}`);
+        if (validIndices.length === 0) {
+            throw new Error('All gas stations are depleted (balance < 0.05 MON). Cannot process meta-transactions.');
+        }
+
+        // Round robin among valid indices
+        const selectedIndex = validIndices[this.currentWalletIndex % validIndices.length];
+        this.currentWalletIndex = (this.currentWalletIndex + 1) % validIndices.length;
+        
+        return this.writeContracts[selectedIndex];
+    }
+
+    /** Returns one of the active PlugPort system gas station addresses */
+    public getSystemGasStationAddress(): string | null {
+        if (this.gasStationWallets.length === 0) return null;
+        const validIndices: number[] = [];
+        const MIN_BALANCE = 50000000000000000n;
+        for (let i = 0; i < this.gasStationWallets.length; i++) {
+            const bal = this.walletBalances.get(this.gasStationWallets[i].address);
+            if (bal === undefined || bal > MIN_BALANCE) validIndices.push(i);
+        }
+        if (validIndices.length === 0) return null;
+        
+        // Just return the next one in round-robin sequence to distribute load
+        const selectedIndex = validIndices[this.currentWalletIndex % validIndices.length];
+        return this.gasStationWallets[selectedIndex].address;
     }
 
     /** Whether the adapter is fully configured for on-chain operations */
     get isConfigured(): boolean {
-        return !!this.contractAddress && !!this.writeContract;
+        return !!this.contractAddress && this.writeContracts.length > 0;
     }
 
     /** Whether read-only operations are available */
@@ -111,13 +183,11 @@ export class AuthContractAdapter {
         nonce: number,
         signature: string,
     ): Promise<{ txHash: string; keyIndex: number }> {
-        if (!this.writeContract) {
-            throw new Error('Auth contract not configured (missing AUTH_CONTRACT_ADDRESS or AUTH_GAS_STATION_PRIVATE_KEY)');
-        }
+        const contract = this.getNextWriteContract();
 
         console.log(`[AuthContract] registerKeyMeta for ${keyOwner} (nonce: ${nonce})`);
 
-        const tx = await this.writeContract.registerKeyMeta(
+        const tx = await contract.registerKeyMeta(
             keyOwner,
             commitment,
             salt,
@@ -158,13 +228,16 @@ export class AuthContractAdapter {
         nonce: number,
         signature: string,
     ): Promise<{ txHash: string }> {
-        if (!this.writeContract) {
-            throw new Error('Auth contract not configured (missing AUTH_CONTRACT_ADDRESS or AUTH_GAS_STATION_PRIVATE_KEY)');
-        }
+        const contract = this.getNextWriteContract();
 
-        console.log(`[AuthContract] revokeKeyMeta for ${keyOwner} (keyIndex: ${keyIndex}, nonce: ${nonce})`);
+        console.log(`[AuthContract] revokeKeyMeta for ${keyOwner} (index: ${keyIndex}, nonce: ${nonce})`);
 
-        const tx = await this.writeContract.revokeKeyMeta(keyOwner, keyIndex, nonce, signature);
+        const tx = await contract.revokeKeyMeta(
+            keyOwner,
+            keyIndex,
+            nonce,
+            signature,
+        );
         const receipt = await tx.wait();
         console.log(`[AuthContract] Key revoked — tx: ${receipt.hash}`);
 
@@ -185,14 +258,19 @@ export class AuthContractAdapter {
         nonce: number,
         signature: string,
     ): Promise<{ txHash: string; newKeyIndex: number }> {
-        if (!this.writeContract) {
-            throw new Error('Auth contract not configured (missing AUTH_CONTRACT_ADDRESS or AUTH_GAS_STATION_PRIVATE_KEY)');
-        }
+        const contract = this.getNextWriteContract();
 
-        console.log(`[AuthContract] rotateKeyMeta for ${keyOwner} (oldKeyIndex: ${oldKeyIndex}, nonce: ${nonce})`);
+        console.log(`[AuthContract] rotateKeyMeta for ${keyOwner} (oldIndex: ${oldKeyIndex}, nonce: ${nonce})`);
 
-        const tx = await this.writeContract.rotateKeyMeta(
-            keyOwner, oldKeyIndex, newCommitment, newSalt, newStoredKey, newServerKey, nonce, signature,
+        const tx = await contract.rotateKeyMeta(
+            keyOwner,
+            oldKeyIndex,
+            newCommitment,
+            newSalt,
+            newStoredKey,
+            newServerKey,
+            nonce,
+            signature,
         );
         const receipt = await tx.wait();
         console.log(`[AuthContract] Key rotated — tx: ${receipt.hash}`);
@@ -328,10 +406,7 @@ export class AuthContractAdapter {
         }
     }
 
-    /** Gas station wallet address (for display/logging) */
-    get gasStationAddress(): string | null {
-        return this.gasStationWallet?.address || null;
-    }
+
 }
 
 // ---- Singleton ----

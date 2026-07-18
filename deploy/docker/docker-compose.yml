@@ -24,6 +24,7 @@ services:
       - PG_ENABLED=${PG_ENABLED:-false}
       - MYSQL_ENABLED=${MYSQL_ENABLED:-false}
       - REDIS_ENABLED=${REDIS_ENABLED:-false}
+      - SQL_STATEMENT_TIMEOUT_MS=${SQL_STATEMENT_TIMEOUT_MS:-30000}
     healthcheck:
       test: wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1
       interval: 10s

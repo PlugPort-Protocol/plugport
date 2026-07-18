@@ -20,7 +20,7 @@ describe('Aggregation Pipeline Tests', () => {
 
     beforeAll(async () => {
         // Seed users
-        await post(`/api/v1/collections/${usersCol}/insert`, {
+        await post(`/api/v1/collections/${usersCol}/insertMany`, {
             documents: [
                 { _id: 'user_1', name: 'Alice', age: 30, role: 'admin' },
                 { _id: 'user_2', name: 'Bob', age: 25, role: 'user' },
@@ -29,7 +29,7 @@ describe('Aggregation Pipeline Tests', () => {
         });
 
         // Seed orders
-        await post(`/api/v1/collections/${ordersCol}/insert`, {
+        await post(`/api/v1/collections/${ordersCol}/insertMany`, {
             documents: [
                 { _id: 'order_1', userId: 'user_1', total: 99.99, status: 'completed', items: ['item_a', 'item_b'] },
                 { _id: 'order_2', userId: 'user_1', total: 49.99, status: 'pending', items: ['item_c'] },

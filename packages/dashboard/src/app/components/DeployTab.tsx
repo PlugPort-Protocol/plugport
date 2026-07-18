@@ -11,39 +11,27 @@ export function DeployTab() {
     const { isConnected } = useAccount();
     const factoryAddress = process.env.NEXT_PUBLIC_FACTORY_ADDRESS;
     const { state: deployState, deployPrivateStore, getGasStationInfo, getDeployedStores, reset } = useContractDeployer(factoryAddress);
-    const [gasStationAddr, setGasStationAddr] = useState('');
-    const [gasInfo, setGasInfo] = useState<GasStationInfo | null>(null);
     const [deployedContracts, setDeployedContracts] = useState<Array<{ contractAddress: string; contractType: string; createdAt: number }>>([]);
     const [loadingContracts, setLoadingContracts] = useState(true);
 
-    // Load deployed contracts from server
     useEffect(() => {
-        if (isAuthenticated && address) {
-            apiGet<{ contracts: Array<{ contractAddress: string; contractType: string; createdAt: number }> }>('/api/v1/deploy/contracts')
-                .then(res => setDeployedContracts(res.contracts))
-                .catch(() => {})
-                .finally(() => setLoadingContracts(false));
-        } else {
-            setLoadingContracts(false);
-        }
-    }, [isAuthenticated, address]);
-
-    // Load gas station info
-    const refreshGasInfo = useCallback(async (addr: string) => {
-        if (!addr) return;
-        try {
-            const res = await apiGet<GasStationInfo>(`/api/v1/deploy/gas-station/${addr}/balance`);
-            setGasInfo(res);
-        } catch {
-            // Try via the hook if server fails
-            const info = await getGasStationInfo(addr);
-            setGasInfo(info);
-        }
-    }, [getGasStationInfo]);
+        if (!isAuthenticated) return;
+        let mounted = true;
+        apiGet<{ contracts: any[] }>('/api/v1/deploy/contracts')
+            .then(res => {
+                if (mounted) {
+                    setDeployedContracts(res.contracts || []);
+                    setLoadingContracts(false);
+                }
+            })
+            .catch(() => {
+                if (mounted) setLoadingContracts(false);
+            });
+        return () => { mounted = false; };
+    }, [isAuthenticated]);
 
     const handleDeploy = async () => {
-        if (!gasStationAddr) return;
-        const result = await deployPrivateStore(gasStationAddr);
+        const result = await deployPrivateStore();
         if (result) {
             // Refresh contracts list
             try {
@@ -89,75 +77,34 @@ export function DeployTab() {
                     for encrypted, access-controlled data. Each private collection uses its own contract instance.
                 </div>
 
-                {/* Step 1: Gas station address */}
-                <div className="input-group" style={{ marginBottom: 16 }}>
-                    <label className="label">Gas Station Address</label>
-                    <div style={{ display: 'flex', gap: 12 }}>
-                        <input
-                            className="input"
-                            value={gasStationAddr}
-                            onChange={e => setGasStationAddr(e.target.value)}
-                            placeholder="0x... (wallet that pays for gas)"
-                            style={{ flex: 1 }}
-                        />
-                        <button className="btn btn-secondary btn-sm" onClick={() => refreshGasInfo(gasStationAddr)} disabled={!gasStationAddr}>
-                            Check Balance
-                        </button>
-                    </div>
-                    <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginTop: 6 }}>
-                        The gas station is a wallet address that pays for on-chain operations. Use your own address or a dedicated gas wallet.
+                {/* PlugPort Subsidized Badge */}
+                <div style={{
+                    padding: 16,
+                    borderRadius: 'var(--radius-md)',
+                    background: 'rgba(0,212,170,0.05)',
+                    border: '1px solid rgba(0,212,170,0.2)',
+                    marginBottom: 20,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 12
+                }}>
+                    <div style={{ fontSize: 24 }}>✨</div>
+                    <div>
+                        <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--accent-secondary)' }}>
+                            PlugPort Subsidized
+                        </div>
+                        <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginTop: 4 }}>
+                            You don't need to provide a gas station. PlugPort sponsors all transaction fees for your Private Store.
+                        </div>
                     </div>
                 </div>
-
-                {/* Gas Station Info */}
-                {gasInfo && (
-                    <div className="gas-station-panel" style={{
-                        padding: 16,
-                        borderRadius: 'var(--radius-md)',
-                        background: gasInfo.isLow ? 'rgba(255,107,157,0.05)' : 'rgba(0,212,170,0.05)',
-                        border: `1px solid ${gasInfo.isLow ? 'rgba(255,107,157,0.2)' : 'rgba(0,212,170,0.2)'}`,
-                        marginBottom: 20,
-                    }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-                            <div style={{ fontSize: 14, fontWeight: 700, color: gasInfo.isLow ? 'var(--accent-tertiary)' : 'var(--accent-secondary)' }}>
-                                Gas Station Balance
-                            </div>
-                            {gasInfo.isLow && <span className="badge badge-warning">Low Balance</span>}
-                        </div>
-                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16 }}>
-                            <div>
-                                <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginBottom: 4 }}>Balance</div>
-                                <div style={{ fontSize: 20, fontWeight: 800, fontFamily: 'JetBrains Mono', color: 'var(--text-primary)' }}>
-                                    {parseFloat(gasInfo.balance).toFixed(4)} <span style={{ fontSize: 12, opacity: 0.6 }}>MON</span>
-                                </div>
-                            </div>
-                            <div>
-                                <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginBottom: 4 }}>Est. Operations</div>
-                                <div style={{ fontSize: 20, fontWeight: 800, fontFamily: 'JetBrains Mono', color: 'var(--text-primary)' }}>
-                                    {gasInfo.estimatedOps.toLocaleString()}
-                                </div>
-                            </div>
-                            <div>
-                                <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginBottom: 4 }}>Address</div>
-                                <div style={{ fontSize: 13, fontFamily: 'JetBrains Mono', color: 'var(--text-secondary)', wordBreak: 'break-all' }}>
-                                    {gasInfo.address.substring(0, 10)}...{gasInfo.address.substring(38)}
-                                </div>
-                            </div>
-                        </div>
-                        {gasInfo.isLow && (
-                            <div style={{ fontSize: 12, color: 'var(--accent-tertiary)', marginTop: 12, padding: '8px 12px', background: 'rgba(255,107,157,0.08)', borderRadius: 'var(--radius-sm)' }}>
-                                ⚠️ Balance is below 0.1 MON. Top up your gas station to ensure uninterrupted operations.
-                            </div>
-                        )}
-                    </div>
-                )}
 
                 {/* Deploy button + status */}
                 <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
                     <button
                         className="btn btn-primary"
                         onClick={handleDeploy}
-                        disabled={!gasStationAddr || deployState.step === 'deploying' || deployState.step === 'confirming' || deployState.step === 'registering'}
+                        disabled={deployState.step === 'deploying' || deployState.step === 'confirming' || deployState.step === 'registering'}
                     >
                         {deployState.step === 'idle' || deployState.step === 'done' || deployState.step === 'error'
                             ? '🚀 Deploy Contract'
@@ -214,7 +161,6 @@ export function DeployTab() {
                                     <th>Contract Address</th>
                                     <th>Type</th>
                                     <th>Deployed</th>
-                                    <th>Actions</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -225,14 +171,6 @@ export function DeployTab() {
                                         </td>
                                         <td><span className={`badge ${c.contractType === 'privateStore' ? 'badge-warning' : 'badge-primary'}`}>{c.contractType}</span></td>
                                         <td style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>{new Date(c.createdAt).toLocaleDateString()}</td>
-                                        <td>
-                                            <button
-                                                className="btn btn-sm btn-secondary"
-                                                onClick={() => { setGasStationAddr(c.contractAddress); refreshGasInfo(c.contractAddress); }}
-                                            >
-                                                Check Gas
-                                            </button>
-                                        </td>
                                     </tr>
                                 ))}
                             </tbody>

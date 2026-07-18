@@ -1,0 +1,48 @@
+FROM node:20-alpine AS builder
+
+WORKDIR /app
+
+# Install pnpm
+RUN corepack enable && corepack prepare pnpm@latest --activate
+
+# Copy monorepo workspace configs
+COPY package.json pnpm-workspace.yaml ./
+COPY packages/server/package.json ./packages/server/
+COPY packages/shared/package.json ./packages/shared/
+
+# Install all dependencies (including dev) to build
+RUN pnpm install --frozen-lockfile
+
+# Copy source code
+COPY packages/server ./packages/server
+COPY packages/shared ./packages/shared
+
+# Build
+WORKDIR /app/packages/shared
+RUN pnpm run build
+WORKDIR /app/packages/server
+RUN pnpm run build
+
+# Prune dev dependencies for production
+WORKDIR /app
+RUN pnpm prune --prod
+
+# --- Production Image ---
+FROM node:20-alpine
+
+WORKDIR /app
+ENV NODE_ENV=production
+
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/packages/shared/dist ./packages/shared/dist
+COPY --from=builder /app/packages/shared/package.json ./packages/shared/
+COPY --from=builder /app/packages/server/dist ./packages/server/dist
+COPY --from=builder /app/packages/server/package.json ./packages/server/
+
+# Non-root user
+USER node
+
+WORKDIR /app/packages/server
+EXPOSE 8080 27017 5432 3306 6379
+
+CMD ["node", "dist/index.js"]
