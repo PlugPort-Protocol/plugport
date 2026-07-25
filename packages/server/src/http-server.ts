@@ -1008,7 +1008,7 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
             }
             try {
                 // Send an SSE comment as a heartbeat to test TCP socket health
-                reply.raw.write(':\\n\\n');
+                reply.raw.write(`:\n\n`);
             } catch (err) {
                 destroyed = true;
                 clearInterval(heartbeatInterval);

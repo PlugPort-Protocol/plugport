@@ -61,7 +61,7 @@ venv/
 env/
 .env/
 
-# OS / Editor
+# OS / Editor / AI Tool Config
 .DS_Store
 .DS_Store?
 ._*
@@ -70,6 +70,7 @@ env/
 ehthumbs.db
 Thumbs.db
 .idea/
+.claude/
 .vscode/*
 !.vscode/settings.json
 !.vscode/tasks.json

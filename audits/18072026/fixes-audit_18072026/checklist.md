@@ -1,0 +1,7 @@
+- [x] Update `packages/server/src/config.ts` (or equivalent) to parse `SQL_STATEMENT_TIMEOUT_MS` (default 30000).
+- [x] Update `.env.example` to include `SQL_STATEMENT_TIMEOUT_MS`.
+- [x] Modify `packages/server/src/protocols/sql-translator.ts` to enforce a 10,000 char limit at the start of `translate()`.
+- [x] Modify `packages/server/src/protocols/pg-server.ts` to wrap `executeTranslated` in a `Promise.race` with the configured timeout.
+- [x] Modify `packages/server/src/protocols/mysql-server.ts` to wrap `executeTranslated` in a `Promise.race` with the configured timeout.
+- [x] Run `npm run test` to verify everything works.
+- [x] Update `audit-log.md` and `checklist.md` with these changes (Round 36 / Phase 33).

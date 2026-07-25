@@ -336,3 +336,9 @@
 - [x] (Server): Implemented missing 10,000 character limit on raw SQL query strings in `sql-translator.ts` to prevent OOM DOS via large parser payloads.
 - [x] (Server): Implemented missing statement timeout limit in both `pg-server.ts` and `mysql-server.ts`. Wraps query translation and execution in `Promise.race` against a timeout.
 - [x] (Config): Added `SQL_STATEMENT_TIMEOUT_MS` (default 30000ms / 30s) to `process.env` reading, shared `PlugPortConfig` interface, and `.env.example`.
+
+## Round 37: Post-Audit Fixes — Timer Cleanup, SSE Escaping, .gitignore (20/07/2026)
+- [x] (Server): Fixed dangling `setTimeout` timers in `pg-server.ts` and `mysql-server.ts`. The `Promise.race` timeout was never cleared on query success, causing thousands of 30s orphaned timer handles to accumulate under sustained load. Now uses `try/finally { clearTimeout() }`.
+- [x] (Server): Fixed SSE heartbeat double-escaping in `http-server.ts`. The heartbeat was writing literal `\\n` characters instead of actual newlines (`\n`). Changed from single-quoted escaped string to a template literal producing the SSE-spec-compliant `: + LF + LF` bytes.
+- [x] (Config): Added `.claude/` to `.gitignore` and removed the accidentally committed `.claude/launch.json` from git tracking (introduced by the v3 cherry-pick).
+- [x] All 315 tests passing (216 server + 20 dashboard + 17 sqlite-compat + 62 integration). Type-check clean.

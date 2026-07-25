@@ -288,3 +288,8 @@
 - [x] Implemented missing 10,000 character limit on raw SQL query strings in `sql-translator.ts`
 - [x] Implemented missing statement timeout limit in `pg-server.ts` and `mysql-server.ts`
 - [x] Added `SQL_STATEMENT_TIMEOUT_MS` to server config and `.env.example`
+
+## Phase 34: Post-Audit Fixes — Timer Cleanup, SSE, .gitignore (20/07/2026)
+- [x] Fixed dangling `setTimeout` timers in `pg-server.ts` and `mysql-server.ts` using `try/finally { clearTimeout() }`
+- [x] Fixed SSE heartbeat double-escaping in `http-server.ts` — now sends spec-compliant `: + LF + LF`
+- [x] Added `.claude/` to `.gitignore` and removed accidentally committed `.claude/launch.json`

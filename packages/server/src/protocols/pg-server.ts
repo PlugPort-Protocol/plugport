@@ -196,14 +196,19 @@ export class PGServer implements ProtocolServerInstance {
                 try {
                     const translated = this.translator.translate(sql);
                     
+                    let timeoutId: ReturnType<typeof setTimeout>;
                     const timeoutPromise = new Promise<never>((_, reject) => {
-                        setTimeout(() => reject(new Error('SQL execution timeout')), this.timeoutMs);
+                        timeoutId = setTimeout(() => reject(new Error('SQL execution timeout')), this.timeoutMs);
                     });
 
-                    await Promise.race([
-                        this.executeTranslated(socket, translated, sql),
-                        timeoutPromise
-                    ]);
+                    try {
+                        await Promise.race([
+                            this.executeTranslated(socket, translated, sql),
+                            timeoutPromise
+                        ]);
+                    } finally {
+                        clearTimeout(timeoutId!);
+                    }
                 } catch (err: any) {
                     this.sendError(socket, err.message);
                 }

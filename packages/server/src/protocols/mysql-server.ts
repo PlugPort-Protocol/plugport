@@ -165,14 +165,19 @@ export class MySQLServer implements ProtocolServerInstance {
                 try {
                     const translated = this.translator.translate(sql);
 
+                    let timeoutId: ReturnType<typeof setTimeout>;
                     const timeoutPromise = new Promise<never>((_, reject) => {
-                        setTimeout(() => reject(new Error('SQL execution timeout')), this.timeoutMs);
+                        timeoutId = setTimeout(() => reject(new Error('SQL execution timeout')), this.timeoutMs);
                     });
 
-                    await Promise.race([
-                        this.executeTranslated(socket, translated, seqId),
-                        timeoutPromise
-                    ]);
+                    try {
+                        await Promise.race([
+                            this.executeTranslated(socket, translated, seqId),
+                            timeoutPromise
+                        ]);
+                    } finally {
+                        clearTimeout(timeoutId!);
+                    }
                 } catch (err: any) {
                     this.sendERR(socket, seqId, err.message);
                 }
