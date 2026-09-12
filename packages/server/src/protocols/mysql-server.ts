@@ -13,12 +13,54 @@
 //   Server → Column definitions → Rows → EOF/OK
 
 import net from 'net';
-import crypto from 'crypto';
+import crypto, { timingSafeEqual } from 'crypto';
 import { DocumentStore } from '../storage/document-store.js';
 import { SQLTranslator, type TranslatedQuery } from './sql-translator.js';
 import { JoinEngine } from './join-engine.js';
 import type { ProtocolServerInstance } from './protocol-manager.js';
 import type { ProtocolType, DocumentWithId } from '@plugport/shared';
+
+/**
+ * Compute the mysql_native_password auth-response a client would send for the given
+ * password and server scramble: SHA1(password) XOR SHA1(scramble + SHA1(SHA1(password))).
+ */
+function computeMysqlAuthResponse(password: string, scramble: Buffer): Buffer {
+    const sha1 = (buf: Buffer) => crypto.createHash('sha1').update(buf).digest();
+    const passwordSha1 = sha1(Buffer.from(password, 'utf-8'));
+    const passwordSha1Sha1 = sha1(passwordSha1);
+    const combinedSha1 = sha1(Buffer.concat([scramble, passwordSha1Sha1]));
+    const result = Buffer.alloc(20);
+    for (let i = 0; i < 20; i++) {
+        result[i] = passwordSha1[i] ^ combinedSha1[i];
+    }
+    return result;
+}
+
+/** Constant-time buffer comparison to prevent timing attacks on the auth response. */
+function safeCompareBuf(a: Buffer, b: Buffer): boolean {
+    if (a.length !== b.length) {
+        timingSafeEqual(a, a);
+        return false;
+    }
+    return timingSafeEqual(a, b);
+}
+
+/**
+ * Extract the auth-response bytes from a HandshakeResponse41 packet
+ * (CLIENT_SECURE_CONNECTION format: 1-byte length prefix).
+ */
+function parseHandshakeAuthResponse(payload: Buffer): Buffer | null {
+    // client_flag(4) + max_packet_size(4) + charset(1) + reserved(23) = 32-byte fixed header
+    let offset = 32;
+    const usernameEnd = payload.indexOf(0, offset);
+    if (usernameEnd === -1) return null;
+    offset = usernameEnd + 1;
+    if (offset >= payload.length) return null;
+    const authLen = payload[offset];
+    offset += 1;
+    if (offset + authLen > payload.length) return null;
+    return payload.subarray(offset, offset + authLen);
+}
 
 // ---- MySQL Command Codes ----
 
@@ -47,17 +89,21 @@ export class MySQLServer implements ProtocolServerInstance {
     private activeConnections: Set<net.Socket> = new Set();
     private connectionIdCounter: number = 1;
     private timeoutMs: number;
+    private apiKey?: string;
+    private authenticatedSockets: WeakSet<object> = new WeakSet();
 
     constructor(options: {
         store: DocumentStore;
         port?: number;
         host?: string;
         timeoutMs?: number;
+        apiKey?: string;
     }) {
         this.store = options.store;
         this.port = options.port || 3306;
         this.host = options.host || '0.0.0.0';
         this.timeoutMs = options.timeoutMs || 30000;
+        this.apiKey = options.apiKey;
         this.translator = new SQLTranslator();
         this.joinEngine = new JoinEngine();
     }
@@ -127,10 +173,32 @@ export class MySQLServer implements ProtocolServerInstance {
                     buffer = buffer.subarray(4 + payloadLength);
 
                     if (!handshakeComplete) {
-                        // Handshake response — just accept
                         handshakeComplete = true;
                         sequenceId = _seqId + 1;
-                        this.sendOK(socket, sequenceId);
+
+                        if (!this.apiKey) {
+                            // No API key configured — dev mode, no auth required
+                            this.authenticatedSockets.add(socket);
+                            this.sendOK(socket, sequenceId);
+                            continue;
+                        }
+
+                        const clientAuthResponse = parseHandshakeAuthResponse(payload);
+                        const expected = computeMysqlAuthResponse(this.apiKey, authChallenge);
+                        if (clientAuthResponse && safeCompareBuf(clientAuthResponse, expected)) {
+                            this.authenticatedSockets.add(socket);
+                            this.sendOK(socket, sequenceId);
+                        } else {
+                            this.sendERR(socket, sequenceId, 'Access denied: invalid password');
+                            socket.end();
+                        }
+                        continue;
+                    }
+
+                    if (this.apiKey && !this.authenticatedSockets.has(socket)) {
+                        sequenceId = _seqId + 1;
+                        this.sendERR(socket, sequenceId, 'Access denied: not authenticated');
+                        socket.end();
                         continue;
                     }
 
@@ -224,7 +292,7 @@ export class MySQLServer implements ProtocolServerInstance {
             case 'insert': {
                 let count = 0;
                 for (const doc of query.documents || []) {
-                    await this.store.insert(query.collection!, doc as any);
+                    await this.store.insert(query.collection!, [doc] as any);
                     count++;
                 }
                 this.sendOK(socket, seqId, count);
@@ -339,7 +407,11 @@ export class MySQLServer implements ProtocolServerInstance {
         // Status flags
         parts.push(Buffer.from([0x02, 0x00]));
         // Capability flags (upper 2 bytes)
-        parts.push(Buffer.from([0xff, 0x81]));
+        // Note: bit24 (CLIENT_DEPRECATE_EOF) is intentionally NOT set (0x81 -> 0x80) — our
+        // result-set implementation only sends the legacy 0xfe EOF marker format, not the
+        // OK-packet-with-EOF-flag format CLIENT_DEPRECATE_EOF requires. Advertising it while
+        // not implementing it confuses modern clients into misparsing result sets.
+        parts.push(Buffer.from([0xff, 0x80]));
         // Auth data length
         parts.push(Buffer.from([0x15])); // 21 = 8 + 13
         // Reserved (10 bytes)

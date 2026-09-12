@@ -1,0 +1,7 @@
+{$API_DOMAIN} {
+    reverse_proxy plugport-server:8080
+}
+
+{$DASHBOARD_DOMAIN} {
+    reverse_proxy plugport-dashboard:3000
+}

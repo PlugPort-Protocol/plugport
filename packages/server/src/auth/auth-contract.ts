@@ -67,7 +67,7 @@ export class AuthContractAdapter {
     private contractAddress: string;
 
     constructor() {
-        const rpcUrl = process.env.MONAD_RPC_URL || 'https://monad-testnet.drpc.org';
+        const rpcUrl = process.env.MONAD_RPC_URL || 'https://testnet-rpc.monad.xyz';
         this.contractAddress = process.env.AUTH_CONTRACT_ADDRESS || '';
         
         // Support comma-separated keys or fallback to the old env var

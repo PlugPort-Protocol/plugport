@@ -14,10 +14,29 @@
 //   - Server: PING, INFO, DBSIZE, FLUSHDB, SELECT, AUTH, COMMAND
 
 import net from 'net';
+import { timingSafeEqual } from 'node:crypto';
 import type { DocumentStore } from '../storage/document-store.js';
 import type { KVAdapter } from '@plugport/shared';
 import type { ProtocolServerInstance } from './protocol-manager.js';
 import type { ProtocolType } from '@plugport/shared';
+
+/** Constant-time string comparison to prevent timing attacks on the Redis AUTH password. */
+function safeCompare(a: string, b: string): boolean {
+    try {
+        const bufA = Buffer.from(a, 'utf-8');
+        const bufB = Buffer.from(b, 'utf-8');
+        if (bufA.length !== bufB.length) {
+            timingSafeEqual(bufA, bufA);
+            return false;
+        }
+        return timingSafeEqual(bufA, bufB);
+    } catch {
+        return false;
+    }
+}
+
+/** Commands allowed before AUTH succeeds, when an API key is configured. */
+const UNPROTECTED_REDIS_COMMANDS = new Set(['AUTH', 'HELLO', 'PING', 'QUIT']);
 
 // ---- RESP Parser ----
 
@@ -126,6 +145,8 @@ export class RedisServer implements ProtocolServerInstance {
     private activeConnections: Set<net.Socket> = new Set();
     private subscribedClients: Map<string, Set<net.Socket>> = new Map(); // channel → sockets
     private messageBroker: any; // MessageBrokerAdapter (optional)
+    private apiKey?: string;
+    private authenticatedSockets: WeakSet<object> = new WeakSet();
 
     constructor(options: {
         store: DocumentStore;
@@ -133,12 +154,14 @@ export class RedisServer implements ProtocolServerInstance {
         port?: number;
         host?: string;
         messageBroker?: any;
+        apiKey?: string;
     }) {
         this.store = options.store;
         this.kvStore = options.kvStore;
         this.port = options.port || 6379;
         this.host = options.host || '0.0.0.0';
         this.messageBroker = options.messageBroker || null;
+        this.apiKey = options.apiKey;
     }
 
     async start(): Promise<void> {
@@ -225,8 +248,13 @@ export class RedisServer implements ProtocolServerInstance {
         return null;
     }
 
-    public async executeCommand(socket: any, args: string[]): Promise<void> {
+    public async executeCommand(socket: any, args: string[], trusted: boolean = false): Promise<void> {
         const cmd = args[0].toUpperCase();
+
+        if (this.apiKey && !trusted && !UNPROTECTED_REDIS_COMMANDS.has(cmd) && !this.authenticatedSockets.has(socket)) {
+            socket.write(encodeError('NOAUTH Authentication required.'));
+            return;
+        }
 
         switch (cmd) {
             // ---- String commands ----
@@ -744,8 +772,16 @@ export class RedisServer implements ProtocolServerInstance {
             }
 
             case 'AUTH': {
-                // Authentication — accept any password
-                socket.write(encodeSimpleString('OK'));
+                const password = args[args.length - 1] || '';
+                if (!this.apiKey) {
+                    // No API key configured — nothing to check against (dev mode)
+                    socket.write(encodeSimpleString('OK'));
+                } else if (safeCompare(password, this.apiKey)) {
+                    this.authenticatedSockets.add(socket);
+                    socket.write(encodeSimpleString('OK'));
+                } else {
+                    socket.write(encodeError('WRONGPASS invalid username-password pair or user is disabled.'));
+                }
                 break;
             }
 

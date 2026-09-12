@@ -4,7 +4,7 @@
 
 - MetaMask with Monad testnet configured:
   - **Network Name**: Monad Testnet
-  - **RPC URL**: `https://monad-testnet.drpc.org`
+  - **RPC URL**: `https://testnet-rpc.monad.xyz`
   - **Chain ID**: `10143`
   - **Currency Symbol**: `MON`
   - **Block Explorer**: `https://testnet.monadvision.com`
@@ -42,7 +42,7 @@ The current gas station address can transfer write rights to a new address:
 Add to your `.env` file:
 
 ```env
-MONAD_RPC_URL=https://monad-testnet.drpc.org
+MONAD_RPC_URL=https://testnet-rpc.monad.xyz
 MONAD_CHAIN_ID=10143
 MONAD_PRIVATE_KEY=<gas_station_wallet_private_key_without_0x>
 MONAD_CONTRACT_ADDRESS=<deployed_contract_address>

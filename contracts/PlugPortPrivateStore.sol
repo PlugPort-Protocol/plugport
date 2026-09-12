@@ -325,14 +325,14 @@ contract PlugPortPrivateStore {
     function transferOwnership(address newOwner) external onlyOwner {
         require(newOwner != address(0), "PrivateStore: zero address");
         
-        if (!whitelist[newOwner]) {
-            whitelist[newOwner] = true;
+        if (accessRoles[newOwner] == 0) {
             whitelistIndex[newOwner] = whitelistedAddresses.length;
             whitelistedAddresses.push(newOwner);
             whitelistCount++;
             emit AddressWhitelisted(newOwner);
         }
-        
+        accessRoles[newOwner] = 2;
+
         emit OwnershipTransferred(owner, newOwner);
         owner = newOwner;
     }

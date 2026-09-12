@@ -53,7 +53,7 @@ program
                     type: 'input',
                     name: 'rpcUrl',
                     message: 'Monad RPC URL:',
-                    default: 'https://monad-testnet.drpc.org',
+                    default: 'https://testnet-rpc.monad.xyz',
                 },
             ]);
 
@@ -200,7 +200,7 @@ main().catch(console.error);`,
             const envLines = [
                 '# PlugPort Server Configuration', '',
                 '# Monad Testnet',
-                'MONAD_RPC_URL=https://monad-testnet.drpc.org',
+                'MONAD_RPC_URL=https://testnet-rpc.monad.xyz',
                 'MONAD_CHAIN_ID=10143',
                 'MONAD_PRIVATE_KEY=',
                 'MONAD_CONTRACT_ADDRESS=', '',
@@ -791,7 +791,7 @@ services:
       - "6379:6379" # Redis Wire
     environment:
       - NODE_ENV=production
-      - MONAD_RPC_URL=https://monad-testnet.drpc.org
+      - MONAD_RPC_URL=https://testnet-rpc.monad.xyz
       - MONAD_CHAIN_ID=10143
       - MONAD_PRIVATE_KEY=\${MONAD_PRIVATE_KEY}
       - MONGODB_ENABLED=true

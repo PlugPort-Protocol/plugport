@@ -83,7 +83,7 @@ resource "docker_container" "plugport_server" {
   restart = "unless-stopped"
 
   healthcheck {
-    test         = ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
+    test         = ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:8080/health"]
     interval     = "10s"
     timeout      = "5s"
     retries      = 5

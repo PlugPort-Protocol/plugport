@@ -11,6 +11,7 @@ import {
 } from 'react';
 import { useAccount, useDisconnect, useSignMessage } from 'wagmi';
 import { SiweMessage } from 'siwe';
+import { getApiBase, setServerUrl as setSharedServerUrl } from './api';
 
 // ---- Types ----
 
@@ -43,13 +44,6 @@ const AuthContext = createContext<AuthState>({
     setServerUrl: () => {},
 });
 
-// ---- API Helpers ----
-
-function getApiBase(serverUrl: string | null): string {
-    if (serverUrl) return serverUrl;
-    return process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
-}
-
 // ---- Provider ----
 
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -65,13 +59,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     useEffect(() => {
         if (typeof window === 'undefined') return;
         const savedUrl = localStorage.getItem('plugport_server_url');
-        if (savedUrl) setServerUrlState(savedUrl);
+        if (savedUrl) {
+            setServerUrlState(savedUrl);
+            setSharedServerUrl(savedUrl);
+        }
     }, []);
 
     // Check session on mount (cookie-based — no local JWT to restore)
     useEffect(() => {
         if (typeof window === 'undefined') return;
-        const apiBase = getApiBase(serverUrl);
+        const apiBase = getApiBase();
         fetch(`${apiBase}/api/v1/auth/me`, { credentials: 'include' })
             .then(async (res) => {
                 if (res.ok) {
@@ -93,6 +90,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     const setServerUrl = useCallback((url: string | null) => {
         setServerUrlState(url);
+        setSharedServerUrl(url);
         if (url) {
             localStorage.setItem('plugport_server_url', url);
         } else {
@@ -105,7 +103,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (isSigningInRef.current) return;
 
         isSigningInRef.current = true;
-        const apiBase = getApiBase(serverUrl);
+        const apiBase = getApiBase();
 
         try {
             // Step 1: Get nonce (stored in session cookie by the server)
@@ -155,7 +153,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }, [walletAddress, isConnected, serverUrl, signMessageAsync]);
 
     const signOut = useCallback(async () => {
-        const apiBase = getApiBase(serverUrl);
+        const apiBase = getApiBase();
         // Destroy server session
         try {
             await fetch(`${apiBase}/api/v1/auth/logout`, {

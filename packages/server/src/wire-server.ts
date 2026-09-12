@@ -5,13 +5,28 @@
 //           saslStart/saslContinue (SCRAM-SHA-256 + PLAIN), buildInfo, getLog, whatsmyuri
 
 import * as net from 'net';
-import { BSON, ObjectId as BSONObjectId } from 'bson';
+import { BSON, ObjectId as BSONObjectId, Long } from 'bson';
 import { createHmac, pbkdf2Sync, randomBytes, timingSafeEqual, createHash } from 'crypto';
 import { DocumentStore, DocumentStoreError } from './storage/document-store.js';
 import { MetricsCollector } from './metrics.js';
 import { getAuthContract } from './auth/auth-contract.js';
 import { WireProtocol, VERSION } from '@plugport/shared';
 import type { DocumentWithId, Projection, SortSpec } from '@plugport/shared';
+
+/**
+ * BSON deserializes binary fields (like a SASL payload) into a `Binary` wrapper object,
+ * not a plain Buffer or base64 string. Extract the raw bytes regardless of which shape
+ * we're handed — passing a `Binary` straight to `Buffer.from(x, 'base64')` silently
+ * produces an empty buffer instead of throwing, which is easy to miss.
+ */
+function extractPayloadBuffer(payload: unknown): Buffer {
+    if (Buffer.isBuffer(payload)) return payload;
+    if (payload && typeof (payload as { value?: unknown }).value === 'function') {
+        return Buffer.from((payload as { value: () => Uint8Array }).value());
+    }
+    if (typeof payload === 'string') return Buffer.from(payload, 'base64');
+    return Buffer.alloc(0);
+}
 
 // ---- Transaction Session Buffers ----
 // Best-effort transactions: buffer writes in memory, flush on commit, discard on abort.
@@ -125,6 +140,37 @@ function parseOpMsg(buf: Buffer): { flagBits: number; sections: OpMsgSection[] }
     }
 
     return { flagBits, sections };
+}
+
+/**
+ * Legacy OP_REPLY (opcode 1) — required for responses to OP_QUERY (opcode 2004).
+ * Drivers send an OP_QUERY-wrapped hello/isMaster as their first handshake message
+ * before they know whether the server supports OP_MSG, and expect an OP_REPLY back,
+ * NOT an OP_MSG. Sending OP_MSG framing here desyncs the client's byte-offset
+ * assumptions for the rest of the connection, since OP_REPLY has a different
+ * (longer) header shape than OP_MSG.
+ */
+function buildOpReplyMessage(requestID: number, responseTo: number, body: Record<string, unknown>): Buffer {
+    const bodyBson = BSON.serialize(body);
+    // header(16) + responseFlags(4) + cursorID(8) + startingFrom(4) + numberReturned(4) + document
+    const messageLength = HEADER_SIZE + 4 + 8 + 4 + 4 + bodyBson.length;
+
+    const buf = Buffer.alloc(messageLength);
+    let offset = 0;
+
+    buf.writeInt32LE(messageLength, offset); offset += 4;
+    buf.writeInt32LE(requestID, offset); offset += 4;
+    buf.writeInt32LE(responseTo, offset); offset += 4;
+    buf.writeInt32LE(1, offset); offset += 4; // opCode = OP_REPLY
+
+    buf.writeInt32LE(0, offset); offset += 4; // responseFlags
+    buf.writeBigInt64LE(0n, offset); offset += 8; // cursorID
+    buf.writeInt32LE(0, offset); offset += 4; // startingFrom
+    buf.writeInt32LE(1, offset); offset += 4; // numberReturned
+
+    Buffer.from(bodyBson).copy(buf, offset);
+
+    return buf;
 }
 
 function buildOpMsgReply(requestID: number, responseTo: number, body: Record<string, unknown>): Buffer {
@@ -249,7 +295,7 @@ export function createWireServer(options: WireServerOptions): net.Server {
                     } else if (header.opCode === 2004) {
                         // OP_QUERY (legacy) - Some drivers send this for initial handshake
                         const response = buildHelloResponse(requestIdCounter);
-                        reply = buildOpMsgReply(requestIdCounter++, header.requestID, response);
+                        reply = buildOpReplyMessage(requestIdCounter++, header.requestID, response);
                     } else {
                         // Unsupported opcode
                         const response = {
@@ -385,7 +431,7 @@ async function handleCommand(
             // ---- SCRAM-SHA-256 authentication ----
             if (mechanism === 'SCRAM-SHA-256') {
                 try {
-                    const payloadBuf = Buffer.isBuffer(body.payload) ? body.payload : Buffer.from(body.payload as string, 'base64');
+                    const payloadBuf = extractPayloadBuffer(body.payload);
                     const clientFirstMessage = payloadBuf.toString('utf8');
 
                     // Parse client-first-message: "n,,n=<user>,r=<clientNonce>"
@@ -504,7 +550,7 @@ async function handleCommand(
                 }
 
                 try {
-                    const payloadStr = Buffer.from(body.payload as string, 'base64').toString('utf8');
+                    const payloadStr = extractPayloadBuffer(body.payload).toString('utf8');
                     const parts = payloadStr.split('\0');
                     const password = parts[parts.length - 1];
 
@@ -542,7 +588,7 @@ async function handleCommand(
             }
 
             try {
-                const payloadBuf = Buffer.isBuffer(body.payload) ? body.payload : Buffer.from(body.payload as string, 'base64');
+                const payloadBuf = extractPayloadBuffer(body.payload);
                 const clientFinalMessage = payloadBuf.toString('utf8');
 
                 // Parse client-final-message: "c=<channelBinding>,r=<nonce>,p=<proof>"
@@ -642,7 +688,7 @@ async function handleCommand(
                         info: { readOnly: false },
                         idIndex: { v: 2, key: { _id: 1 }, name: '_id_' },
                     })),
-                    id: 0,
+                    id: Long.fromNumber(0),
                     ns: `${db}.$cmd.listCollections`,
                 },
                 ok: 1,
@@ -703,7 +749,7 @@ async function handleCommand(
             return {
                 cursor: {
                     firstBatch: result.cursor.firstBatch,
-                    id: 0,
+                    id: Long.fromNumber(0),
                     ns: `${db}.${collName}`,
                 },
                 ok: 1,
@@ -958,7 +1004,7 @@ async function handleCommand(
             return {
                 cursor: {
                     firstBatch: docs,
-                    id: 0,
+                    id: Long.fromNumber(0),
                     ns: `${db}.${collName}`,
                 },
                 ok: 1,
@@ -982,7 +1028,7 @@ async function handleCommand(
         }
 
         case 'getMore':
-            return { cursor: { nextBatch: [], id: 0, ns: `${db}.unknown` }, ok: 1 };
+            return { cursor: { nextBatch: [], id: Long.fromNumber(0), ns: `${db}.unknown` }, ok: 1 };
 
         case 'killCursors':
             return { cursorsKilled: [], cursorsNotFound: [], cursorsAlive: [], cursorsUnknown: [], ok: 1 };

@@ -20,7 +20,7 @@ export const monadTestnet = defineChain({
     name: 'Monad Testnet',
     nativeCurrency: { name: 'MON', symbol: 'MON', decimals: 18 },
     rpcUrls: {
-        default: { http: ['https://monad-testnet.drpc.org'] },
+        default: { http: ['https://testnet-rpc.monad.xyz'] },
     },
     blockExplorers: {
         default: { name: 'Monad Explorer', url: 'https://testnet.monadexplorer.com' },

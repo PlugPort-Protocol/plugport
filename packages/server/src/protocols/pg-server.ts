@@ -12,11 +12,27 @@
 //   Server → RowDescription → DataRow(s) → CommandComplete → ReadyForQuery
 
 import net from 'net';
+import { timingSafeEqual } from 'node:crypto';
 import { DocumentStore } from '../storage/document-store.js';
 import { SQLTranslator, type TranslatedQuery } from './sql-translator.js';
 import { JoinEngine } from './join-engine.js';
 import type { ProtocolServerInstance } from './protocol-manager.js';
 import type { ProtocolType, DocumentWithId } from '@plugport/shared';
+
+/** Constant-time string comparison to prevent timing attacks on the password. */
+function safeCompare(a: string, b: string): boolean {
+    try {
+        const bufA = Buffer.from(a, 'utf-8');
+        const bufB = Buffer.from(b, 'utf-8');
+        if (bufA.length !== bufB.length) {
+            timingSafeEqual(bufA, bufA);
+            return false;
+        }
+        return timingSafeEqual(bufA, bufB);
+    } catch {
+        return false;
+    }
+}
 
 // ---- PG Message Types ----
 
@@ -61,17 +77,21 @@ export class PGServer implements ProtocolServerInstance {
     private joinEngine: JoinEngine;
     private activeConnections: Set<net.Socket> = new Set();
     private timeoutMs: number;
+    private apiKey?: string;
+    private authenticatedSockets: WeakSet<object> = new WeakSet();
 
     constructor(options: {
         store: DocumentStore;
         port?: number;
         host?: string;
         timeoutMs?: number;
+        apiKey?: string;
     }) {
         this.store = options.store;
         this.port = options.port || 5432;
         this.host = options.host || '0.0.0.0';
         this.timeoutMs = options.timeoutMs || 30000;
+        this.apiKey = options.apiKey;
         this.translator = new SQLTranslator();
         this.joinEngine = new JoinEngine();
     }
@@ -138,13 +158,18 @@ export class PGServer implements ProtocolServerInstance {
                         }
 
                         if (buffer.length >= length) {
-                            // Parse startup parameters
-                            const params = this.parseStartupParams(buffer.subarray(8, length));
+                            // Parse startup parameters (unused beyond auth negotiation, but must be consumed)
+                            this.parseStartupParams(buffer.subarray(8, length));
                             buffer = buffer.subarray(length);
                             startupComplete = true;
 
-                            // Send authentication OK + parameters + ready
-                            this.sendStartupResponse(socket, params);
+                            if (this.apiKey) {
+                                this.sendAuthCleartextRequest(socket);
+                            } else {
+                                // No API key configured — dev mode, no auth required
+                                this.authenticatedSockets.add(socket);
+                                this.sendStartupResponse(socket);
+                            }
                         }
                     }
                     return;
@@ -182,6 +207,22 @@ export class PGServer implements ProtocolServerInstance {
     // ---- Message Handler ----
 
     private async handleMessage(socket: net.Socket, msgType: number, body: Buffer): Promise<void> {
+        if (msgType === PG_MSG.PASSWORD) {
+            const password = body.toString('utf-8').replace(/\0$/, '');
+            if (this.apiKey && safeCompare(password, this.apiKey)) {
+                this.authenticatedSockets.add(socket);
+                this.sendStartupResponse(socket);
+            } else {
+                this.sendAuthFailure(socket);
+            }
+            return;
+        }
+
+        if (this.apiKey && !this.authenticatedSockets.has(socket)) {
+            this.sendAuthFailure(socket);
+            return;
+        }
+
         switch (msgType) {
             case PG_MSG.QUERY: {
                 // Simple query protocol
@@ -269,7 +310,7 @@ export class PGServer implements ProtocolServerInstance {
             case 'insert': {
                 let insertedCount = 0;
                 for (const doc of query.documents || []) {
-                    await this.store.insert(query.collection!, doc as any);
+                    await this.store.insert(query.collection!, [doc] as any);
                     insertedCount++;
                 }
                 this.sendCommandComplete(socket, `INSERT 0 ${insertedCount}`);
@@ -483,7 +524,31 @@ export class PGServer implements ProtocolServerInstance {
         return params;
     }
 
-    private sendStartupResponse(socket: net.Socket, _params: Record<string, string>): void {
+    private sendAuthCleartextRequest(socket: net.Socket): void {
+        const msg = Buffer.alloc(9);
+        msg[0] = PG_MSG.AUTH;
+        msg.writeInt32BE(8, 1);
+        msg.writeInt32BE(3, 5); // AuthenticationCleartextPassword = 3
+        socket.write(msg);
+    }
+
+    private sendAuthFailure(socket: net.Socket): void {
+        // ErrorResponse: severity FATAL, code 28P01 (invalid_password), then close
+        const fields = Buffer.concat([
+            Buffer.from('S'), Buffer.from('FATAL\0'),
+            Buffer.from('C'), Buffer.from('28P01\0'),
+            Buffer.from('M'), Buffer.from('password authentication failed\0'),
+            Buffer.from([0]),
+        ]);
+        const msg = Buffer.alloc(5 + fields.length);
+        msg[0] = PG_MSG.ERROR;
+        msg.writeInt32BE(4 + fields.length, 1);
+        fields.copy(msg, 5);
+        socket.write(msg);
+        socket.end();
+    }
+
+    private sendStartupResponse(socket: net.Socket): void {
         // AuthenticationOk
         const authOk = Buffer.alloc(9);
         authOk[0] = PG_MSG.AUTH;
@@ -505,7 +570,7 @@ export class PGServer implements ProtocolServerInstance {
         keyData[0] = PG_MSG.BACKEND_KEY;
         keyData.writeInt32BE(12, 1);
         keyData.writeInt32BE(process.pid, 5);    // Process ID
-        keyData.writeInt32BE(0xDEADBEEF, 9);     // Secret key
+        keyData.writeUInt32BE(0xDEADBEEF, 9);    // Secret key (opaque 32-bit value; unsigned write since 0xDEADBEEF exceeds the signed int32 range)
         socket.write(keyData);
 
         // ReadyForQuery

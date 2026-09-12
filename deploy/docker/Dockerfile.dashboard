@@ -3,6 +3,9 @@ FROM node:22-alpine AS builder
 
 WORKDIR /app
 
+# Native build toolchain (needed to compile native deps like bufferutil/utf-8-validate)
+RUN apk add --no-cache python3 make g++
+
 RUN corepack enable && corepack prepare pnpm@9.15.0 --activate
 
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml* ./
@@ -15,6 +18,11 @@ RUN pnpm install --frozen-lockfile || pnpm install
 COPY packages/shared/ packages/shared/
 COPY packages/dashboard/ packages/dashboard/
 
+ARG NEXT_PUBLIC_API_URL
+ARG NEXT_PUBLIC_CHAIN_ID
+ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
+ENV NEXT_PUBLIC_CHAIN_ID=${NEXT_PUBLIC_CHAIN_ID}
+
 RUN pnpm --filter @plugport/shared build
 RUN pnpm --filter @plugport/dashboard build
 
@@ -23,8 +31,8 @@ FROM node:22-alpine AS runner
 WORKDIR /app
 
 COPY --from=builder /app/packages/dashboard/.next/standalone ./
-COPY --from=builder /app/packages/dashboard/.next/static ./.next/static
-COPY --from=builder /app/packages/dashboard/public ./public
+COPY --from=builder /app/packages/dashboard/.next/static ./packages/dashboard/.next/static
+COPY --from=builder /app/packages/dashboard/public ./packages/dashboard/public
 
 ENV NODE_ENV=production
 ENV PORT=3000
@@ -32,4 +40,4 @@ ENV HOSTNAME="0.0.0.0"
 
 EXPOSE 3000
 
-CMD ["node", "server.js"]
+CMD ["node", "packages/dashboard/server.js"]

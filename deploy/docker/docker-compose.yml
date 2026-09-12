@@ -14,9 +14,15 @@ services:
     ports:
       - "${HTTP_PORT:-8080}:8080"
       - "${WIRE_PORT:-27017}:27017"
+      - "${REDIS_PORT:-6379}:6379"
+      - "${PG_PORT:-5432}:5432"
+      - "${MYSQL_PORT:-3306}:3306"
     environment:
       - HTTP_PORT=8080
       - WIRE_PORT=27017
+      - REDIS_PORT=6379
+      - PG_PORT=5432
+      - MYSQL_PORT=3306
       - HOST=0.0.0.0
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - METRICS_ENABLED=true
@@ -24,9 +30,10 @@ services:
       - PG_ENABLED=${PG_ENABLED:-false}
       - MYSQL_ENABLED=${MYSQL_ENABLED:-false}
       - REDIS_ENABLED=${REDIS_ENABLED:-false}
+      - API_KEY=${API_KEY:-}
       - SQL_STATEMENT_TIMEOUT_MS=${SQL_STATEMENT_TIMEOUT_MS:-30000}
     healthcheck:
-      test: wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1
+      test: wget --no-verbose --tries=1 --spider http://127.0.0.1:8080/health || exit 1
       interval: 10s
       timeout: 5s
       retries: 5
@@ -42,11 +49,14 @@ services:
     build:
       context: ../..
       dockerfile: deploy/docker/Dockerfile.dashboard
+      args:
+        - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://plugport-server:8080}
+        - NEXT_PUBLIC_CHAIN_ID=${NEXT_PUBLIC_CHAIN_ID:-10143}
     container_name: plugport-dashboard
     ports:
       - "${DASHBOARD_PORT:-3000}:3000"
     environment:
-      - NEXT_PUBLIC_API_URL=http://plugport-server:8080
+      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://plugport-server:8080}
     depends_on:
       plugport-server:
         condition: service_healthy

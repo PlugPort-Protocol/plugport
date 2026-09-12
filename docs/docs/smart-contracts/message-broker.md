@@ -114,7 +114,7 @@ await pub.publish('chat:general', 'Hello from PlugPort!');
 ```typescript
 import { ethers } from 'ethers';
 
-const provider = new ethers.JsonRpcProvider('https://monad-testnet.drpc.org');
+const provider = new ethers.JsonRpcProvider('https://testnet-rpc.monad.xyz');
 const contract = new ethers.Contract(ADDRESS, ABI, provider);
 
 // Get last 10 messages for a channel

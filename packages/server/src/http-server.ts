@@ -44,7 +44,7 @@ export interface HttpServerOptions {
     metrics: MetricsCollector;
     kvStore: KVAdapter & { getKeyCount(): number; getEstimatedSizeBytes(): number };
     protocolManager?: {
-        getStatus(): Array<{ name: string; enabled: boolean; port: number; connections: number; connectionString: string }>;
+        getActiveProtocols(): Array<{ name: string; enabled: boolean; port: number; connections: number; connectionString: string }>;
         enableProtocol(name: string): Promise<void>;
         disableProtocol(name: string): Promise<void>;
     };
@@ -210,7 +210,7 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
             cryptoEnabled: 'setPrivacyManager' in kvStore,
         };
         if (options.protocolManager) {
-            result.protocols = options.protocolManager.getStatus();
+            result.protocols = options.protocolManager.getActiveProtocols();
         }
         return result;
     });
@@ -825,7 +825,7 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
         if (!options.protocolManager) {
             return { protocols: [], ok: 1 };
         }
-        return { protocols: options.protocolManager.getStatus(), ok: 1 };
+        return { protocols: options.protocolManager.getActiveProtocols(), ok: 1 };
     });
 
     // ---- SQL Endpoint ----
@@ -941,7 +941,8 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
                 destroyed: false,
             };
 
-            await redisServer.executeCommand(fakeSocket as any, command);
+            // Already authenticated by this route's onRequest hook (session/API key) — skip the wire-level AUTH gate.
+            await redisServer.executeCommand(fakeSocket as any, command, true);
 
             const parsed = parseRESP(outputBuffer);
             

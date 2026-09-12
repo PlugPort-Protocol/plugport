@@ -89,7 +89,7 @@ API_KEY=your-production-key \
 DASHBOARD_URL=https://plugport.xyz \
 LOG_LEVEL=warn \
 METRICS_ENABLED=true \
-MONAD_RPC_URL=https://monad-testnet.drpc.org \
+MONAD_RPC_URL=https://testnet-rpc.monad.xyz \
 MONAD_PRIVATE_KEY=your_64_char_hex_private_key \
 MONAD_CONTRACT_ADDRESS=0xYourDeployedContractAddress \
 node packages/server/dist/index.js

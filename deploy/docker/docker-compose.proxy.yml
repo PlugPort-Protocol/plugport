@@ -1,0 +1,28 @@
+# PlugPort Docker Compose — Reverse Proxy (Caddy, automatic HTTPS)
+# Usage: add `-f docker-compose.proxy.yml` to the compose command.
+# Requires API_DOMAIN and DASHBOARD_DOMAIN in the env file.
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    container_name: plugport-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - API_DOMAIN=${API_DOMAIN}
+      - DASHBOARD_DOMAIN=${DASHBOARD_DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - plugport-server
+      - plugport-dashboard
+    networks:
+      - plugport-net
+
+volumes:
+  caddy-data:
+  caddy-config:

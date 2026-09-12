@@ -9,6 +9,7 @@
 // WHERE clause translation:  SQL operators → MongoDB-style filters
 // JOIN support:               Delegated to JoinEngine (see join-engine.ts)
 
+import { createRequire } from 'node:module';
 import type { Filter, SortSpec, Projection, DocumentWithId } from '@plugport/shared';
 
 // ---- Types ----
@@ -77,6 +78,7 @@ export class SQLTranslator {
     constructor() {
         // Lazy import — only loaded when SQL protocol is enabled
         try {
+            const require = createRequire(import.meta.url);
             const { Parser } = require('node-sql-parser');
             this.parser = new Parser();
         } catch {
@@ -203,7 +205,7 @@ export class SQLTranslator {
         };
 
         // Projection
-        if (ast.columns !== '*' && Array.isArray(ast.columns)) {
+        if (!this.isWildcardSelect(ast.columns) && Array.isArray(ast.columns)) {
             result.projection = this.buildProjection(ast.columns);
         }
 
@@ -391,7 +393,7 @@ export class SQLTranslator {
 
         // Projection
         let projection: Projection | undefined;
-        if (ast.columns !== '*' && Array.isArray(ast.columns)) {
+        if (!this.isWildcardSelect(ast.columns) && Array.isArray(ast.columns)) {
             projection = this.buildProjection(ast.columns);
         }
         joinPlan.projection = projection;
@@ -440,13 +442,14 @@ export class SQLTranslator {
 
         for (const col of ast.columns) {
             if (col.expr?.type === 'aggr_func') {
+                const argField = col.expr.args?.expr ? this.extractColumnName(col.expr.args.expr) : '*';
                 aggregates.push({
                     type: col.expr.name.toUpperCase() as AggregateFunction['type'],
-                    field: col.expr.args?.expr?.column || '*',
-                    alias: col.as || `${col.expr.name}(${col.expr.args?.expr?.column || '*'})`,
+                    field: argField,
+                    alias: col.as || `${col.expr.name}(${argField})`,
                 });
             } else if (col.expr?.type === 'column_ref') {
-                nonAggColumns.push(col.expr.column);
+                nonAggColumns.push(this.extractColumnName(col.expr));
             }
         }
 
@@ -617,7 +620,7 @@ export class SQLTranslator {
                 return node.value;
             case 'bool': return node.value;
             case 'null': return null;
-            case 'column_ref': return `$${node.column}`; // Field reference
+            case 'column_ref': return `$${this.extractColumnName(node)}`; // Field reference
             default:
                 if (node.value !== undefined) return node.value;
                 return null;
@@ -658,11 +661,29 @@ export class SQLTranslator {
         return 'INNER';
     }
 
+    /**
+     * node-sql-parser never represents `SELECT *` as the literal string '*' — it always
+     * returns an array, even for a bare wildcard: `[{ expr: { type: 'column_ref', column: '*' }, as: null }]`.
+     * A naive `columns !== '*'` check therefore never catches the wildcard case, causing
+     * buildProjection() to build a bogus inclusion projection for a field literally named "*",
+     * which matches no real document field and silently strips every field but _id.
+     */
+    private isWildcardSelect(columns: unknown): boolean {
+        if (columns === '*') return true;
+        if (!Array.isArray(columns) || columns.length !== 1) return false;
+        const col = columns[0];
+        return col?.expr?.type === 'column_ref' && col.expr.column === '*' && !col.expr.table;
+    }
+
     private buildProjection(columns: any[]): Projection {
         const proj: Projection = {};
         for (const col of columns) {
             if (col.expr?.type === 'column_ref') {
-                const name = col.as || col.expr.column;
+                // node-sql-parser (PostgreSQL dialect) wraps `column` in a nested
+                // { expr: { type, value } } object rather than a plain string — extractColumnName
+                // already knows how to unwrap that; a raw `col.expr.column` access does not, and
+                // silently keys the projection on the stringified object instead of the real name.
+                const name = col.as || this.extractColumnName(col.expr);
                 proj[name] = 1;
             }
         }

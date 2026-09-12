@@ -124,7 +124,6 @@ export function createStorageAdapter(config: PlugPortConfig): KVAdapter & { getK
         return Object.assign(routingAdapter, {
             getKeyCount: () => baseAdapter.getKeyCount() + (privateBaseAdapter !== baseAdapter ? (privateBaseAdapter as any).getKeyCount?.() || 0 : 0),
             getEstimatedSizeBytes: () => baseAdapter.getEstimatedSizeBytes() + (privateBaseAdapter !== baseAdapter ? (privateBaseAdapter as any).getEstimatedSizeBytes?.() || 0 : 0),
-            setPrivacyManager: (pm: any) => routingAdapter.setPrivacyManager(pm),
         });
     }
 
@@ -185,6 +184,7 @@ async function main() {
         store,
         metrics,
         kvStore,
+        protocolManager,
     });
 
     await httpServer.listen({ port: config.httpPort, host: config.host });
@@ -226,6 +226,7 @@ async function main() {
             port: config.protocols.postgresql.port,
             host: config.host,
             timeoutMs: config.sqlStatementTimeoutMs,
+            apiKey: config.apiKey,
         });
         protocolManager.register(pgServer);
         await pgServer.start();
@@ -239,6 +240,7 @@ async function main() {
             port: config.protocols.mysql.port,
             host: config.host,
             timeoutMs: config.sqlStatementTimeoutMs,
+            apiKey: config.apiKey,
         });
         protocolManager.register(mysqlServer);
         await mysqlServer.start();
@@ -253,6 +255,7 @@ async function main() {
             port: config.protocols.redis.port,
             host: config.host,
             messageBroker,
+            apiKey: config.apiKey,
         });
         protocolManager.register(redisServer);
         await redisServer.start();

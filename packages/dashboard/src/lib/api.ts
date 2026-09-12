@@ -13,7 +13,7 @@ export function setServerUrl(url: string | null): void {
 }
 
 /** Get current API base URL */
-function getApiBase(): string {
+export function getApiBase(): string {
     if (_serverUrl) return _serverUrl;
     return process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
 }

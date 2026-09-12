@@ -1,6 +1,7 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
     reactStrictMode: true,
+    output: 'standalone',
     transpilePackages: ['@plugport/shared'],
     async rewrites() {
         return [

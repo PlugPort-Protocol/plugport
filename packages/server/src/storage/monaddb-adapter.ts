@@ -9,7 +9,7 @@
 //   - Batch writes use the contract's batchWrite() to minimize gas overhead
 //
 // Configuration (env vars):
-//   - MONAD_RPC_URL         — Monad testnet RPC (default: https://monad-testnet.drpc.org)
+//   - MONAD_RPC_URL         — Monad testnet RPC (default: https://testnet-rpc.monad.xyz)
 //   - MONAD_CHAIN_ID        — Chain ID (default: 10143)
 //   - MONAD_PRIVATE_KEY     — 64-char hex private key (owner wallet)
 //   - MONAD_CONTRACT_ADDRESS — Deployed PlugPortStore contract address
