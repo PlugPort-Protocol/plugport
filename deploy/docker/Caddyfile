@@ -2,6 +2,20 @@
     reverse_proxy plugport-server:8080
 }
 
+# Same-origin API proxy: /api/* and /health on the dashboard's own domain
+# forward to plugport-server, so the session/CSRF cookies it sets are
+# first-party from the browser's point of view instead of third-party
+# cookies from a different subdomain (which Safari/Firefox block by
+# default, and Chrome is rolling out the same). Everything else on this
+# domain still goes to the Next.js dashboard app.
 {$DASHBOARD_DOMAIN} {
-    reverse_proxy plugport-dashboard:3000
+    handle /api/* {
+        reverse_proxy plugport-server:8080
+    }
+    handle /health {
+        reverse_proxy plugport-server:8080
+    }
+    handle {
+        reverse_proxy plugport-dashboard:3000
+    }
 }

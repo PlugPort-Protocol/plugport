@@ -146,7 +146,7 @@ export function PrivacyTab({ collections }: { collections: CollectionInfo[] }) {
                         onChange={e => setNewAddress(e.target.value)}
                         placeholder="0x... Ethereum address"
                     />
-                    <select className="select" style={{ width: 120 }} value={newRole} onChange={e => setNewRole(Number(e.target.value))}>
+                    <select className="select" style={{ width: 170, flexShrink: 0 }} value={newRole} onChange={e => setNewRole(Number(e.target.value))}>
                         <option value={1}>Read Only</option>
                         <option value={2}>Read / Write</option>
                     </select>

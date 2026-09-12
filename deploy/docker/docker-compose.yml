@@ -52,6 +52,7 @@ services:
       args:
         - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://plugport-server:8080}
         - NEXT_PUBLIC_CHAIN_ID=${NEXT_PUBLIC_CHAIN_ID:-10143}
+        - NEXT_PUBLIC_AUTH_CONTRACT_ADDRESS=${AUTH_CONTRACT_ADDRESS:-}
     container_name: plugport-dashboard
     ports:
       - "${DASHBOARD_PORT:-3000}:3000"

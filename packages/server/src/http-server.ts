@@ -798,12 +798,19 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
             const authContract = getAuthContract();
 
             if (authContract.isReadable) {
-                // Live on-chain read of active keys
-                const activeKeys = await authContract.getActiveKeys(address);
+                // Live on-chain read of active keys + current meta-tx nonce.
+                // The dashboard needs the nonce to build a valid EIP-712 signature
+                // for register/revoke/rotate — it's a single incrementing counter
+                // per address shared across all three operations, not the key index.
+                const [activeKeys, nonce] = await Promise.all([
+                    authContract.getActiveKeys(address),
+                    authContract.getNonce(address),
+                ]);
                 return {
                     ok: 1,
                     address,
                     activeKeys,
+                    nonce,
                 };
             }
 
@@ -813,6 +820,7 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
                 ok: 1,
                 address,
                 activeKeys: [],
+                nonce: 0,
             };
         } catch (err) {
             return handleError(err, reply);

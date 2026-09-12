@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { apiGet, apiPost, apiDelete } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
-import { useSignMessage } from 'wagmi';
+import { useSignMessage, useSignTypedData } from 'wagmi';
 import { keccak256, toBytes } from 'viem';
 import { Icon } from '@/lib/icons';
 import type { ApiKeyInfo, KeyAnalytics, OnChainKeyInfo } from '../types';
@@ -25,11 +25,58 @@ function buildDerivationMessage(address: string, index: number): string {
     return `PlugPort API Key #${index} for ${address.toLowerCase()}`;
 }
 
+// ---- EIP-712 domain + types for PlugPortAuth meta-transactions ----
+// Must match PlugPortAuth.sol exactly (REGISTER_TYPEHASH / REVOKE_TYPEHASH /
+// ROTATE_TYPEHASH and the DOMAIN_SEPARATOR computed at deploy time), or the
+// contract's ecrecover check fails with "PlugPortAuth: invalid signature".
+
+const AUTH_CONTRACT_ADDRESS = process.env.NEXT_PUBLIC_AUTH_CONTRACT_ADDRESS as `0x${string}` | undefined;
+const AUTH_CHAIN_ID = Number(process.env.NEXT_PUBLIC_CHAIN_ID || 10143);
+
+const authDomain = {
+    name: 'PlugPortAuth',
+    version: '1',
+    chainId: AUTH_CHAIN_ID,
+    verifyingContract: AUTH_CONTRACT_ADDRESS,
+} as const;
+
+const REGISTER_TYPES = {
+    RegisterKey: [
+        { name: 'owner', type: 'address' },
+        { name: 'commitment', type: 'bytes32' },
+        { name: 'salt', type: 'bytes32' },
+        { name: 'storedKey', type: 'bytes32' },
+        { name: 'serverKey', type: 'bytes32' },
+        { name: 'nonce', type: 'uint256' },
+    ],
+} as const;
+
+const REVOKE_TYPES = {
+    RevokeKey: [
+        { name: 'owner', type: 'address' },
+        { name: 'keyIndex', type: 'uint8' },
+        { name: 'nonce', type: 'uint256' },
+    ],
+} as const;
+
+const ROTATE_TYPES = {
+    RotateKey: [
+        { name: 'owner', type: 'address' },
+        { name: 'oldKeyIndex', type: 'uint8' },
+        { name: 'newCommitment', type: 'bytes32' },
+        { name: 'newSalt', type: 'bytes32' },
+        { name: 'newStoredKey', type: 'bytes32' },
+        { name: 'newServerKey', type: 'bytes32' },
+        { name: 'nonce', type: 'uint256' },
+    ],
+} as const;
+
 // ---- Component ----
 
 export function ApiKeysTab() {
     const { address, isAuthenticated, authMethod } = useAuth();
     const { signMessageAsync } = useSignMessage();
+    const { signTypedDataAsync } = useSignTypedData();
 
     // Legacy key state
     const [keys, setKeys] = useState<ApiKeyInfo[]>([]);
@@ -43,6 +90,7 @@ export function ApiKeysTab() {
 
     // On-chain key state
     const [onChainKeys, setOnChainKeys] = useState<OnChainKeyInfo[]>([]);
+    const [onChainNonce, setOnChainNonce] = useState(0);
     const [onChainLoading, setOnChainLoading] = useState(false);
     const [generatingOnChain, setGeneratingOnChain] = useState(false);
     const [recoveringKeys, setRecoveringKeys] = useState(false);
@@ -126,10 +174,11 @@ export function ApiKeysTab() {
         if (!address) return;
         setOnChainLoading(true);
         try {
-            const res = await apiGet<{ activeKeys: OnChainKeyInfo[]; address: string }>(
+            const res = await apiGet<{ activeKeys: OnChainKeyInfo[]; address: string; nonce: number }>(
                 `/api/v1/auth/keys/${address}`
             );
             setOnChainKeys(res.activeKeys || []);
+            setOnChainNonce(res.nonce ?? 0);
         } catch { /* ignore */ }
         setOnChainLoading(false);
     }, [address]);
@@ -153,15 +202,32 @@ export function ApiKeysTab() {
             const apiKey = deriveApiKeyFromSignature(signature);
             const commitment = computeCommitment(apiKey);
 
-            // 3. Compute SCRAM verifiers (salt is deterministic from address + index)
+            // 3. Compute SCRAM verifiers (salt is deterministic from address + index).
+            // Full 32-byte hash — the contract's `salt` param is `bytes32`, and
+            // wire-server.ts already takes only the first 16 bytes of it for the
+            // actual PBKDF2 salt, so there's no reason to truncate it here.
             const salt = keccak256(
                 toBytes(`${address.toLowerCase()}:${nextIndex}`)
-            ).slice(0, 58); // 28-byte salt as hex
+            );
+            const storedKey = commitment; // Placeholder — real SCRAM derivation done server-side
+            const serverKey = commitment;
 
-            // 4. Sign EIP-712 meta-tx for registration
-            // (In production, this would be a typed signTypedData call)
-            const metaSignature = await signMessageAsync({
-                message: `PlugPort: Register API Key\nCommitment: ${commitment}\nNonce: ${nextIndex}`,
+            // 4. Sign the real EIP-712 typed-data meta-tx the contract verifies
+            // (registerKeyMeta's ecrecover check). The nonce is the account's
+            // single shared meta-tx counter (fetched from the contract), not
+            // the key index.
+            const metaSignature = await signTypedDataAsync({
+                domain: authDomain,
+                types: REGISTER_TYPES,
+                primaryType: 'RegisterKey',
+                message: {
+                    owner: address as `0x${string}`,
+                    commitment: commitment as `0x${string}`,
+                    salt: salt as `0x${string}`,
+                    storedKey: storedKey as `0x${string}`,
+                    serverKey: serverKey as `0x${string}`,
+                    nonce: BigInt(onChainNonce),
+                },
             });
 
             // 5. Relay to server
@@ -169,9 +235,9 @@ export function ApiKeysTab() {
                 keyOwner: address,
                 commitment,
                 salt,
-                storedKey: commitment, // Placeholder — real SCRAM derivation done server-side
-                serverKey: commitment,
-                nonce: nextIndex,
+                storedKey,
+                serverKey,
+                nonce: onChainNonce,
                 signature: metaSignature,
             });
 
@@ -200,14 +266,21 @@ export function ApiKeysTab() {
         setMessage(null);
 
         try {
-            const metaSignature = await signMessageAsync({
-                message: `PlugPort: Revoke API Key #${keyIndex}\nOwner: ${address}`,
+            const metaSignature = await signTypedDataAsync({
+                domain: authDomain,
+                types: REVOKE_TYPES,
+                primaryType: 'RevokeKey',
+                message: {
+                    owner: address as `0x${string}`,
+                    keyIndex,
+                    nonce: BigInt(onChainNonce),
+                },
             });
 
             await apiPost('/api/v1/auth/revoke-key', {
                 keyOwner: address,
                 keyIndex,
-                nonce: keyIndex,
+                nonce: onChainNonce,
                 signature: metaSignature,
             });
 
@@ -240,14 +313,27 @@ export function ApiKeysTab() {
             const newApiKey = deriveApiKeyFromSignature(signature);
             const newCommitment = computeCommitment(newApiKey);
 
-            // 2. Compute SCRAM verifiers for the new key
+            // 2. Compute SCRAM verifiers for the new key (full 32-byte bytes32 salt)
             const newSalt = keccak256(
                 toBytes(`${address.toLowerCase()}:${nextIndex}`)
-            ).slice(0, 58);
+            );
+            const newStoredKey = newCommitment; // Placeholder — real SCRAM derivation done server-side
+            const newServerKey = newCommitment;
 
-            // 3. Sign EIP-712 meta-tx for rotation
-            const metaSignature = await signMessageAsync({
-                message: `PlugPort: Rotate API Key\nOld Key: #${oldKeyIndex}\nNew Commitment: ${newCommitment}\nNonce: ${nextIndex}`,
+            // 3. Sign the real EIP-712 typed-data meta-tx (rotateKeyMeta's ecrecover check)
+            const metaSignature = await signTypedDataAsync({
+                domain: authDomain,
+                types: ROTATE_TYPES,
+                primaryType: 'RotateKey',
+                message: {
+                    owner: address as `0x${string}`,
+                    oldKeyIndex,
+                    newCommitment: newCommitment as `0x${string}`,
+                    newSalt: newSalt as `0x${string}`,
+                    newStoredKey: newStoredKey as `0x${string}`,
+                    newServerKey: newServerKey as `0x${string}`,
+                    nonce: BigInt(onChainNonce),
+                },
             });
 
             // 4. Relay to server
@@ -255,10 +341,10 @@ export function ApiKeysTab() {
                 keyOwner: address,
                 oldKeyIndex,
                 newCommitment,
-                newSalt: newSalt,
-                newStoredKey: newCommitment, // Placeholder — real SCRAM derivation done server-side
-                newServerKey: newCommitment,
-                nonce: nextIndex,
+                newSalt,
+                newStoredKey,
+                newServerKey,
+                nonce: onChainNonce,
                 signature: metaSignature,
             });
 

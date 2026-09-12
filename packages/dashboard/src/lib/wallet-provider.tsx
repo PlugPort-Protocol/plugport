@@ -1,6 +1,6 @@
 'use client';
 
-import { ReactNode } from 'react';
+import { ReactNode, useEffect, useState } from 'react';
 import '@rainbow-me/rainbowkit/styles.css';
 import {
     RainbowKitProvider,
@@ -74,8 +74,18 @@ const rainbowThemeConfig = {
 export function WalletProvider({ children }: { children: ReactNode }) {
     const { resolvedTheme } = useTheme();
 
+    // `resolvedTheme` is undefined on the server and on the client's first
+    // paint (next-themes defers it to avoid a flash of the wrong theme).
+    // Picking a theme from it immediately means the server and the first
+    // client render can disagree about which RainbowKit theme was used,
+    // which shows up as a hydration mismatch on RainbowKit's injected
+    // <style data-rk> tag. Deferring the swap to after mount keeps the
+    // first render consistent on both sides.
+    const [mounted, setMounted] = useState(false);
+    useEffect(() => setMounted(true), []);
+
     // B5 fix: Dynamically switch RainbowKit theme based on next-themes
-    const rainbowTheme = resolvedTheme === 'dark'
+    const rainbowTheme = mounted && resolvedTheme === 'dark'
         ? darkTheme(rainbowThemeConfig)
         : lightTheme(rainbowThemeConfig);
 

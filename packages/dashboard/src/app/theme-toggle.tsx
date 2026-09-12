@@ -24,14 +24,17 @@ export function ThemeToggle() {
             style={{
                 background: 'var(--bg-card)',
                 border: '1px solid var(--border-primary)',
-                borderRadius: 'var(--radius-sm)',
-                padding: '6px',
+                borderRadius: 100,
+                width: 32,
+                height: 32,
+                padding: 0,
                 cursor: 'pointer',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
                 color: 'var(--text-secondary)',
-                transition: 'all var(--transition-fast)',
+                boxShadow: 'var(--shadow-sm)',
+                transition: 'border-color var(--transition-fast), color var(--transition-fast), box-shadow var(--transition-fast)',
             }}
             title={`Switch to ${currentTheme === 'dark' ? 'light' : 'dark'} mode`}
         >

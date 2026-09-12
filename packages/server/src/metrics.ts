@@ -19,6 +19,8 @@ export class MetricsCollector {
     private protocolCounts = { http: 0, wire: 0 };
     private latencies: number[] = [];
     private errorCodes: Record<number, number> = {};
+    private lastKeyCount = 0;
+    private lastSizeBytes = 0;
 
     constructor() {
         this.registry = new Registry();
@@ -120,6 +122,8 @@ export class MetricsCollector {
     updateStorageMetrics(keyCount: number, sizeBytes: number): void {
         this.storageKeyCount.set(keyCount);
         this.storageSizeBytes.set(sizeBytes);
+        this.lastKeyCount = keyCount;
+        this.lastSizeBytes = sizeBytes;
     }
 
     async getPrometheusMetrics(): Promise<string> {
@@ -151,8 +155,8 @@ export class MetricsCollector {
                 byCode: { ...this.errorCodes },
             },
             storage: {
-                keyCount: 0,
-                estimatedSizeBytes: 0,
+                keyCount: this.lastKeyCount,
+                estimatedSizeBytes: this.lastSizeBytes,
             },
             uptime: Date.now() - this.startTime,
             timestamp: Date.now(),

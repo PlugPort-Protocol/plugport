@@ -2,6 +2,13 @@
 
 import { useState, useEffect, useCallback } from 'react';
 
+// Reads are free RPC view calls (fast). Writes (POST/PUT/DELETE) go through a
+// real on-chain transaction and wait for block confirmation on Monad testnet
+// — observed around 10-14s for a single-document insert, so a 10s abort was
+// cutting off writes that were actually succeeding moments later.
+const READ_TIMEOUT_MS = 10000;
+const WRITE_TIMEOUT_MS = 30000;
+
 // ---- Dynamic API Base ----
 // The server URL is persisted in localStorage by AuthProvider.
 
@@ -69,7 +76,7 @@ export function useApi<T>(path: string, options?: { autoFetch?: boolean }) {
         setLoading(true);
         setError(null);
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 10000); // 10s UI timeout
+        const timeoutId = setTimeout(() => controller.abort(), READ_TIMEOUT_MS);
         try {
             const res = await fetch(`${getApiBase()}${path}`, {
                 signal: controller.signal,
@@ -82,7 +89,7 @@ export function useApi<T>(path: string, options?: { autoFetch?: boolean }) {
         } catch (err: any) {
             clearTimeout(timeoutId);
             if (err.name === 'AbortError') {
-                setError('Request timed out after 10s');
+                setError(`Request timed out after ${READ_TIMEOUT_MS / 1000}s`);
             } else {
                 setError(err instanceof Error ? err.message : 'Request failed');
             }
@@ -104,7 +111,7 @@ export function useApi<T>(path: string, options?: { autoFetch?: boolean }) {
 
 export async function apiPost<T>(path: string, body: unknown): Promise<T> {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 10000);
+    const timeoutId = setTimeout(() => controller.abort(), WRITE_TIMEOUT_MS);
     try {
         const common = getCommonOptions();
         const csrfToken = getCsrfToken();
@@ -127,14 +134,14 @@ export async function apiPost<T>(path: string, body: unknown): Promise<T> {
         return json as T;
     } catch (err: any) {
         clearTimeout(timeoutId);
-        if (err?.name === 'AbortError') throw new Error('Request timed out after 10s', { cause: err });
+        if (err?.name === 'AbortError') throw new Error(`Request timed out after ${WRITE_TIMEOUT_MS / 1000}s`, { cause: err });
         throw err;
     }
 }
 
 export async function apiGet<T>(path: string): Promise<T> {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 10000);
+    const timeoutId = setTimeout(() => controller.abort(), READ_TIMEOUT_MS);
     try {
         const res = await fetch(`${getApiBase()}${path}`, {
             signal: controller.signal,
@@ -148,14 +155,14 @@ export async function apiGet<T>(path: string): Promise<T> {
         return json as T;
     } catch (err: any) {
         clearTimeout(timeoutId);
-        if (err?.name === 'AbortError') throw new Error('Request timed out after 10s', { cause: err });
+        if (err?.name === 'AbortError') throw new Error(`Request timed out after ${READ_TIMEOUT_MS / 1000}s`, { cause: err });
         throw err;
     }
 }
 
 export async function apiDelete<T>(path: string): Promise<T> {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 10000);
+    const timeoutId = setTimeout(() => controller.abort(), WRITE_TIMEOUT_MS);
     try {
         const common = getCommonOptions();
         const csrfToken = getCsrfToken();
@@ -176,14 +183,14 @@ export async function apiDelete<T>(path: string): Promise<T> {
         return json as T;
     } catch (err: any) {
         clearTimeout(timeoutId);
-        if (err?.name === 'AbortError') throw new Error('Request timed out after 10s', { cause: err });
+        if (err?.name === 'AbortError') throw new Error(`Request timed out after ${WRITE_TIMEOUT_MS / 1000}s`, { cause: err });
         throw err;
     }
 }
 
 export async function apiPut<T>(path: string, body: unknown): Promise<T> {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 10000);
+    const timeoutId = setTimeout(() => controller.abort(), WRITE_TIMEOUT_MS);
     try {
         const common = getCommonOptions();
         const csrfToken = getCsrfToken();
@@ -206,7 +213,7 @@ export async function apiPut<T>(path: string, body: unknown): Promise<T> {
         return json as T;
     } catch (err: any) {
         clearTimeout(timeoutId);
-        if (err?.name === 'AbortError') throw new Error('Request timed out after 10s', { cause: err });
+        if (err?.name === 'AbortError') throw new Error(`Request timed out after ${WRITE_TIMEOUT_MS / 1000}s`, { cause: err });
         throw err;
     }
 }

@@ -1,6 +1,9 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
+import Image from 'next/image';
+import { motion, AnimatePresence } from 'framer-motion';
+import * as Popover from '@radix-ui/react-popover';
 import { apiGet, setServerUrl as setApiServerUrl } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { ConnectButton } from '@rainbow-me/rainbowkit';
@@ -43,20 +46,22 @@ function Dock({ activeTab, setActiveTab, health }: {
 
     return (
         <nav className="dock">
-            {/* Power-port logo mark */}
             <div className="dock-logo" title="PlugPort">
-                <div className="dock-mark"><div className="dock-mark-bar" /></div>
+                <Image src="/plugport_logo.svg" alt="PlugPort" width={18} height={18} priority />
             </div>
             <div className="dock-sep" />
             {navItems.map(item => (
-                <button
+                <motion.button
                     key={item.id}
                     className={`dock-item ${activeTab === item.id ? 'active' : ''}`}
                     onClick={() => setActiveTab(item.id)}
+                    whileHover={{ scale: 1.08 }}
+                    whileTap={{ scale: 0.95 }}
+                    transition={{ type: 'spring', stiffness: 500, damping: 30 }}
                 >
                     <Icon name={item.icon} size={18} />
                     <span className="dock-label">{item.label}</span>
-                </button>
+                </motion.button>
             ))}
             <div className="dock-sep" />
             <WalletDockItem health={health} />
@@ -88,18 +93,19 @@ function WalletDockItem({ health }: { health: Record<string, unknown> | null }) 
         : 'Wallet & Settings';
 
     return (
-        <>
-            <button className={`dock-item ${open ? 'active' : ''}`} onClick={() => setOpen(!open)}>
-                <Icon name="wallet" size={18} />
-                <span className="dock-label">{walletLabel}</span>
-            </button>
-
-            {open && (
-                <div className="dock-panel">
+        <Popover.Root open={open} onOpenChange={setOpen}>
+            <Popover.Trigger asChild>
+                <button className={`dock-item ${open ? 'active' : ''}`}>
+                    <Icon name="wallet" size={18} />
+                    <span className="dock-label">{walletLabel}</span>
+                </button>
+            </Popover.Trigger>
+            <Popover.Portal>
+                <Popover.Content className="dock-panel" side="right" align="end" sideOffset={14} collisionPadding={16}>
                     {/* Connection status */}
                     <div className="status-text" style={{ marginBottom: 12 }}>
                         <span className="status-dot" style={{ background: health ? 'var(--accent-success)' : 'var(--accent-error)' }} />
-                        {health ? 'Server Connected' : 'Server Disconnected'}
+                        {health ? 'Connected' : 'Disconnected'}
                     </div>
 
                     {/* Wallet */}
@@ -137,12 +143,11 @@ function WalletDockItem({ health }: { health: Record<string, unknown> | null }) 
                         </ConnectButton.Custom>
                     )}
 
-                    {/* Settings & Theme */}
-                    <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
-                        <button className="btn btn-secondary btn-sm" style={{ flex: 1, justifyContent: 'center' }} onClick={() => setShowSettings(!showSettings)}>
+                    {/* Settings */}
+                    <div style={{ marginTop: 10 }}>
+                        <button className="btn btn-secondary btn-sm" style={{ width: '100%', justifyContent: 'center' }} onClick={() => setShowSettings(!showSettings)}>
                             <Icon name="settings" size={12} /> Server
                         </button>
-                        <ThemeToggle />
                     </div>
 
                     {showSettings && (
@@ -159,9 +164,9 @@ function WalletDockItem({ health }: { health: Record<string, unknown> | null }) 
                             </button>
                         </div>
                     )}
-                </div>
-            )}
-        </>
+                </Popover.Content>
+            </Popover.Portal>
+        </Popover.Root>
     );
 }
 
@@ -227,23 +232,34 @@ export default function Dashboard() {
                         <p className="page-subtitle">{tabTitles[activeTab].subtitle}</p>
                     </div>
                     <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                        <span className="status-text" style={{ border: '1px solid var(--border-primary)', background: 'var(--bg-card)', padding: '6px 12px', borderRadius: 100 }}>
+                        <span className="status-text" style={{ border: '1px solid var(--border-primary)', background: 'var(--bg-card)', padding: '6px 12px', borderRadius: 100, boxShadow: 'var(--shadow-sm)' }}>
                             <span className="status-dot" style={{ background: health ? 'var(--accent-success)' : 'var(--accent-error)' }} />
-                            {health ? 'server connected' : 'disconnected'}
+                            {health ? 'connected' : 'disconnected'}
                         </span>
+                        <ThemeToggle />
                     </div>
                 </div>
                 <div className="page-body">
-                    {activeTab === 'overview' && <OverviewTab collections={collections} metrics={metrics} />}
-                    {activeTab === 'collections' && <CollectionsTab collections={collections} onRefresh={loadCollections} />}
-                    {activeTab === 'protocols' && <ProtocolsTab />}
-                    {activeTab === 'query' && <QueryBuilderTab collections={collections} />}
-                    {activeTab === 'explorer' && <DocumentExplorerTab collections={collections} />}
-                    {activeTab === 'indexes' && <IndexManagerTab collections={collections} onRefresh={loadCollections} />}
-                    {activeTab === 'metrics' && <MetricsTab metrics={metrics} />}
-                    {activeTab === 'deploy' && <DeployTab />}
-                    {activeTab === 'privacy' && <PrivacyTab collections={collections} />}
-                    {activeTab === 'apikeys' && <ApiKeysTab />}
+                    <AnimatePresence mode="wait">
+                        <motion.div
+                            key={activeTab}
+                            initial={{ opacity: 0, y: 6 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            exit={{ opacity: 0, y: -6 }}
+                            transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+                        >
+                            {activeTab === 'overview' && <OverviewTab collections={collections} metrics={metrics} />}
+                            {activeTab === 'collections' && <CollectionsTab collections={collections} onRefresh={loadCollections} />}
+                            {activeTab === 'protocols' && <ProtocolsTab />}
+                            {activeTab === 'query' && <QueryBuilderTab collections={collections} />}
+                            {activeTab === 'explorer' && <DocumentExplorerTab collections={collections} />}
+                            {activeTab === 'indexes' && <IndexManagerTab collections={collections} onRefresh={loadCollections} />}
+                            {activeTab === 'metrics' && <MetricsTab metrics={metrics} />}
+                            {activeTab === 'deploy' && <DeployTab />}
+                            {activeTab === 'privacy' && <PrivacyTab collections={collections} />}
+                            {activeTab === 'apikeys' && <ApiKeysTab />}
+                        </motion.div>
+                    </AnimatePresence>
                 </div>
             </main>
         </div>

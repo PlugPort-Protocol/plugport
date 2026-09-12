@@ -67,26 +67,32 @@ export function IndexManagerTab({ collections, onRefresh }: { collections: Colle
             {message && <div className={`alert alert-${message.type}`}>{message.text}</div>}
 
             <div className="card" style={{ marginBottom: 24 }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-                    <div className="card-title">Create Index</div>
+                <div className="card-header">
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                        <div className="icon-badge icon-badge-primary"><Icon name="index" size={15} /></div>
+                        <div className="card-title">Create index</div>
+                    </div>
                     {isAuthenticated && <ScopeToggle scope={scope} setScope={setScope} />}
                 </div>
-                <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap' }}>
-                    <div className="input-group" style={{ flex: 1, marginBottom: 0 }}>
+                <div style={{ display: 'flex', gap: 16, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+                    <div className="input-group" style={{ flex: '2 1 200px', marginBottom: 0 }}>
                         <label className="label">Collection</label>
                         <select className="select" value={collection} onChange={e => setCollection(e.target.value)}>
                             {visibleCollections.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
                         </select>
                     </div>
-                    <div className="input-group" style={{ flex: 1, marginBottom: 0 }}>
-                        <label className="label">Field Name</label>
+                    <div className="input-group" style={{ flex: '2 1 200px', marginBottom: 0 }}>
+                        <label className="label">Field name</label>
                         <input className="input" value={newField} onChange={e => setNewField(e.target.value)} placeholder="email" />
                     </div>
-                    <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 14, cursor: 'pointer', marginBottom: 2 }}>
-                        <input type="checkbox" checked={unique} onChange={e => setUnique(e.target.checked)} style={{ accentColor: 'var(--accent-primary)' }} />
-                        Unique
-                    </label>
-                    <button className="btn btn-primary" onClick={createIndex} disabled={!newField}>
+                    <div className="input-group" style={{ marginBottom: 0 }}>
+                        <label className="label">Options</label>
+                        <label className="checkbox-field">
+                            <input type="checkbox" className="checkbox" checked={unique} onChange={e => setUnique(e.target.checked)} />
+                            Unique
+                        </label>
+                    </div>
+                    <button className="btn btn-primary" onClick={createIndex} disabled={!newField} style={{ height: 40 }}>
                         <Icon name="plus" size={16} /> Create
                     </button>
                 </div>

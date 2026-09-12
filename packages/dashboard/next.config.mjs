@@ -16,6 +16,13 @@ const nextConfig = {
             ...config.resolve.fallback,
             '@react-native-async-storage/async-storage': false,
         };
+        // viem's `ox` dependency uses a dynamic require() in its tempo/chain
+        // support code that webpack can't statically analyze. Harmless —
+        // the module isn't reached at runtime for our supported chains.
+        config.ignoreWarnings = [
+            ...(config.ignoreWarnings || []),
+            { module: /node_modules[\\/]ox[\\/]/, message: /Critical dependency: the request of a dependency is an expression/ },
+        ];
         return config;
     },
 };

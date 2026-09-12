@@ -116,48 +116,38 @@ export function QueryBuilderTab({ collections }: { collections: CollectionInfo[]
     return (
         <div className="fade-in">
             <div className="card" style={{ marginBottom: 24 }}>
-                <div className="card-header">
-                    <div className="card-title" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                        Query Builder
-                        <div style={{ display: 'flex', background: 'var(--bg-tertiary)', borderRadius: 6, padding: 2 }}>
-                            {['mongo', 'sql', 'redis'].map(d => (
-                                <button
-                                    key={d}
-                                    style={{
-                                        border: 'none', background: dialect === d ? 'var(--bg-primary)' : 'transparent',
-                                        color: dialect === d ? 'var(--text-primary)' : 'var(--text-tertiary)',
-                                        padding: '4px 12px', fontSize: 12, fontWeight: 600, borderRadius: 4, cursor: 'pointer',
-                                        textTransform: 'uppercase'
-                                    }}
-                                    onClick={() => { setDialect(d as 'mongo' | 'sql' | 'redis'); setResults(null); setError(null); stopSse(); }}
-                                >
-                                    {d}
-                                </button>
-                            ))}
-                        </div>
+                <div className="card-header" style={{ alignItems: 'center' }}>
+                    <div className="tabs" style={{ marginBottom: 0 }}>
+                        {(['mongo', 'sql', 'redis'] as const).map(d => (
+                            <button
+                                key={d}
+                                className={`tab ${dialect === d ? 'active' : ''}`}
+                                style={{ textTransform: 'uppercase' }}
+                                onClick={() => { setDialect(d); setResults(null); setError(null); stopSse(); }}
+                            >
+                                {d}
+                            </button>
+                        ))}
                     </div>
-                    {results && <span className="badge badge-success">{results.length} results in {execTime}ms</span>}
-                    {sseActive && <span className="badge badge-warning blink">Live Stream Active</span>}
+                    <div style={{ display: 'flex', gap: 8 }}>
+                        {results && <span className="badge badge-success">{results.length} results in {execTime}ms</span>}
+                        {sseActive && <span className="badge badge-warning blink">Live Stream Active</span>}
+                    </div>
                 </div>
 
                 {dialect === 'mongo' && (
                     <>
                         {/* Find / Aggregate toggle */}
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
-                            <div style={{ display: 'flex', background: 'var(--bg-tertiary)', borderRadius: 6, padding: 2 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 18 }}>
+                            <div className="tabs" style={{ marginBottom: 0 }}>
                                 {(['find', 'aggregate'] as const).map(m => (
                                     <button
                                         key={m}
-                                        style={{
-                                            border: 'none',
-                                            background: mongoMode === m ? 'var(--bg-primary)' : 'transparent',
-                                            color: mongoMode === m ? 'var(--text-primary)' : 'var(--text-tertiary)',
-                                            padding: '4px 14px', fontSize: 12, fontWeight: 600, borderRadius: 4, cursor: 'pointer',
-                                            textTransform: 'capitalize',
-                                        }}
+                                        className={`tab ${mongoMode === m ? 'active' : ''}`}
+                                        style={{ display: 'inline-flex', alignItems: 'center', gap: 6, textTransform: 'capitalize' }}
                                         onClick={() => { setMongoMode(m); setResults(null); setError(null); }}
                                     >
-                                        {m === 'aggregate' ? '⚡ Aggregate' : '🔍 Find'}
+                                        <Icon name={m === 'aggregate' ? 'zap' : 'search'} size={13} /> {m}
                                     </button>
                                 ))}
                             </div>
@@ -312,7 +302,17 @@ export function QueryBuilderTab({ collections }: { collections: CollectionInfo[]
                         </pre>
                     )}
                 </div>
-            ) : null}
+            ) : (
+                <div className="card">
+                    <div className="empty-state">
+                        <div className="icon-badge icon-badge-primary" style={{ width: 44, height: 44, borderRadius: 13, margin: '0 auto 16px' }}>
+                            <Icon name="play" size={20} />
+                        </div>
+                        <div className="empty-state-title">Results will show up here</div>
+                        <div className="empty-state-text">Build a query above and hit Execute to see documents, rows, or streamed events.</div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }

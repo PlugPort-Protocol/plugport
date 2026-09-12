@@ -95,38 +95,41 @@ export function CollectionsTab({ collections, onRefresh }: { collections: Collec
 
             {visibleCollections.length === 0 ? (
                 <div className="card" style={{ padding: '64px 32px', textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-                    <div className="relative group mb-8" style={{ position: 'relative' }}>
-                        <div style={{ 
-                            width: 80, 
-                            height: 80, 
-                            background: 'var(--bg-tertiary)', 
-                            borderRadius: '24px', 
-                            display: 'flex', 
-                            alignItems: 'center', 
+                    <div style={{ position: 'relative', marginBottom: 32 }}>
+                        <div style={{
+                            width: 80,
+                            height: 80,
+                            background: 'linear-gradient(160deg, var(--bg-card-hover), var(--bg-tertiary) 65%)',
+                            borderRadius: '24px',
+                            display: 'flex',
+                            alignItems: 'center',
                             justifyContent: 'center',
-                            position: 'relative'
+                            position: 'relative',
+                            color: 'var(--accent-primary)',
+                            boxShadow: 'var(--shadow-md), var(--inset-highlight)',
                         }}>
-                            <Icon name="database" size={48} />
-                            <div style={{ 
+                            <Icon name="database" size={40} />
+                            <div style={{
                                 position: 'absolute',
-                                bottom: -8,
-                                right: -16,
-                                background: 'var(--bg-secondary)',
-                                color: 'var(--text-primary)',
-                                padding: '8px',
-                                borderRadius: '12px',
-                                boxShadow: 'var(--shadow-md)',
+                                bottom: -10,
+                                right: -14,
+                                background: 'var(--accent-primary)',
+                                color: '#fffdfd',
+                                width: 34,
+                                height: 34,
+                                borderRadius: '11px',
+                                boxShadow: '0 2px 6px rgba(110, 84, 255, 0.35), 0 8px 18px rgba(110, 84, 255, 0.32), inset 0 1px 0 rgba(255, 255, 255, 0.3)',
                                 transform: 'rotate(-6deg)',
                                 display: 'flex',
                                 alignItems: 'center',
                                 justifyContent: 'center'
                             }}>
-                                <span className="material-icons-outlined" style={{ fontSize: 20, fontWeight: 'bold' }}>add</span>
+                                <Icon name="plus" size={18} />
                             </div>
                         </div>
                     </div>
 
-                    <h3 style={{ fontSize: '24px', fontWeight: 800, color: 'var(--text-primary)', marginBottom: '12px' }}>No Collections Yet</h3>
+                    <h3 style={{ fontSize: '24px', fontWeight: 800, letterSpacing: '-0.4px', color: 'var(--text-primary)', marginBottom: '12px' }}>No Collections Yet</h3>
                     <p style={{ color: 'var(--text-secondary)', maxWidth: '420px', margin: '0 auto 32px', lineHeight: 1.6 }}>
                         Collections are automatically created when you insert your first document. Ready to start building your database?
                     </p>
@@ -134,7 +137,7 @@ export function CollectionsTab({ collections, onRefresh }: { collections: Collec
                     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '16px' }}>
                         <button className="btn btn-secondary" style={{ borderRadius: '100px', padding: '12px 32px' }} onClick={() => setShowInsert(true)}>
                             <span>Try inserting one now</span>
-                            <span className="material-icons-outlined" style={{ fontSize: 16 }}>arrow_forward</span>
+                            <Icon name="arrow-right" size={16} />
                         </button>
                         <a href="#" style={{ fontSize: '14px', color: 'var(--text-tertiary)', textDecoration: 'underline', textUnderlineOffset: '4px' }}>
                             Read documentation about Collections
