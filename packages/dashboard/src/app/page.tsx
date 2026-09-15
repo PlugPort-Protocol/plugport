@@ -213,7 +213,7 @@ export default function Dashboard() {
         overview: { title: 'Overview', subtitle: 'plugport console · monaddb store' },
         collections: { title: 'Collections', subtitle: 'browse and manage document collections' },
         protocols: { title: 'Protocols', subtitle: 'postgresql · mysql · redis · mongodb frontends' },
-        query: { title: 'Query Builder', subtitle: 'mongo · sql · redis — one verifiable engine' },
+        query: { title: 'Query Builder', subtitle: 'mongo · postgresql · mysql · redis — one verifiable engine' },
         explorer: { title: 'Document Explorer', subtitle: 'browse, edit and delete documents' },
         indexes: { title: 'Index Manager', subtitle: 'create and manage collection indexes' },
         metrics: { title: 'Metrics', subtitle: 'server performance and health' },

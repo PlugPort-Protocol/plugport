@@ -15,9 +15,10 @@
 import net from 'net';
 import crypto, { timingSafeEqual } from 'crypto';
 import { DocumentStore } from '../storage/document-store.js';
-import { SQLTranslator, type TranslatedQuery } from './sql-translator.js';
+import { SQLTranslator, executeAggregation, type TranslatedQuery } from './sql-translator.js';
 import { JoinEngine } from './join-engine.js';
 import type { ProtocolServerInstance } from './protocol-manager.js';
+import type { MetricsCollector } from '../metrics.js';
 import type { ProtocolType, DocumentWithId } from '@plugport/shared';
 
 /**
@@ -91,6 +92,7 @@ export class MySQLServer implements ProtocolServerInstance {
     private timeoutMs: number;
     private apiKey?: string;
     private authenticatedSockets: WeakSet<object> = new WeakSet();
+    private metrics?: MetricsCollector;
 
     constructor(options: {
         store: DocumentStore;
@@ -98,13 +100,19 @@ export class MySQLServer implements ProtocolServerInstance {
         host?: string;
         timeoutMs?: number;
         apiKey?: string;
+        metrics?: MetricsCollector;
     }) {
         this.store = options.store;
         this.port = options.port || 3306;
         this.host = options.host || '0.0.0.0';
         this.timeoutMs = options.timeoutMs || 30000;
         this.apiKey = options.apiKey;
-        this.translator = new SQLTranslator();
+        this.metrics = options.metrics;
+        // Was using the SQLTranslator's PostgreSQL-dialect default — real
+        // MySQL clients connecting here (mysql-cli, mysql2, etc.) were
+        // silently being parsed as PostgreSQL, e.g. double-quoted strings
+        // (valid MySQL literal syntax) misparsing as identifiers.
+        this.translator = new SQLTranslator({ dialect: 'MySQL' });
         this.joinEngine = new JoinEngine();
     }
 
@@ -147,6 +155,18 @@ export class MySQLServer implements ProtocolServerInstance {
     private handleConnection(socket: net.Socket): void {
         this.activeConnections.add(socket);
         this.connections++;
+        this.metrics?.connectionOpened('wire');
+
+        // 'error' is typically followed by 'close' for the same socket —
+        // guard so a single real disconnect isn't counted twice.
+        let disconnected = false;
+        const onDisconnect = () => {
+            if (disconnected) return;
+            disconnected = true;
+            this.activeConnections.delete(socket);
+            this.connections--;
+            this.metrics?.connectionClosed('wire');
+        };
 
         const connectionId = this.connectionIdCounter++;
         let buffer = Buffer.alloc(0);
@@ -210,15 +230,8 @@ export class MySQLServer implements ProtocolServerInstance {
             }
         });
 
-        socket.on('close', () => {
-            this.activeConnections.delete(socket);
-            this.connections--;
-        });
-
-        socket.on('error', () => {
-            this.activeConnections.delete(socket);
-            this.connections--;
-        });
+        socket.on('close', onDisconnect);
+        socket.on('error', onDisconnect);
     }
 
     // ---- Command Handler ----
@@ -230,6 +243,8 @@ export class MySQLServer implements ProtocolServerInstance {
             case COM.QUERY: {
                 const sql = payload.subarray(1).toString('utf-8').trim();
 
+                const startTime = Date.now();
+                let success = true;
                 try {
                     const translated = this.translator.translate(sql);
 
@@ -247,8 +262,10 @@ export class MySQLServer implements ProtocolServerInstance {
                         clearTimeout(timeoutId!);
                     }
                 } catch (err: any) {
+                    success = false;
                     this.sendERR(socket, seqId, err.message);
                 }
+                this.metrics?.recordRequest('QUERY', 'wire', Date.now() - startTime, success);
                 break;
             }
 
@@ -357,6 +374,20 @@ export class MySQLServer implements ProtocolServerInstance {
                     ...doc,
                 })) as DocumentWithId[];
                 this.sendResultSet(socket, joinDocs, seqId);
+                break;
+            }
+
+            case 'aggregate': {
+                const aggResult = await this.store.find(
+                    query.collection!,
+                    query.filter || {},
+                    {},
+                );
+                const aggDocs = executeAggregation(
+                    aggResult.cursor.firstBatch,
+                    query.aggregation!,
+                );
+                this.sendResultSet(socket, aggDocs as any[], seqId);
                 break;
             }
 

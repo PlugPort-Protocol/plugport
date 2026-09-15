@@ -2,7 +2,8 @@
 // Tests SQL parsing, WHERE clause translation, and DocumentStore operation mapping
 
 import { describe, it, expect } from 'vitest';
-import { SQLTranslator } from '../protocols/sql-translator.js';
+import { SQLTranslator, executeAggregation } from '../protocols/sql-translator.js';
+import type { DocumentWithId } from '@plugport/shared';
 
 describe('SQLTranslator', () => {
     const translator = new SQLTranslator();
@@ -168,6 +169,68 @@ describe('SQLTranslator', () => {
         });
     });
 
+    describe('Aggregate translation', () => {
+        it('should translate COUNT(*) to an aggregate query', () => {
+            const result = translator.translate('SELECT COUNT(*) FROM orders');
+            expect(result.type).toBe('aggregate');
+            expect(result.collection).toBe('orders');
+            expect(result.aggregation?.aggregates).toEqual([
+                { type: 'COUNT', field: '*', alias: 'COUNT(*)' },
+            ]);
+        });
+
+        it('should translate SUM/AVG with GROUP BY and an alias', () => {
+            const result = translator.translate(
+                'SELECT status, SUM(total) AS total_sum, AVG(total) FROM orders GROUP BY status'
+            );
+            expect(result.type).toBe('aggregate');
+            expect(result.aggregation?.groupBy).toEqual(['status']);
+            expect(result.aggregation?.aggregates).toEqual([
+                { type: 'SUM', field: 'total', alias: 'total_sum' },
+                { type: 'AVG', field: 'total', alias: 'AVG(total)' },
+            ]);
+        });
+
+        it('should carry a WHERE clause into the aggregate filter', () => {
+            const result = translator.translate("SELECT COUNT(*) FROM orders WHERE status = 'paid'");
+            expect(result.type).toBe('aggregate');
+            expect(result.filter).toEqual({ status: 'paid' });
+        });
+
+        it('should translate a HAVING clause referencing a selected aggregate', () => {
+            const result = translator.translate(
+                'SELECT status, SUM(total) AS total_sum FROM orders GROUP BY status HAVING SUM(total) > 100'
+            );
+            expect(result.type).toBe('aggregate');
+            expect(result.aggregation?.having).toEqual({ total_sum: { $gt: 100 } });
+            // Referenced the already-selected aggregate — no extra hidden alias needed.
+            expect(result.aggregation?.havingOnlyAliases).toBeUndefined();
+            expect(result.aggregation?.aggregates).toEqual([
+                { type: 'SUM', field: 'total', alias: 'total_sum' },
+            ]);
+        });
+
+        it('should compute a HAVING aggregate not present in the SELECT list, marked hidden', () => {
+            const result = translator.translate(
+                'SELECT status FROM orders GROUP BY status HAVING COUNT(*) > 2'
+            );
+            expect(result.aggregation?.having).toEqual({ 'COUNT(*)': { $gt: 2 } });
+            expect(result.aggregation?.havingOnlyAliases).toEqual(['COUNT(*)']);
+            expect(result.aggregation?.aggregates).toEqual([
+                { type: 'COUNT', field: '*', alias: 'COUNT(*)' },
+            ]);
+        });
+
+        it('should translate a compound HAVING clause (aggregate AND grouped column)', () => {
+            const result = translator.translate(
+                "SELECT status, COUNT(*) FROM orders GROUP BY status HAVING COUNT(*) > 1 AND status = 'paid'"
+            );
+            expect(result.aggregation?.having).toEqual({
+                $and: [{ 'COUNT(*)': { $gt: 1 } }, { status: 'paid' }],
+            });
+        });
+    });
+
     describe('Edge cases', () => {
         it('should handle PRAGMA (no-op)', () => {
             const result = translator.translate('PRAGMA table_info(users)');
@@ -183,6 +246,112 @@ describe('SQLTranslator', () => {
         it('should handle empty statements', () => {
             const result = translator.translate('');
             expect(result.type).toBe('noop');
+        });
+    });
+});
+
+describe('executeAggregation', () => {
+    const docs: DocumentWithId[] = [
+        { _id: '1', status: 'paid', total: 10 },
+        { _id: '2', status: 'paid', total: 20 },
+        { _id: '3', status: 'pending', total: 5 },
+    ] as unknown as DocumentWithId[];
+
+    it('computes COUNT(*) with no GROUP BY as a single row', () => {
+        const rows = executeAggregation(docs, {
+            groupBy: [],
+            aggregates: [{ type: 'COUNT', field: '*', alias: 'count' }],
+        });
+        expect(rows).toEqual([{ count: 3 }]);
+    });
+
+    it('computes SUM/AVG/MIN/MAX with no GROUP BY', () => {
+        const rows = executeAggregation(docs, {
+            groupBy: [],
+            aggregates: [
+                { type: 'SUM', field: 'total', alias: 'sum' },
+                { type: 'AVG', field: 'total', alias: 'avg' },
+                { type: 'MIN', field: 'total', alias: 'min' },
+                { type: 'MAX', field: 'total', alias: 'max' },
+            ],
+        });
+        expect(rows).toEqual([{ sum: 35, avg: 35 / 3, min: 5, max: 20 }]);
+    });
+
+    it('groups by a field and aggregates per group', () => {
+        const rows = executeAggregation(docs, {
+            groupBy: ['status'],
+            aggregates: [
+                { type: 'COUNT', field: '*', alias: 'count' },
+                { type: 'SUM', field: 'total', alias: 'sum' },
+            ],
+        });
+        const byStatus = Object.fromEntries(rows.map(r => [r.status as string, r]));
+        expect(byStatus.paid).toEqual({ status: 'paid', count: 2, sum: 30 });
+        expect(byStatus.pending).toEqual({ status: 'pending', count: 1, sum: 5 });
+    });
+
+    it('returns an empty array for an empty document set', () => {
+        const rows = executeAggregation([], {
+            groupBy: [],
+            aggregates: [{ type: 'COUNT', field: '*', alias: 'count' }],
+        });
+        // No groups exist, but the "entire result is one group" path still
+        // creates the implicit __all__ group even when it's empty.
+        expect(rows).toEqual([{ count: 0 }]);
+    });
+
+    it('ignores non-numeric values in SUM without throwing', () => {
+        const mixed: DocumentWithId[] = [
+            { _id: '1', total: 10 },
+            { _id: '2', total: 'not-a-number' },
+        ] as unknown as DocumentWithId[];
+        const rows = executeAggregation(mixed, {
+            groupBy: [],
+            aggregates: [{ type: 'SUM', field: 'total', alias: 'sum' }],
+        });
+        expect(rows).toEqual([{ sum: 10 }]);
+    });
+
+    describe('HAVING', () => {
+        it('drops groups that fail the HAVING filter', () => {
+            const rows = executeAggregation(docs, {
+                groupBy: ['status'],
+                aggregates: [{ type: 'SUM', field: 'total', alias: 'total_sum' }],
+                having: { total_sum: { $gt: 10 } },
+            });
+            // paid: sum=30 (passes), pending: sum=5 (fails)
+            expect(rows).toEqual([{ status: 'paid', total_sum: 30 }]);
+        });
+
+        it('keeps all groups when every one satisfies HAVING', () => {
+            const rows = executeAggregation(docs, {
+                groupBy: ['status'],
+                aggregates: [{ type: 'COUNT', field: '*', alias: 'count' }],
+                having: { count: { $gte: 1 } },
+            });
+            expect(rows).toHaveLength(2);
+        });
+
+        it('strips havingOnlyAliases from the final rows after filtering', () => {
+            const rows = executeAggregation(docs, {
+                groupBy: ['status'],
+                aggregates: [{ type: 'COUNT', field: '*', alias: 'COUNT(*)' }],
+                having: { 'COUNT(*)': { $gt: 1 } },
+                havingOnlyAliases: ['COUNT(*)'],
+            });
+            // Only the "paid" group (count=2) passes; the hidden COUNT(*)
+            // alias must not leak into the visible result.
+            expect(rows).toEqual([{ status: 'paid' }]);
+        });
+
+        it('returns no rows when no group satisfies HAVING', () => {
+            const rows = executeAggregation(docs, {
+                groupBy: ['status'],
+                aggregates: [{ type: 'SUM', field: 'total', alias: 'total_sum' }],
+                having: { total_sum: { $gt: 1000 } },
+            });
+            expect(rows).toEqual([]);
         });
     });
 });

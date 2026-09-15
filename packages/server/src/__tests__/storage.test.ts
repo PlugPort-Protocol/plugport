@@ -464,6 +464,59 @@ describe('DocumentStore', () => {
         });
     });
 
+    describe('Bulk insert documentCount on partial batchWrite failure', () => {
+        // Wraps InMemoryKVStore, delegating everything except batchWrite,
+        // which fails on a chosen call number (1-indexed) — simulating a
+        // later chunk's on-chain write failing after an earlier chunk's
+        // already committed successfully.
+        class FlakyBatchWriteKVStore extends InMemoryKVStore {
+            private calls = 0;
+            constructor(private failOnCall: number) { super(); }
+            override async batchWrite(
+                puts: { key: string; value: Buffer | Uint8Array }[],
+                deletes: string[],
+            ): Promise<void> {
+                this.calls++;
+                if (this.calls === this.failOnCall) {
+                    throw new Error('simulated batchWrite failure');
+                }
+                return super.batchWrite(puts, deletes);
+            }
+        }
+
+        it('preserves documentCount for earlier chunks when a later chunk\'s batchWrite fails', async () => {
+            const flakyKv = new FlakyBatchWriteKVStore(2); // fail on the 2nd chunk
+            const flakyStore = new DocumentStore(flakyKv);
+
+            const BATCH_LIMIT = 5000;
+            const docs = Array.from({ length: BATCH_LIMIT + 1 }, (_, i) => ({ n: i }));
+
+            await expect(flakyStore.insert('bulk', docs)).rejects.toThrow('simulated batchWrite failure');
+
+            // The first chunk (5000 docs) committed to storage successfully
+            // before the second chunk's batchWrite failed — documentCount
+            // must reflect that, not silently stay at 0.
+            const stats = await flakyStore.getStats('bulk');
+            expect(stats.documentCount).toBe(BATCH_LIMIT);
+
+            // And the actual stored documents agree with that count.
+            const found = await flakyStore.find('bulk', {}, { limit: BATCH_LIMIT + 10 });
+            expect(found.cursor.firstBatch.length).toBe(BATCH_LIMIT);
+        });
+
+        it('leaves documentCount at 0 when the very first chunk fails', async () => {
+            const flakyKv = new FlakyBatchWriteKVStore(1); // fail on the 1st (only) chunk
+            const flakyStore = new DocumentStore(flakyKv);
+
+            await expect(
+                flakyStore.insert('bulk', [{ n: 1 }, { n: 2 }])
+            ).rejects.toThrow('simulated batchWrite failure');
+
+            const stats = await flakyStore.getStats('bulk');
+            expect(stats.documentCount).toBe(0);
+        });
+    });
+
     describe('Find', () => {
         beforeEach(async () => {
             await store.insert('users', [

@@ -26,6 +26,13 @@ export interface ProtocolManagerOptions {
     kvStore: KVAdapter & { getKeyCount(): number; getEstimatedSizeBytes(): number };
     apiKey?: string;
     host: string;
+    /**
+     * Hostname to show in connection strings when `host` is a bind-all
+     * address (`0.0.0.0`), which is never reachable by a real client.
+     * Defaults to `localhost` for local dev; set to the server's public
+     * domain (e.g. `test-api.plugport.wtf`) in deployed environments.
+     */
+    publicHost?: string;
 }
 
 // ---- Protocol Manager ----
@@ -133,7 +140,9 @@ export class ProtocolManager {
      * Build a user-friendly connection string for a protocol.
      */
     private buildConnectionString(name: ProtocolType, port: number): string {
-        const host = this.options.host === '0.0.0.0' ? 'localhost' : this.options.host;
+        const host = this.options.host === '0.0.0.0'
+            ? (this.options.publicHost || 'localhost')
+            : this.options.host;
 
         switch (name) {
             case 'mongodb':

@@ -115,6 +115,22 @@ describe('EncryptionLayer', () => {
             const results = await encryptedStore.scan({ prefix: 'key:', limit: 3 });
             expect(results.length).toBe(3);
         });
+
+        it('should throw on tampered ciphertext instead of silently returning raw bytes', async () => {
+            await encryptedStore.put('doc:users:1', Buffer.from('Alice'));
+
+            const rawValue = await baseStore.get('doc:users:1');
+            if (rawValue) {
+                const tampered = Buffer.from(rawValue);
+                tampered[tampered.length - 1] ^= 0xff;
+                await baseStore.put('doc:users:1', tampered);
+            }
+
+            // Matches get()'s behavior: a scan that hits an entry it can't
+            // decrypt throws rather than silently mixing raw ciphertext
+            // into the returned rows.
+            await expect(encryptedStore.scan({ prefix: 'doc:users:' })).rejects.toThrow();
+        });
     });
 
     describe('Batch operations', () => {

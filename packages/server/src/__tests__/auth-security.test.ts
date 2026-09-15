@@ -25,7 +25,7 @@ describe('Auth Security', () => {
             metrics,
             kvStore,
             protocolManager: {
-                getStatus: () => [],
+                getActiveProtocols: () => [],
                 enableProtocol: async () => {},
                 disableProtocol: async () => {},
             },
@@ -113,5 +113,109 @@ describe('Auth Security', () => {
             });
             expect(res.statusCode).toBe(200);
         });
+    });
+});
+
+// ---- Soft-public listing endpoints (Overview/Protocols tabs, wallet disconnected) ----
+//
+// A separate server instance with a legacy apiKey configured — proves the
+// disconnected-wallet fix is narrowly scoped: /api/v1/collections and
+// /api/v1/protocols stay viewable with no credentials, while every other
+// legacy-key-gated route keeps returning 401 exactly as before.
+
+describe('Soft-public listing endpoints', () => {
+    let app: FastifyInstance;
+    let store: DocumentStore;
+    let privacyManager: PrivacyManager;
+    const LEGACY_KEY = 'test-legacy-api-key';
+
+    beforeAll(async () => {
+        const kvStore = new InMemoryKVStore();
+        store = new DocumentStore(kvStore);
+        const metrics = new MetricsCollector();
+        privacyManager = new PrivacyManager(kvStore);
+
+        const options: HttpServerOptions = {
+            port: 0,
+            host: '127.0.0.1',
+            store,
+            metrics,
+            kvStore,
+            apiKey: LEGACY_KEY,
+            protocolManager: {
+                getActiveProtocols: () => [
+                    { name: 'mongodb', enabled: true, port: 27017, connections: 0, connectionString: 'mongodb://localhost:27017' },
+                ],
+                enableProtocol: async () => {},
+                disableProtocol: async () => {},
+            },
+            privacyManager,
+        };
+
+        app = await createHttpServer(options);
+        await app.ready();
+    });
+
+    afterAll(async () => {
+        await app.close();
+    });
+
+    it('GET /api/v1/collections succeeds with zero credentials despite a configured legacy apiKey', async () => {
+        const res = await app.inject({ method: 'GET', url: '/api/v1/collections' });
+        expect(res.statusCode).toBe(200);
+        expect(res.json().ok).toBe(1);
+    });
+
+    it('GET /api/v1/protocols succeeds with zero credentials despite a configured legacy apiKey', async () => {
+        const res = await app.inject({ method: 'GET', url: '/api/v1/protocols' });
+        expect(res.statusCode).toBe(200);
+        const body = res.json();
+        expect(body.ok).toBe(1);
+        expect(body.protocols).toHaveLength(1);
+        expect(body.isDeployer).toBe(false); // anonymous caller is never the deployer
+    });
+
+    it('does NOT relax auth for other routes — a write still requires real credentials', async () => {
+        const res = await app.inject({
+            method: 'POST',
+            url: '/api/v1/collections/some-collection/insertOne',
+            payload: { document: { a: 1 } },
+        });
+        expect(res.statusCode).toBe(401);
+    });
+
+    it('does NOT relax auth for an unrelated read route', async () => {
+        const res = await app.inject({ method: 'GET', url: '/api/v1/keys' });
+        expect(res.statusCode).toBe(401);
+    });
+
+    it('filters a private collection out of the anonymous listing', async () => {
+        await store.insert('private_stuff', [{ secret: 'shh' }] as any);
+        await privacyManager.setCollectionPrivacy('private_stuff', 'private', '0xowner');
+
+        const anon = await app.inject({ method: 'GET', url: '/api/v1/collections' });
+        const anonNames = anon.json().collections.map((c: { name: string }) => c.name);
+        expect(anonNames).not.toContain('private_stuff');
+    });
+
+    it('still shows the owner their own private collection', async () => {
+        await store.insert('owner_only', [{ secret: 'mine' }] as any);
+        await privacyManager.setCollectionPrivacy('owner_only', 'private', '0xowner');
+
+        const asOwner = await app.inject({
+            method: 'GET',
+            url: '/api/v1/collections',
+            headers: { 'x-test-wallet-address': '0xowner' },
+        });
+        const names = asOwner.json().collections.map((c: { name: string }) => c.name);
+        expect(names).toContain('owner_only');
+    });
+
+    it('still lists public collections for an anonymous caller', async () => {
+        await store.insert('public_stuff', [{ visible: true }] as any);
+
+        const anon = await app.inject({ method: 'GET', url: '/api/v1/collections' });
+        const anonNames = anon.json().collections.map((c: { name: string }) => c.name);
+        expect(anonNames).toContain('public_stuff');
     });
 });

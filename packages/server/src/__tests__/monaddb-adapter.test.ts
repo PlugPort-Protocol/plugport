@@ -6,10 +6,45 @@ import {
     generateKeypair,
     MonadAdapter,
     createMonadAdapter,
+    withRetry,
     type MonadConfig,
 } from '../storage/monaddb-adapter.js';
 import { InMemoryKVStore } from '../storage/kv-adapter.js';
 import { RoutingAdapter } from '../storage/routing-adapter.js';
+
+// =====================================================
+// withRetry Tests
+// =====================================================
+describe('withRetry', () => {
+    it('should return the result on first success without retrying', async () => {
+        const fn = vi.fn().mockResolvedValue('ok');
+        const result = await withRetry(fn, 5, 1);
+        expect(result).toBe('ok');
+        expect(fn).toHaveBeenCalledTimes(1);
+    });
+
+    it('should retry after transient failures and succeed once one attempt succeeds', async () => {
+        const fn = vi.fn()
+            .mockRejectedValueOnce(new Error('missing revert data'))
+            .mockRejectedValueOnce(new Error('missing revert data'))
+            .mockResolvedValueOnce('recovered');
+        const result = await withRetry(fn, 5, 1);
+        expect(result).toBe('recovered');
+        expect(fn).toHaveBeenCalledTimes(3);
+    });
+
+    it('should throw the last error after exhausting all attempts', async () => {
+        const fn = vi.fn().mockRejectedValue(new Error('missing revert data'));
+        await expect(withRetry(fn, 3, 1)).rejects.toThrow('missing revert data');
+        expect(fn).toHaveBeenCalledTimes(3);
+    });
+
+    it('should respect a custom attempts count', async () => {
+        const fn = vi.fn().mockRejectedValue(new Error('fail'));
+        await expect(withRetry(fn, 7, 1)).rejects.toThrow('fail');
+        expect(fn).toHaveBeenCalledTimes(7);
+    });
+});
 
 // =====================================================
 // generateKeypair Tests
@@ -124,6 +159,40 @@ describe('MonadAdapter', () => {
 
     afterEach(() => {
         vi.restoreAllMocks();
+    });
+
+    describe('get()/has() transient RPC failure recovery', () => {
+        it('get() should recover from a transient exists() failure via retry', async () => {
+            const contract = (adapter as any).contract;
+            const existsSpy = vi.spyOn(contract, 'exists')
+                .mockRejectedValueOnce(new Error('missing revert data'))
+                .mockResolvedValueOnce(true);
+            const getSpy = vi.spyOn(contract, 'get').mockResolvedValue('0x68656c6c6f'); // "hello"
+
+            const result = await adapter.get('some-key');
+            expect(result?.toString()).toBe('hello');
+            expect(existsSpy).toHaveBeenCalledTimes(2);
+            expect(getSpy).toHaveBeenCalledTimes(1);
+        });
+
+        it('get() should return null (not throw) once retries are exhausted', async () => {
+            const contract = (adapter as any).contract;
+            vi.spyOn(contract, 'exists').mockRejectedValue(new Error('missing revert data'));
+
+            const result = await adapter.get('some-key');
+            expect(result).toBeNull();
+        });
+
+        it('has() should recover from a transient exists() failure via retry', async () => {
+            const contract = (adapter as any).contract;
+            const existsSpy = vi.spyOn(contract, 'exists')
+                .mockRejectedValueOnce(new Error('missing revert data'))
+                .mockResolvedValueOnce(true);
+
+            const result = await adapter.has('some-key');
+            expect(result).toBe(true);
+            expect(existsSpy).toHaveBeenCalledTimes(2);
+        });
     });
 
     describe('Diagnostic helpers', () => {

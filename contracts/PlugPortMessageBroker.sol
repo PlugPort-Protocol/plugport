@@ -84,11 +84,16 @@ contract PlugPortMessageBroker {
         uint256 seq = channelSequence[channelHash];
         totalMessages++;
 
-        // Store in history ring buffer
+        // Store in history ring buffer. During the initial fill (push)
+        // phase, sequence `s` lands at index `s - 1` (seq 1 -> index 0,
+        // seq 2 -> index 1, ...). Once full, the overwrite index must stay
+        // consistent with that same mapping — `(seq - 1) % MAX_HISTORY` —
+        // not `seq % MAX_HISTORY`, which is off by one and corrupts replay
+        // order for every subscriber catching up via getHistory().
         if (channelHistory[channelHash].length < MAX_HISTORY) {
             channelHistory[channelHash].push(message);
         } else {
-            channelHistory[channelHash][seq % MAX_HISTORY] = message;
+            channelHistory[channelHash][(seq - 1) % MAX_HISTORY] = message;
         }
 
         emit MessagePublished(channelHash, seq, msg.sender, message, block.timestamp);
@@ -117,7 +122,7 @@ contract PlugPortMessageBroker {
         if (channelHistory[channelHash].length < MAX_HISTORY) {
             channelHistory[channelHash].push(message);
         } else {
-            channelHistory[channelHash][seq % MAX_HISTORY] = message;
+            channelHistory[channelHash][(seq - 1) % MAX_HISTORY] = message;
         }
 
         emit MessagePublished(channelHash, seq, msg.sender, message, block.timestamp);
@@ -127,19 +132,35 @@ contract PlugPortMessageBroker {
 
     /**
      * @notice Get recent messages for a channel (for new subscriber catch-up / replay).
+     *         Reads in true chronological order regardless of whether the
+     *         ring buffer has wrapped — array index order alone is only
+     *         chronological during the initial fill; once full, the oldest
+     *         surviving entry sits wherever the next write will land.
      * @param channelHash keccak256 of the channel name
      * @param count Maximum number of messages to return
-     * @return messages Array of recent message bytes
+     * @return messages Array of recent message bytes, oldest first
      */
     function getHistory(
         bytes32 channelHash,
         uint256 count
     ) external view returns (bytes[] memory messages) {
         bytes[] storage history = channelHistory[channelHash];
-        uint256 len = history.length < count ? history.length : count;
+        uint256 total = history.length;
+        uint256 len = total < count ? total : count;
         messages = new bytes[](len);
+        if (len == 0) return messages;
+
+        // Not yet wrapped (total < MAX_HISTORY): index order IS chronological
+        // order, since entries were only ever appended, never overwritten.
+        // Wrapped (total == MAX_HISTORY): the oldest surviving entry sits at
+        // the position the *next* write would use — `channelSequence %
+        // MAX_HISTORY` — since the ring buffer always overwrites the oldest
+        // entry first.
+        uint256 head = total < MAX_HISTORY ? 0 : (channelSequence[channelHash] % MAX_HISTORY);
+        uint256 start = (head + (total - len)) % MAX_HISTORY;
+
         for (uint256 i = 0; i < len; i++) {
-            messages[i] = history[history.length - len + i];
+            messages[i] = history[(start + i) % MAX_HISTORY];
         }
     }
 

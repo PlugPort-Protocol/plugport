@@ -17,8 +17,8 @@ import { ApiKeyManager, type ApiKeyPermission } from './auth/api-key-manager.js'
 import { AnalyticsRecorder } from './auth/analytics-recorder.js';
 import { getAuthContract } from './auth/auth-contract.js';
 import { PrivacyManager } from './storage/privacy-manager.js';
-import { SQLTranslator } from './protocols/sql-translator.js';
-import type { TranslatedQuery } from './protocols/sql-translator.js';
+import { SQLTranslator, executeAggregation } from './protocols/sql-translator.js';
+import type { TranslatedQuery, SQLDialect } from './protocols/sql-translator.js';
 import { parseRESP } from './protocols/redis-server.js';
 import type { RedisServer } from './protocols/redis-server.js';
 import { VERSION } from '@plugport/shared';
@@ -93,6 +93,17 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
         timeWindow: '10 seconds' // per 10 seconds (600 RPM)
     });
 
+    // Read-only listing endpoints that stay viewable without any
+    // credentials — a disconnected-wallet visitor should see real overview
+    // data (dashboard Overview tab, Protocols tab), not the legacy API
+    // key's blanket 401 that every other route correctly enforces. A
+    // connected wallet's session still takes priority (checked first,
+    // below) so an authenticated caller keeps seeing their own private
+    // collections too — this only relaxes the *fallback* 401 when no
+    // credentials are present at all. The /api/v1/collections handler
+    // itself still filters out private collections the caller can't read.
+    const SOFT_PUBLIC_PATHS = new Set(['/api/v1/collections', '/api/v1/protocols']);
+
     // ---- Triple-Auth Middleware ----
     // Priority: (1) Session cookie → wallet auth (SIWE), (2) pp_live_/pp_test_ → wallet-linked API key,
     //           (3) legacy x-api-key → static API key from .env
@@ -151,6 +162,10 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
                 };
                 return;
             }
+            if (SOFT_PUBLIC_PATHS.has(path)) {
+                request.user = { authMethod: 'none' };
+                return;
+            }
             return reply.status(401).send({ ok: 0, code: 13, errmsg: 'Invalid or revoked API key' });
         }
 
@@ -159,6 +174,10 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
             const token = rawKey || xApiKey;
             if (token && safeCompare(token, apiKey)) {
                 request.user = { authMethod: 'legacyKey' };
+                return;
+            }
+            if (SOFT_PUBLIC_PATHS.has(path)) {
+                request.user = { authMethod: 'none' };
                 return;
             }
             return reply.status(401).send({ ok: 0, code: 13, errmsg: 'Unauthorized' });
@@ -174,10 +193,23 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
         const command = extractCommand(request.url, request.method);
         metrics.recordRequest(command, 'http', duration, reply.statusCode < 400);
 
-        // Record per-key analytics if authenticated via wallet-linked API key
-        if (request.user?.authMethod === 'apiKey' && request.user.keyHash) {
+        // Record analytics for both auth methods that identify a specific
+        // owner: wallet-linked API keys (keyed by key hash, as before) and
+        // SIWE wallet sessions (keyed by address) — normal dashboard usage
+        // authenticates via the latter, and previously went unrecorded
+        // entirely, undercounting "My Requests" on the Metrics tab for
+        // anyone not using a raw API key. AnalyticsRecorder doesn't care
+        // what the identifier string represents, so a `wallet:` prefix on
+        // the address keeps the two namespaces unambiguous in storage.
+        const analyticsId = request.user?.authMethod === 'apiKey' && request.user.keyHash
+            ? request.user.keyHash
+            : request.user?.authMethod === 'wallet' && request.user.address
+                ? `wallet:${request.user.address.toLowerCase()}`
+                : null;
+
+        if (analyticsId) {
             const collection = extractCollection(request.url);
-            analyticsRecorder.record(request.user.keyHash, {
+            analyticsRecorder.record(analyticsId, {
                 operation: command,
                 collection: collection || undefined,
                 latencyMs: duration,
@@ -216,6 +248,11 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
     });
 
     app.get('/metrics', async (_req, reply) => {
+        // Without this, plugport_storage_keys_total/plugport_storage_size_bytes
+        // would always read 0 in Prometheus/Grafana — only /api/v1/metrics
+        // (the dashboard's own JSON endpoint, not what Prometheus scrapes)
+        // used to refresh these gauges.
+        metrics.updateStorageMetrics(kvStore.getKeyCount(), kvStore.getEstimatedSizeBytes());
         const metricsText = await metrics.getPrometheusMetrics();
         reply.type(metrics.getContentType()).send(metricsText);
     });
@@ -249,20 +286,28 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
 
     // ---- Collection Management ----
 
-    app.get('/api/v1/collections', async () => {
+    app.get('/api/v1/collections', async (req: FastifyRequest) => {
         const collections = await store.listCollections();
+        const address = req.user?.address || '';
         const mappedCollections = await Promise.all(collections.map(async (c) => {
             const privacy = await privacyManager.getCollectionPrivacy(c.name);
+            const mode = privacy?.mode || 'public';
+            // Only list collections the caller can actually read — a
+            // private collection's name/owner/document count shouldn't be
+            // visible to an anonymous visitor or an unrelated caller just
+            // because listing itself doesn't require auth.
+            const readable = mode !== 'private' || await privacyManager.hasReadAccess(c.name, address);
+            if (!readable) return null;
             return {
                 name: c.name,
                 documentCount: c.documentCount,
                 indexCount: c.indexes.length,
                 createdAt: c.options.createdAt,
                 ownerAddress: privacy?.ownerAddress,
-                mode: privacy?.mode || 'public',
+                mode,
             };
         }));
-        return { collections: mappedCollections, ok: 1 };
+        return { collections: mappedCollections.filter((c): c is NonNullable<typeof c> => c !== null), ok: 1 };
     });
 
     app.post('/api/v1/collections/:name/drop', async (req: FastifyRequest<{ Params: { name: string } }>, reply: FastifyReply) => {
@@ -829,17 +874,40 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
 
     // ---- Protocol Management Endpoints ----
 
-    app.get('/api/v1/protocols', async () => {
-        if (!options.protocolManager) {
-            return { protocols: [], ok: 1 };
+    /**
+     * Protocol enable/disable is a server-wide action affecting every user
+     * (it can take a whole wire protocol offline), so it's restricted to the
+     * deployer — the PlugPortAuth contract's on-chain `owner()` — rather than
+     * any authenticated wallet. Returns a Fastify reply (already sent) on
+     * failure, or null if the caller is verified as the deployer.
+     */
+    async function requireDeployer(req: FastifyRequest, reply: FastifyReply): Promise<FastifyReply | null> {
+        if (!req.user?.address) {
+            return reply.status(401).send({ ok: 0, errmsg: 'Authentication required' });
         }
-        return { protocols: options.protocolManager.getActiveProtocols(), ok: 1 };
+        const owner = await getAuthContract().getOwner();
+        if (!owner) {
+            return reply.status(503).send({ ok: 0, errmsg: 'Deployer identity unavailable (auth contract not configured)' });
+        }
+        if (req.user.address.toLowerCase() !== owner) {
+            return reply.status(403).send({ ok: 0, errmsg: 'Only the deployer can manage protocols' });
+        }
+        return null;
+    }
+
+    app.get('/api/v1/protocols', async (req: FastifyRequest) => {
+        const deployerAddress = await getAuthContract().getOwner();
+        const isDeployer = !!(req.user?.address && deployerAddress && req.user.address.toLowerCase() === deployerAddress);
+        if (!options.protocolManager) {
+            return { protocols: [], deployerAddress, isDeployer, ok: 1 };
+        }
+        return { protocols: options.protocolManager.getActiveProtocols(), deployerAddress, isDeployer, ok: 1 };
     });
 
     // ---- SQL Endpoint ----
 
     app.post('/api/v1/sql', async (
-        req: FastifyRequest<{ Body: { query: string; params?: any[] } }>,
+        req: FastifyRequest<{ Body: { query: string; params?: any[]; dialect?: string } }>,
         reply: FastifyReply,
     ) => {
         try {
@@ -849,7 +917,15 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
                 return reply.status(400).send({ ok: 0, errmsg: 'query exceeds maximum length of 10000 characters' });
             }
 
-            const translator = new SQLTranslator();
+            // Defaults to PostgreSQL for backward compatibility with callers
+            // that predate dialect selection.
+            const requestedDialect = (req.body.dialect || 'postgresql').toLowerCase();
+            if (requestedDialect !== 'postgresql' && requestedDialect !== 'mysql') {
+                return reply.status(400).send({ ok: 0, errmsg: `dialect must be "postgresql" or "mysql", got "${req.body.dialect}"` });
+            }
+            const dialect: SQLDialect = requestedDialect === 'mysql' ? 'MySQL' : 'PostgreSQL';
+
+            const translator = new SQLTranslator({ dialect });
             const translated = translator.translate(query) as TranslatedQuery;
 
             if (translated.type === 'noop') {
@@ -906,6 +982,13 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
                     if (!(await checkAccess(req, reply, collection, 'write'))) return;
                     if (!translated.indexName) return reply.status(400).send({ ok: 0, errmsg: 'indexName required' });
                     result = await store.dropIndex(collection, translated.indexName);
+                    break;
+                }
+                case 'aggregate': {
+                    if (!(await checkAccess(req, reply, collection, 'read'))) return;
+                    const aggSource = await store.find(collection, translated.filter || {}, {});
+                    const aggDocs = executeAggregation(aggSource.cursor.firstBatch, translated.aggregation!);
+                    result = { cursor: { firstBatch: aggDocs, id: 0 }, ok: 1 };
                     break;
                 }
                 default:
@@ -1038,6 +1121,7 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
         req: FastifyRequest<{ Params: { name: string } }>,
         reply: FastifyReply,
     ) => {
+        if (await requireDeployer(req, reply)) return;
         if (!options.protocolManager) {
             return reply.status(501).send({ ok: 0, errmsg: 'Protocol manager not available' });
         }
@@ -1053,6 +1137,7 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
         req: FastifyRequest<{ Params: { name: string } }>,
         reply: FastifyReply,
     ) => {
+        if (await requireDeployer(req, reply)) return;
         if (!options.protocolManager) {
             return reply.status(501).send({ ok: 0, errmsg: 'Protocol manager not available' });
         }
@@ -1458,7 +1543,11 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
         }
         const keys = await apiKeyManager.listKeys(address);
         const hashes = keys.map(k => k.hash);
-        const overview = await analyticsRecorder.getOverviewForOwner(hashes);
+        // "My Requests" combines both identities this address's activity can
+        // be recorded under: its wallet-linked API keys, and its own SIWE
+        // wallet-session usage (normal dashboard browsing) — see the
+        // `wallet:` prefix convention in the onResponse analytics hook.
+        const overview = await analyticsRecorder.getOverviewForOwner([...hashes, `wallet:${address}`]);
 
         // Count user's collections and documents
         const allCollections = await store.listCollections();

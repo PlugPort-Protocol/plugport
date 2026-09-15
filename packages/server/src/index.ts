@@ -161,6 +161,12 @@ async function main() {
         kvStore,
         apiKey: config.apiKey,
         host: config.host,
+        // Deliberately does NOT fall back to API_DOMAIN — that domain is
+        // typically Cloudflare-proxied (HTTP/HTTPS only), which silently
+        // hangs for a real mongodb://, postgresql://, mysql:// or redis://
+        // client. PUBLIC_HOSTNAME must be a DNS-only hostname (or bare IP)
+        // that actually routes the raw wire-protocol ports.
+        publicHost: process.env.PUBLIC_HOSTNAME || undefined,
     });
 
     // Initialize Message Broker (optional)
@@ -227,6 +233,7 @@ async function main() {
             host: config.host,
             timeoutMs: config.sqlStatementTimeoutMs,
             apiKey: config.apiKey,
+            metrics,
         });
         protocolManager.register(pgServer);
         await pgServer.start();
@@ -241,6 +248,7 @@ async function main() {
             host: config.host,
             timeoutMs: config.sqlStatementTimeoutMs,
             apiKey: config.apiKey,
+            metrics,
         });
         protocolManager.register(mysqlServer);
         await mysqlServer.start();
@@ -256,6 +264,7 @@ async function main() {
             host: config.host,
             messageBroker,
             apiKey: config.apiKey,
+            metrics,
         });
         protocolManager.register(redisServer);
         await redisServer.start();

@@ -14,9 +14,10 @@
 import net from 'net';
 import { timingSafeEqual } from 'node:crypto';
 import { DocumentStore } from '../storage/document-store.js';
-import { SQLTranslator, type TranslatedQuery } from './sql-translator.js';
+import { SQLTranslator, executeAggregation, type TranslatedQuery } from './sql-translator.js';
 import { JoinEngine } from './join-engine.js';
 import type { ProtocolServerInstance } from './protocol-manager.js';
+import type { MetricsCollector } from '../metrics.js';
 import type { ProtocolType, DocumentWithId } from '@plugport/shared';
 
 /** Constant-time string comparison to prevent timing attacks on the password. */
@@ -43,6 +44,7 @@ const PG_MSG = {
     BIND: 'B'.charCodeAt(0),           // Extended query: bind
     DESCRIBE: 'D'.charCodeAt(0),       // Describe
     EXECUTE: 'E'.charCodeAt(0),        // Execute
+    CLOSE: 'C'.charCodeAt(0),          // Close (statement or portal)
     SYNC: 'S'.charCodeAt(0),           // Sync
     TERMINATE: 'X'.charCodeAt(0),      // Terminate
     PASSWORD: 'p'.charCodeAt(0),       // Password message
@@ -64,6 +66,21 @@ const PG_MSG = {
     CLOSE_COMPLETE: '3'.charCodeAt(0), // CloseComplete
 } as const;
 
+// ---- Extended Query Protocol state ----
+// Tracked per-connection so Parse/Bind/Execute (used by most real drivers
+// and ORMs for parameterized queries — node-postgres, Prisma, Sequelize,
+// Knex, TypeORM, etc.) actually run against the store, instead of Execute
+// unconditionally returning a fake "0 rows" response.
+
+interface PreparedStatement {
+    sql: string; // raw SQL text with $1, $2, ... placeholders, as sent by Parse
+}
+
+interface Portal {
+    statementName: string;
+    paramValues: (Buffer | null)[];
+}
+
 // ---- PG Server ----
 
 export class PGServer implements ProtocolServerInstance {
@@ -79,6 +96,11 @@ export class PGServer implements ProtocolServerInstance {
     private timeoutMs: number;
     private apiKey?: string;
     private authenticatedSockets: WeakSet<object> = new WeakSet();
+    private metrics?: MetricsCollector;
+    // Per-connection Extended Query Protocol state (garbage-collected
+    // automatically alongside the socket — no explicit cleanup needed).
+    private preparedStatements: WeakMap<net.Socket, Map<string, PreparedStatement>> = new WeakMap();
+    private portals: WeakMap<net.Socket, Map<string, Portal>> = new WeakMap();
 
     constructor(options: {
         store: DocumentStore;
@@ -86,13 +108,15 @@ export class PGServer implements ProtocolServerInstance {
         host?: string;
         timeoutMs?: number;
         apiKey?: string;
+        metrics?: MetricsCollector;
     }) {
         this.store = options.store;
         this.port = options.port || 5432;
         this.host = options.host || '0.0.0.0';
         this.timeoutMs = options.timeoutMs || 30000;
         this.apiKey = options.apiKey;
-        this.translator = new SQLTranslator();
+        this.metrics = options.metrics;
+        this.translator = new SQLTranslator({ dialect: 'PostgreSQL' }); // explicit — matches this server's actual protocol
         this.joinEngine = new JoinEngine();
     }
 
@@ -136,6 +160,18 @@ export class PGServer implements ProtocolServerInstance {
     private handleConnection(socket: net.Socket): void {
         this.activeConnections.add(socket);
         this.connections++;
+        this.metrics?.connectionOpened('wire');
+
+        // 'error' is typically followed by 'close' for the same socket —
+        // guard so a single real disconnect isn't counted twice.
+        let disconnected = false;
+        const onDisconnect = () => {
+            if (disconnected) return;
+            disconnected = true;
+            this.activeConnections.delete(socket);
+            this.connections--;
+            this.metrics?.connectionClosed('wire');
+        };
 
         let buffer = Buffer.alloc(0);
         let startupComplete = false;
@@ -193,15 +229,8 @@ export class PGServer implements ProtocolServerInstance {
             }
         });
 
-        socket.on('close', () => {
-            this.activeConnections.delete(socket);
-            this.connections--;
-        });
-
-        socket.on('error', () => {
-            this.activeConnections.delete(socket);
-            this.connections--;
-        });
+        socket.on('close', onDisconnect);
+        socket.on('error', onDisconnect);
     }
 
     // ---- Message Handler ----
@@ -234,9 +263,11 @@ export class PGServer implements ProtocolServerInstance {
                     return;
                 }
 
+                const startTime = Date.now();
+                let success = true;
                 try {
                     const translated = this.translator.translate(sql);
-                    
+
                     let timeoutId: ReturnType<typeof setTimeout>;
                     const timeoutPromise = new Promise<never>((_, reject) => {
                         timeoutId = setTimeout(() => reject(new Error('SQL execution timeout')), this.timeoutMs);
@@ -251,9 +282,11 @@ export class PGServer implements ProtocolServerInstance {
                         clearTimeout(timeoutId!);
                     }
                 } catch (err: any) {
+                    success = false;
                     this.sendError(socket, err.message);
                 }
 
+                this.metrics?.recordRequest('QUERY', 'wire', Date.now() - startTime, success);
                 this.sendReadyForQuery(socket);
                 break;
             }
@@ -268,21 +301,80 @@ export class PGServer implements ProtocolServerInstance {
                 break;
             }
 
-            // Extended query protocol (simplified)
+            // Extended query protocol
             case PG_MSG.PARSE: {
+                const { statementName, query } = this.parseParseMessage(body);
+                this.getStatements(socket).set(statementName, { sql: query });
                 this.sendParseComplete(socket);
                 break;
             }
             case PG_MSG.BIND: {
+                const bind = this.parseBindMessage(body);
+                this.getPortals(socket).set(bind.portalName, {
+                    statementName: bind.statementName,
+                    paramValues: bind.paramValues,
+                });
                 this.sendBindComplete(socket);
                 break;
             }
             case PG_MSG.DESCRIBE: {
+                // Column shapes aren't known until a query actually runs
+                // (documents are schemaless) — NoData is the honest answer
+                // here; the real RowDescription still goes out with the
+                // results once Execute runs the query.
                 this.sendNoData(socket);
                 break;
             }
             case PG_MSG.EXECUTE: {
-                this.sendCommandComplete(socket, 'SELECT 0');
+                const { portalName } = this.parseExecuteMessage(body);
+                const portal = this.getPortals(socket).get(portalName);
+                if (!portal) {
+                    this.sendError(socket, `portal "${portalName}" does not exist`);
+                    break;
+                }
+                const statement = this.getStatements(socket).get(portal.statementName);
+                if (!statement) {
+                    this.sendError(socket, `prepared statement "${portal.statementName}" does not exist`);
+                    break;
+                }
+
+                const sql = this.substituteParams(statement.sql, portal.paramValues);
+                if (!sql.trim()) {
+                    this.sendEmptyQuery(socket);
+                    break;
+                }
+
+                const startTime = Date.now();
+                let success = true;
+                try {
+                    const translated = this.translator.translate(sql);
+
+                    let timeoutId: ReturnType<typeof setTimeout>;
+                    const timeoutPromise = new Promise<never>((_, reject) => {
+                        timeoutId = setTimeout(() => reject(new Error('SQL execution timeout')), this.timeoutMs);
+                    });
+
+                    try {
+                        await Promise.race([
+                            this.executeTranslated(socket, translated, sql),
+                            timeoutPromise
+                        ]);
+                    } finally {
+                        clearTimeout(timeoutId!);
+                    }
+                } catch (err: any) {
+                    success = false;
+                    this.sendError(socket, err.message);
+                }
+
+                this.metrics?.recordRequest('EXECUTE', 'wire', Date.now() - startTime, success);
+                break;
+            }
+            case PG_MSG.CLOSE: {
+                const { kind, name } = this.parseCloseMessage(body);
+                if (kind === 'S') this.getStatements(socket).delete(name);
+                else this.getPortals(socket).delete(name);
+                this.sendCloseComplete(socket);
                 break;
             }
 
@@ -397,7 +489,7 @@ export class PGServer implements ProtocolServerInstance {
                     query.filter || {},
                     {},
                 );
-                const aggDocs = this.executeAggregation(
+                const aggDocs = executeAggregation(
                     aggResult.cursor.firstBatch,
                     query.aggregation!,
                 );
@@ -427,89 +519,119 @@ export class PGServer implements ProtocolServerInstance {
         }
     }
 
-    // ---- Aggregation Execution ----
+    // ---- Extended Query Protocol: per-connection statement/portal state ----
 
-    private executeAggregation(
-        docs: DocumentWithId[],
-        plan: import('./sql-translator.js').AggregationPlan,
-    ): Record<string, unknown>[] {
-        // Group documents
-        const groups = new Map<string, DocumentWithId[]>();
+    private getStatements(socket: net.Socket): Map<string, PreparedStatement> {
+        let map = this.preparedStatements.get(socket);
+        if (!map) {
+            map = new Map();
+            this.preparedStatements.set(socket, map);
+        }
+        return map;
+    }
 
-        if (plan.groupBy.length === 0) {
-            // No GROUP BY — entire result is one group
-            groups.set('__all__', docs);
-        } else {
-            for (const doc of docs) {
-                const key = plan.groupBy.map(f => String(doc[f] ?? 'null')).join('|');
-                const group = groups.get(key);
-                if (group) group.push(doc);
-                else groups.set(key, [doc]);
+    private getPortals(socket: net.Socket): Map<string, Portal> {
+        let map = this.portals.get(socket);
+        if (!map) {
+            map = new Map();
+            this.portals.set(socket, map);
+        }
+        return map;
+    }
+
+    // ---- Extended Query Protocol: message parsing ----
+
+    private readCString(buf: Buffer, offset: number): string {
+        const nullIdx = buf.indexOf(0, offset);
+        return buf.toString('utf-8', offset, nullIdx === -1 ? buf.length : nullIdx);
+    }
+
+    private parseParseMessage(body: Buffer): { statementName: string; query: string } {
+        const statementName = this.readCString(body, 0);
+        let offset = Buffer.byteLength(statementName, 'utf-8') + 1;
+        const query = this.readCString(body, offset);
+        // Remaining bytes (Int16 param count + Int32 OIDs per param) are
+        // intentionally unread — substituteParams() infers numeric-vs-string
+        // from each bound value's text representation instead of relying on
+        // declared parameter type OIDs.
+        return { statementName, query };
+    }
+
+    private parseBindMessage(body: Buffer): {
+        portalName: string;
+        statementName: string;
+        paramValues: (Buffer | null)[];
+    } {
+        let offset = 0;
+        const portalName = this.readCString(body, offset);
+        offset += Buffer.byteLength(portalName, 'utf-8') + 1;
+        const statementName = this.readCString(body, offset);
+        offset += Buffer.byteLength(statementName, 'utf-8') + 1;
+
+        // Parameter format codes — read only to advance past them correctly;
+        // not retained. substituteParams() decodes every bound value as
+        // UTF-8 text regardless of format (see its doc comment).
+        const numParamFormats = body.readInt16BE(offset); offset += 2;
+        offset += numParamFormats * 2;
+
+        const numParams = body.readInt16BE(offset); offset += 2;
+        const paramValues: (Buffer | null)[] = [];
+        for (let i = 0; i < numParams; i++) {
+            const len = body.readInt32BE(offset); offset += 4;
+            if (len === -1) {
+                paramValues.push(null);
+            } else {
+                paramValues.push(body.subarray(offset, offset + len));
+                offset += len;
             }
         }
 
-        // Compute aggregates per group
-        const results: Record<string, unknown>[] = [];
+        // Result format codes (trailing Int16 count + codes) intentionally
+        // unread — results are always sent as text (format code 0), matching
+        // the Simple Query path's existing RowDescription/DataRow encoding.
 
-        for (const [, groupDocs] of groups) {
-            const row: Record<string, unknown> = {};
+        return { portalName, statementName, paramValues };
+    }
 
-            // Add GROUP BY columns
-            if (plan.groupBy.length > 0 && groupDocs.length > 0) {
-                for (const field of plan.groupBy) {
-                    row[field] = groupDocs[0][field];
-                }
-            }
+    private parseExecuteMessage(body: Buffer): { portalName: string } {
+        const portalName = this.readCString(body, 0);
+        return { portalName };
+    }
 
-            // Compute aggregate functions
-            for (const agg of plan.aggregates) {
-                switch (agg.type) {
-                    case 'COUNT':
-                        row[agg.alias] = groupDocs.length;
-                        break;
-                    case 'SUM': {
-                        let sum = 0;
-                        for (const d of groupDocs) {
-                            const v = Number(d[agg.field]);
-                            if (!isNaN(v)) sum += v;
-                        }
-                        row[agg.alias] = sum;
-                        break;
-                    }
-                    case 'AVG': {
-                        let s = 0, c = 0;
-                        for (const d of groupDocs) {
-                            const v = Number(d[agg.field]);
-                            if (!isNaN(v)) { s += v; c++; }
-                        }
-                        row[agg.alias] = c > 0 ? s / c : null;
-                        break;
-                    }
-                    case 'MIN': {
-                        let min: number | null = null;
-                        for (const d of groupDocs) {
-                            const v = Number(d[agg.field]);
-                            if (!isNaN(v) && (min === null || v < min)) min = v;
-                        }
-                        row[agg.alias] = min;
-                        break;
-                    }
-                    case 'MAX': {
-                        let max: number | null = null;
-                        for (const d of groupDocs) {
-                            const v = Number(d[agg.field]);
-                            if (!isNaN(v) && (max === null || v > max)) max = v;
-                        }
-                        row[agg.alias] = max;
-                        break;
-                    }
-                }
-            }
+    private parseCloseMessage(body: Buffer): { kind: 'S' | 'P'; name: string } {
+        const kind = body[0] === 'S'.charCodeAt(0) ? 'S' : 'P';
+        const name = this.readCString(body, 1);
+        return { kind, name };
+    }
 
-            results.push(row);
-        }
+    /**
+     * Substitutes $1, $2, ... placeholders in a prepared statement's SQL
+     * with the actual bound parameter values from Bind, producing plain
+     * SQL text that SQLTranslator can parse the same way it parses a
+     * Simple Query. NULL binds become the SQL NULL keyword; values that
+     * look like bare numbers are inserted unquoted, everything else is
+     * single-quoted (with embedded quotes escaped).
+     *
+     * Every bound value is decoded as UTF-8 text regardless of the format
+     * code Bind declared for it — binary-format parameters (int4/int8/
+     * float8/bool binary wire encodings) aren't decoded per their true
+     * binary representation, only as best-effort UTF-8 text. Most drivers
+     * default to text format, so this covers the common case.
+     */
+    private substituteParams(sql: string, paramValues: (Buffer | null)[]): string {
+        return sql.replace(/\$(\d+)/g, (match, numStr) => {
+            const idx = parseInt(numStr, 10) - 1;
+            if (idx < 0 || idx >= paramValues.length) return match;
 
-        return results;
+            const raw = paramValues[idx];
+            if (raw === null) return 'NULL';
+
+            // Both text and binary formats are decoded as UTF-8 text here —
+            // see the doc comment above for why binary is best-effort only.
+            const text = raw.toString('utf-8');
+            if (/^-?\d+(\.\d+)?$/.test(text)) return text;
+            return `'${text.replace(/'/g, "''")}'`;
+        });
     }
 
     // ---- PG Wire Protocol Message Builders ----
@@ -771,6 +893,13 @@ export class PGServer implements ProtocolServerInstance {
     private sendNoData(socket: net.Socket): void {
         const msg = Buffer.alloc(5);
         msg[0] = PG_MSG.NO_DATA;
+        msg.writeInt32BE(4, 1);
+        socket.write(msg);
+    }
+
+    private sendCloseComplete(socket: net.Socket): void {
+        const msg = Buffer.alloc(5);
+        msg[0] = PG_MSG.CLOSE_COMPLETE;
         msg.writeInt32BE(4, 1);
         socket.write(msg);
     }

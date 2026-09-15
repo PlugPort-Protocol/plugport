@@ -18,6 +18,7 @@ import { timingSafeEqual } from 'node:crypto';
 import type { DocumentStore } from '../storage/document-store.js';
 import type { KVAdapter } from '@plugport/shared';
 import type { ProtocolServerInstance } from './protocol-manager.js';
+import type { MetricsCollector } from '../metrics.js';
 import type { ProtocolType } from '@plugport/shared';
 
 /** Constant-time string comparison to prevent timing attacks on the Redis AUTH password. */
@@ -147,6 +148,7 @@ export class RedisServer implements ProtocolServerInstance {
     private messageBroker: any; // MessageBrokerAdapter (optional)
     private apiKey?: string;
     private authenticatedSockets: WeakSet<object> = new WeakSet();
+    private metrics?: MetricsCollector;
 
     constructor(options: {
         store: DocumentStore;
@@ -155,6 +157,7 @@ export class RedisServer implements ProtocolServerInstance {
         host?: string;
         messageBroker?: any;
         apiKey?: string;
+        metrics?: MetricsCollector;
     }) {
         this.store = options.store;
         this.kvStore = options.kvStore;
@@ -162,6 +165,7 @@ export class RedisServer implements ProtocolServerInstance {
         this.host = options.host || '0.0.0.0';
         this.messageBroker = options.messageBroker || null;
         this.apiKey = options.apiKey;
+        this.metrics = options.metrics;
     }
 
     async start(): Promise<void> {
@@ -204,6 +208,19 @@ export class RedisServer implements ProtocolServerInstance {
     private handleConnection(socket: net.Socket): void {
         this.activeConnections.add(socket);
         this.connections++;
+        this.metrics?.connectionOpened('wire');
+
+        // 'error' is typically followed by 'close' for the same socket —
+        // guard so a single real disconnect isn't counted twice.
+        let disconnected = false;
+        const onDisconnect = () => {
+            if (disconnected) return;
+            disconnected = true;
+            this.removeSubscriptions(socket);
+            this.activeConnections.delete(socket);
+            this.connections--;
+            this.metrics?.connectionClosed('wire');
+        };
 
         let buffer = Buffer.alloc(0);
 
@@ -218,7 +235,16 @@ export class RedisServer implements ProtocolServerInstance {
                     buffer = buffer.subarray(result.bytesConsumed);
                     const command = this.extractCommand(result.value);
                     if (command) {
-                        await this.executeCommand(socket, command);
+                        const startTime = Date.now();
+                        let success = true;
+                        try {
+                            await this.executeCommand(socket, command);
+                        } catch (err) {
+                            success = false;
+                            throw err;
+                        } finally {
+                            this.metrics?.recordRequest((command[0] || 'UNKNOWN').toUpperCase(), 'wire', Date.now() - startTime, success);
+                        }
                     }
                 }
             } catch (err: any) {
@@ -226,17 +252,8 @@ export class RedisServer implements ProtocolServerInstance {
             }
         });
 
-        socket.on('close', () => {
-            this.removeSubscriptions(socket);
-            this.activeConnections.delete(socket);
-            this.connections--;
-        });
-
-        socket.on('error', () => {
-            this.removeSubscriptions(socket);
-            this.activeConnections.delete(socket);
-            this.connections--;
-        });
+        socket.on('close', onDisconnect);
+        socket.on('error', onDisconnect);
     }
 
     // ---- Command Execution ----

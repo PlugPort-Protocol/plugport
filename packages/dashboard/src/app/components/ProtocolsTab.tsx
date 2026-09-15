@@ -2,10 +2,15 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { apiGet, apiPost } from '@/lib/api';
+import { useAuth } from '@/lib/auth-context';
+import { Icon } from '@/lib/icons';
 import type { ProtocolInfo } from '../types';
 
 export function ProtocolsTab() {
+    const { address } = useAuth();
     const [protocols, setProtocols] = useState<ProtocolInfo[]>([]);
+    const [isDeployer, setIsDeployer] = useState(false);
+    const [deployerAddress, setDeployerAddress] = useState<string | null>(null);
     const [loading, setLoading] = useState(true);
     const [toggling, setToggling] = useState<string | null>(null);
     const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
@@ -28,8 +33,10 @@ export function ProtocolsTab() {
 
     const loadProtocols = useCallback(async () => {
         try {
-            const res = await apiGet<{ protocols: ProtocolInfo[] }>('/api/v1/protocols');
+            const res = await apiGet<{ protocols: ProtocolInfo[]; isDeployer?: boolean; deployerAddress?: string | null }>('/api/v1/protocols');
             setProtocols(res.protocols || []);
+            setIsDeployer(!!res.isDeployer);
+            setDeployerAddress(res.deployerAddress ?? null);
         } catch {
             // Fallback: use health endpoint
             try {
@@ -103,16 +110,26 @@ export function ProtocolsTab() {
                             </div>
                             <div>
                                 {p.name !== 'http' && (
-                                    <button
-                                        className={`btn ${p.enabled ? 'btn-danger' : 'btn-primary'} btn-sm`}
-                                        onClick={() => toggleProtocol(p.name, p.enabled)}
-                                        disabled={toggling === p.name}
-                                        style={{ minWidth: 90 }}
-                                    >
-                                        {toggling === p.name
-                                            ? <div className="spinner" style={{ width: 14, height: 14 }} />
-                                            : p.enabled ? 'Disable' : 'Enable'}
-                                    </button>
+                                    isDeployer ? (
+                                        <button
+                                            className={`btn ${p.enabled ? 'btn-danger' : 'btn-primary'} btn-sm`}
+                                            onClick={() => toggleProtocol(p.name, p.enabled)}
+                                            disabled={toggling === p.name}
+                                            style={{ minWidth: 90 }}
+                                        >
+                                            {toggling === p.name
+                                                ? <div className="spinner" style={{ width: 14, height: 14 }} />
+                                                : p.enabled ? 'Disable' : 'Enable'}
+                                        </button>
+                                    ) : (
+                                        <span
+                                            className="status-text"
+                                            title={deployerAddress ? `Only the deployer (${deployerAddress}) can manage protocols` : 'Only the deployer can manage protocols'}
+                                            style={{ fontSize: 11 }}
+                                        >
+                                            <Icon name="lock" size={12} /> Deployer only
+                                        </span>
+                                    )
                                 )}
                             </div>
                         </div>
@@ -128,7 +145,7 @@ export function ProtocolsTab() {
                 <div style={{ fontSize: 13, color: 'var(--text-tertiary)', lineHeight: 1.7, marginTop: 8 }}>
                     All protocols share the same DocumentStore and Monad smart contract backend.
                     Data written via PostgreSQL is immediately readable via MongoDB, Redis, or HTTP.
-                    Enable/disable protocols at runtime — each runs on its own port.
+                    Each runs on its own port and can be enabled or disabled at runtime by the deployer.
                 </div>
             </div>
         </div>

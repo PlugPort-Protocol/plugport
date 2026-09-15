@@ -29,6 +29,7 @@ const PLUGPORT_AUTH_ABI = [
     'function isKeyActive(address addr, uint8 keyIndex) external view returns (bool)',
     'function getKeyCount(address addr) external view returns (uint8)',
     'function nonces(address) external view returns (uint256)',
+    'function owner() external view returns (address)',
 
     // Events
     'event KeyRegistered(address indexed keyOwner, uint8 keyIndex, uint256 timestamp)',
@@ -390,6 +391,32 @@ export class AuthContractAdapter {
             return Number(await this.readContract!.nonces(address));
         } catch (err) {
             return 0;
+        }
+    }
+
+    /**
+     * Get the contract deployer/owner address — used to gate server-wide
+     * admin actions (e.g. enabling/disabling a protocol frontend) to just
+     * the deployer, mirroring the contract's own `onlyOwner` boundary.
+     * Cached briefly since ownership essentially never changes and this
+     * may be checked on every admin request.
+     */
+    private ownerCache: { address: string; fetchedAt: number } | null = null;
+    private static readonly OWNER_CACHE_TTL_MS = 60_000;
+
+    async getOwner(): Promise<string | null> {
+        if (!this.isReadable) return null;
+
+        if (this.ownerCache && Date.now() - this.ownerCache.fetchedAt < AuthContractAdapter.OWNER_CACHE_TTL_MS) {
+            return this.ownerCache.address;
+        }
+
+        try {
+            const address = (await this.readContract!.owner() as string).toLowerCase();
+            this.ownerCache = { address, fetchedAt: Date.now() };
+            return address;
+        } catch (err) {
+            return this.ownerCache?.address ?? null;
         }
     }
 

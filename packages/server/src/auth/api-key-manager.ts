@@ -9,6 +9,29 @@
 import { randomBytes, createHash } from 'crypto';
 import type { KVAdapter } from '@plugport/shared';
 
+/**
+ * Lightweight asynchronous Mutex to enforce sequential execution per-owner
+ * on the owner→keys index, preventing a lost-update race when two
+ * `generateKey()`/`revokeKey()` calls for the same wallet read-modify-write
+ * the same index concurrently (same pattern used elsewhere in this codebase
+ * for the same class of problem, e.g. `document-store.ts`'s per-collection
+ * locks).
+ */
+class Mutex {
+    private mutex = Promise.resolve();
+
+    lock(): Promise<() => void> {
+        let begin: (unlock: () => void) => void;
+        this.mutex = this.mutex.then(() => {
+            return new Promise(begin);
+        });
+
+        return new Promise((res) => {
+            begin = res;
+        });
+    }
+}
+
 // ---- Types ----
 
 export type ApiKeyPermission = 'read' | 'write' | 'admin' | 'all';
@@ -44,10 +67,18 @@ export interface GenerateKeyResult {
 export class ApiKeyManager {
     private kvStore: KVAdapter;
     private prefix: string;
+    private ownerIndexLocks: Record<string, Mutex> = {};
 
     constructor(kvStore: KVAdapter, options?: { prefix?: string }) {
         this.kvStore = kvStore;
         this.prefix = options?.prefix || 'meta:apikey:';
+    }
+
+    private getOwnerIndexLock(address: string): Mutex {
+        if (!this.ownerIndexLocks[address]) {
+            this.ownerIndexLocks[address] = new Mutex();
+        }
+        return this.ownerIndexLocks[address];
     }
 
     /**
@@ -242,24 +273,34 @@ export class ApiKeyManager {
 
     /** Add a key hash to the owner's index */
     private async addToOwnerIndex(address: string, hash: string): Promise<void> {
-        const indexKey = `meta:apikeys-by-owner:${address}`;
-        const existing = await this.kvStore.get(indexKey);
-        const hashes: string[] = existing ? JSON.parse(existing.toString()) : [];
+        const unlock = await this.getOwnerIndexLock(address).lock();
+        try {
+            const indexKey = `meta:apikeys-by-owner:${address}`;
+            const existing = await this.kvStore.get(indexKey);
+            const hashes: string[] = existing ? JSON.parse(existing.toString()) : [];
 
-        if (!hashes.includes(hash)) {
-            hashes.push(hash);
-            await this.kvStore.put(indexKey, Buffer.from(JSON.stringify(hashes)));
+            if (!hashes.includes(hash)) {
+                hashes.push(hash);
+                await this.kvStore.put(indexKey, Buffer.from(JSON.stringify(hashes)));
+            }
+        } finally {
+            unlock();
         }
     }
 
     /** Remove a key hash from the owner's index */
     private async removeFromOwnerIndex(address: string, hash: string): Promise<void> {
-        const indexKey = `meta:apikeys-by-owner:${address}`;
-        const existing = await this.kvStore.get(indexKey);
-        if (!existing) return;
+        const unlock = await this.getOwnerIndexLock(address).lock();
+        try {
+            const indexKey = `meta:apikeys-by-owner:${address}`;
+            const existing = await this.kvStore.get(indexKey);
+            if (!existing) return;
 
-        const hashes: string[] = JSON.parse(existing.toString());
-        const filtered = hashes.filter(h => h !== hash);
-        await this.kvStore.put(indexKey, Buffer.from(JSON.stringify(filtered)));
+            const hashes: string[] = JSON.parse(existing.toString());
+            const filtered = hashes.filter(h => h !== hash);
+            await this.kvStore.put(indexKey, Buffer.from(JSON.stringify(filtered)));
+        } finally {
+            unlock();
+        }
     }
 }

@@ -1,0 +1,350 @@
+{
+  "uid": "plugport-overview",
+  "title": "PlugPort Overview",
+  "tags": ["plugport"],
+  "timezone": "browser",
+  "editable": true,
+  "graphTooltip": 1,
+  "time": { "from": "now-1h", "to": "now" },
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "version": 1,
+  "panels": [
+    {
+      "id": 1,
+      "type": "row",
+      "title": "Traffic",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Request rate by protocol",
+      "description": "Requests/sec, split by protocol (http vs wire). Wire covers MongoDB, PostgreSQL, MySQL, and Redis combined.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "plugport-prometheus" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "plugport-prometheus" },
+          "expr": "sum(rate(plugport_requests_total[$__rate_interval])) by (protocol)",
+          "legendFormat": "{{protocol}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never" } },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Error rate by protocol",
+      "description": "Requests that completed with status=error, split by protocol.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "plugport-prometheus" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "plugport-prometheus" },
+          "expr": "sum(rate(plugport_requests_total{status=\"error\"}[$__rate_interval])) by (protocol)",
+          "legendFormat": "{{protocol}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never" },
+          "color": { "mode": "fixed", "fixedColor": "red" }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Request latency (p50 / p95 / p99)",
+      "description": "Computed from plugport_request_duration_ms histogram buckets across all commands/protocols.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 9 },
+      "datasource": { "type": "prometheus", "uid": "plugport-prometheus" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "plugport-prometheus" },
+          "expr": "histogram_quantile(0.50, sum(rate(plugport_request_duration_ms_bucket[$__rate_interval])) by (le))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "plugport-prometheus" },
+          "expr": "histogram_quantile(0.95, sum(rate(plugport_request_duration_ms_bucket[$__rate_interval])) by (le))",
+          "legendFormat": "p95",
+          "refId": "B"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "plugport-prometheus" },
+          "expr": "histogram_quantile(0.99, sum(rate(plugport_request_duration_ms_bucket[$__rate_interval])) by (le))",
+          "legendFormat": "p99",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "ms", "custom": { "drawStyle": "line", "fillOpacity": 5, "showPoints": "never" } },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+    },
+    {
+      "id": 5,
+      "type": "piechart",
+      "title": "Requests by protocol (window total)",
+      "description": "Mirrors the dashboard's own Protocol Distribution widget on the Metrics tab.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 9 },
+      "datasource": { "type": "prometheus", "uid": "plugport-prometheus" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "plugport-prometheus" },
+          "expr": "sum(plugport_requests_total) by (protocol)",
+          "legendFormat": "{{protocol}}",
+          "refId": "A"
+        }
+      ],
+      "options": { "legend": { "displayMode": "list", "placement": "right" }, "pieType": "donut" }
+    },
+    {
+      "id": 6,
+      "type": "row",
+      "title": "Connections & Storage",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 17 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Active wire-protocol connections",
+      "description": "Open TCP connections across MongoDB/PostgreSQL/MySQL/Redis combined. HTTP connections aren't tracked here — HTTP is better read via request rate above.",
+      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 18 },
+      "datasource": { "type": "prometheus", "uid": "plugport-prometheus" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "plugport-prometheus" },
+          "expr": "plugport_active_connections{protocol=\"wire\"}",
+          "legendFormat": "wire",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short", "custom": { "drawStyle": "line", "fillOpacity": 15, "showPoints": "never" } },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Storage key count",
+      "description": "Total keys the server's local key index knows about (recovered from the on-chain registry at startup, then kept live).",
+      "gridPos": { "h": 7, "w": 8, "x": 8, "y": 18 },
+      "datasource": { "type": "prometheus", "uid": "plugport-prometheus" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "plugport-prometheus" },
+          "expr": "plugport_storage_keys_total",
+          "legendFormat": "keys",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short", "custom": { "drawStyle": "line", "fillOpacity": 15, "showPoints": "never" } },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Storage size (read-cache estimate)",
+      "description": "NOT total on-chain storage size — this is the size of currently-cached recently-read key/value pairs only, so it resets toward 0 after every restart and fluctuates with read activity. A true cumulative size isn't tracked anywhere yet (see TODO.md).",
+      "gridPos": { "h": 7, "w": 8, "x": 16, "y": 18 },
+      "datasource": { "type": "prometheus", "uid": "plugport-prometheus" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "plugport-prometheus" },
+          "expr": "plugport_storage_size_bytes",
+          "legendFormat": "cached bytes",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "bytes", "custom": { "drawStyle": "line", "fillOpacity": 15, "showPoints": "never" } },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
+    },
+    {
+      "id": 10,
+      "type": "row",
+      "title": "Server health",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 25 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Memory usage",
+      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 26 },
+      "datasource": { "type": "prometheus", "uid": "plugport-prometheus" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "plugport-prometheus" },
+          "expr": "process_resident_memory_bytes",
+          "legendFormat": "RSS",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "plugport-prometheus" },
+          "expr": "nodejs_heap_size_used_bytes",
+          "legendFormat": "heap used",
+          "refId": "B"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "plugport-prometheus" },
+          "expr": "nodejs_heap_size_total_bytes",
+          "legendFormat": "heap total",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "bytes", "custom": { "drawStyle": "line", "fillOpacity": 5, "showPoints": "never" } },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "CPU usage",
+      "gridPos": { "h": 7, "w": 8, "x": 8, "y": 26 },
+      "datasource": { "type": "prometheus", "uid": "plugport-prometheus" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "plugport-prometheus" },
+          "expr": "rate(process_cpu_user_seconds_total[$__rate_interval])",
+          "legendFormat": "user",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "plugport-prometheus" },
+          "expr": "rate(process_cpu_system_seconds_total[$__rate_interval])",
+          "legendFormat": "system",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "percentunit", "custom": { "drawStyle": "line", "fillOpacity": 5, "showPoints": "never" } },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "Event loop lag",
+      "description": "How long the Node.js event loop is delayed processing new work — sustained growth means the server is falling behind under load.",
+      "gridPos": { "h": 7, "w": 8, "x": 16, "y": 26 },
+      "datasource": { "type": "prometheus", "uid": "plugport-prometheus" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "plugport-prometheus" },
+          "expr": "nodejs_eventloop_lag_mean_seconds",
+          "legendFormat": "mean",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "plugport-prometheus" },
+          "expr": "nodejs_eventloop_lag_p99_seconds",
+          "legendFormat": "p99",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "s", "custom": { "drawStyle": "line", "fillOpacity": 5, "showPoints": "never" } },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+    },
+    {
+      "id": 14,
+      "type": "stat",
+      "title": "Uptime",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 33 },
+      "datasource": { "type": "prometheus", "uid": "plugport-prometheus" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "plugport-prometheus" },
+          "expr": "time() - process_start_time_seconds",
+          "refId": "A",
+          "instant": true
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "options": { "graphMode": "none", "colorMode": "value", "textMode": "value" }
+    },
+    {
+      "id": 15,
+      "type": "stat",
+      "title": "Total requests (window)",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 33 },
+      "datasource": { "type": "prometheus", "uid": "plugport-prometheus" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "plugport-prometheus" },
+          "expr": "sum(plugport_requests_total)",
+          "refId": "A",
+          "instant": true
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "options": { "graphMode": "none", "colorMode": "value", "textMode": "value" }
+    },
+    {
+      "id": 16,
+      "type": "stat",
+      "title": "Active wire connections",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 33 },
+      "datasource": { "type": "prometheus", "uid": "plugport-prometheus" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "plugport-prometheus" },
+          "expr": "plugport_active_connections{protocol=\"wire\"}",
+          "refId": "A",
+          "instant": true
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "options": { "graphMode": "none", "colorMode": "value", "textMode": "value" }
+    },
+    {
+      "id": 17,
+      "type": "stat",
+      "title": "Storage keys",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 33 },
+      "datasource": { "type": "prometheus", "uid": "plugport-prometheus" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "plugport-prometheus" },
+          "expr": "plugport_storage_keys_total",
+          "refId": "A",
+          "instant": true
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "options": { "graphMode": "none", "colorMode": "value", "textMode": "value" }
+    }
+  ]
+}

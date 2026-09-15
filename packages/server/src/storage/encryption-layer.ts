@@ -194,7 +194,10 @@ export class EncryptionLayer implements KVAdapter {
     async scan(options: ScanOptions): Promise<KVEntry[]> {
         const entries = await this.innerAdapter.scan(options);
 
-        // Decrypt each value based on per-key encryption status
+        // Decrypt each value based on per-key encryption status. Matches
+        // get()'s behavior: a failed auth-tag/decryption throws rather than
+        // silently handing the caller raw ciphertext mixed in with real
+        // documents.
         return entries.map(entry => {
             if (!this.isEncryptionActive(entry.key)) return entry;
             try {
@@ -203,8 +206,10 @@ export class EncryptionLayer implements KVAdapter {
                     value: this.decrypt(Buffer.from(entry.value), this.aesKey),
                 };
             } catch (err) {
-                console.warn(`[EncryptionLayer] Decryption failed for key "${entry.key}":`, err instanceof Error ? err.message : 'unknown error');
-                return entry; // Return raw if decryption fails — caller sees garbled data
+                throw new Error(
+                    `[EncryptionLayer] Decryption failed for key "${entry.key}": ${err instanceof Error ? err.message : 'unknown error'}`,
+                    { cause: err },
+                );
             }
         });
     }

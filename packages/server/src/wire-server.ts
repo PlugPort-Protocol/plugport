@@ -368,7 +368,9 @@ function getCommandName(body: Record<string, unknown>): string {
     return 'unknown';
 }
 
-async function handleCommand(
+// Exported so command-handling logic can be unit-tested directly against
+// plain JS objects, decoupled from BSON/OP_MSG wire framing.
+export async function handleCommand(
     store: DocumentStore,
     body: Record<string, unknown>,
     docSequences: OpMsgSection[],
@@ -661,8 +663,34 @@ async function handleCommand(
         case 'getCmdLineOpts':
             return { argv: ['plugport'], parsed: {}, ok: 1 };
 
-        case 'getParameter':
+        case 'getParameter': {
+            const paramValue = body.getParameter;
+            // `{getParameter:'*'}` / `{getParameter:{allParameters:true}}`
+            // requests every known parameter — PlugPort has none, so an
+            // empty result is a correct (not fake) success.
+            const wantsAll = paramValue === '*'
+                || (!!paramValue && typeof paramValue === 'object' && (paramValue as Record<string, unknown>).allParameters === true);
+            if (wantsAll) {
+                return { ok: 1 };
+            }
+            // Otherwise the caller named specific parameters (e.g.
+            // `{getParameter:1, featureCompatibilityVersion:1}`) — PlugPort
+            // doesn't implement any real server parameters, so mirror real
+            // MongoDB's behavior for an unrecognized one instead of
+            // silently claiming success for a parameter that doesn't exist.
+            const metaKeys = new Set(['getParameter', '$db', '$clusterTime', 'lsid', 'comment',
+                'apiVersion', 'apiStrict', 'apiDeprecationErrors', 'writeConcern', 'readConcern']);
+            const requested = Object.keys(body).filter(k => !metaKeys.has(k));
+            if (requested.length > 0) {
+                return {
+                    ok: 0,
+                    errmsg: `no option found to get in the config: ${requested.join(', ')}`,
+                    code: 128,
+                    codeName: 'InvalidOptions',
+                };
+            }
             return { ok: 1 };
+        }
 
         case 'hostInfo':
             return { system: { currentTime: new Date(), hostname: 'plugport' }, os: {}, extra: {}, ok: 1 };

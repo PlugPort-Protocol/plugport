@@ -1,12 +1,18 @@
 // Protocol Server Integration Tests
 // Tests the PlugPort multi-protocol architecture: HTTP API, protocol management, whitelist endpoints
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { createHttpServer, type HttpServerOptions } from '../http-server.js';
 import { DocumentStore } from '../storage/document-store.js';
 import { InMemoryKVStore } from '../storage/kv-adapter.js';
 import { MetricsCollector } from '../metrics.js';
+import { getAuthContract } from '../auth/auth-contract.js';
 import type { FastifyInstance } from 'fastify';
+
+// Protocol enable/disable is deployer-gated (on-chain owner() check) — stub the
+// deployer identity so these tests can authenticate as the deployer via the
+// x-test-wallet-address test backdoor, without needing a real RPC connection.
+const DEPLOYER_ADDRESS = '0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef';
 
 describe('Protocol Integration', () => {
     let app: FastifyInstance;
@@ -23,7 +29,7 @@ describe('Protocol Integration', () => {
     ];
 
     const mockProtocolManager = {
-        getStatus: () => [...mockProtocols],
+        getActiveProtocols: () => [...mockProtocols],
         enableProtocol: async (name: string) => {
             const p = mockProtocols.find(p => p.name === name);
             if (!p) throw new Error(`Unknown protocol: ${name}`);
@@ -37,6 +43,8 @@ describe('Protocol Integration', () => {
     };
 
     beforeAll(async () => {
+        vi.spyOn(getAuthContract(), 'getOwner').mockResolvedValue(DEPLOYER_ADDRESS);
+
         kvStore = new InMemoryKVStore();
         store = new DocumentStore(kvStore);
         const metrics = new MetricsCollector();
@@ -98,6 +106,7 @@ describe('Protocol Integration', () => {
             const res = await app.inject({
                 method: 'POST',
                 url: '/api/v1/protocols/postgresql/enable',
+                headers: { 'x-test-wallet-address': DEPLOYER_ADDRESS },
             });
             expect(res.statusCode).toBe(200);
 
@@ -110,6 +119,7 @@ describe('Protocol Integration', () => {
             const res = await app.inject({
                 method: 'POST',
                 url: '/api/v1/protocols/postgresql/disable',
+                headers: { 'x-test-wallet-address': DEPLOYER_ADDRESS },
             });
             expect(res.statusCode).toBe(200);
 
@@ -122,8 +132,26 @@ describe('Protocol Integration', () => {
             const res = await app.inject({
                 method: 'POST',
                 url: '/api/v1/protocols/unknown/enable',
+                headers: { 'x-test-wallet-address': DEPLOYER_ADDRESS },
             });
             expect(res.statusCode).toBe(400);
+        });
+
+        it('should reject enable/disable from a non-deployer wallet', async () => {
+            const res = await app.inject({
+                method: 'POST',
+                url: '/api/v1/protocols/postgresql/enable',
+                headers: { 'x-test-wallet-address': '0x1111111111111111111111111111111111111111' },
+            });
+            expect(res.statusCode).toBe(403);
+        });
+
+        it('should reject enable/disable when unauthenticated', async () => {
+            const res = await app.inject({
+                method: 'POST',
+                url: '/api/v1/protocols/postgresql/enable',
+            });
+            expect(res.statusCode).toBe(401);
         });
     });
 

@@ -403,6 +403,7 @@ a:hover { color: var(--accent-primary); }
   font-family: var(--font-body);
 }
 .btn:active { transform: scale(0.97); }
+.btn:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
 
 .btn-primary { background: var(--accent-primary); color: #fffdfd; box-shadow: 0 2px 6px rgba(110, 84, 255, 0.3), 0 10px 24px rgba(110, 84, 255, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.2); }
 .btn-primary:hover { background: #7d64ff; box-shadow: 0 3px 8px rgba(110, 84, 255, 0.35), 0 14px 32px rgba(110, 84, 255, 0.38), inset 0 1px 0 rgba(255, 255, 255, 0.25); transform: translateY(-1px); }
@@ -442,6 +443,7 @@ a:hover { color: var(--accent-primary); }
    .btn match this same 40px so a mixed row of select/input/checkbox/
    button all land on one baseline. */
 .input, .select { height: 40px; }
+.input:disabled, .textarea:disabled, .select:disabled { opacity: 0.5; cursor: not-allowed; }
 
 /* Custom chevron replaces the browser-native arrow, which renders flush
    against the right edge with no breathing room and looks different on
@@ -685,6 +687,7 @@ a:hover { color: var(--accent-primary); }
 }
 .tab:hover { color: var(--text-secondary); }
 .tab.active { background: rgba(110, 84, 255, 0.18); color: var(--accent-primary-light); }
+.tab:disabled { opacity: 0.45; cursor: not-allowed; }
 
 /* Toast/Alert */
 .alert {

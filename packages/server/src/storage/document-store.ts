@@ -364,6 +364,15 @@ export class DocumentStore {
                             docWithId._id
                         ).catch(() => { });
                     }
+                    // Preserve the count for earlier chunks that already
+                    // committed successfully — same as the other two
+                    // early-exit paths above. Only insertedIds (prior
+                    // chunks) counts here; this chunk's rows were just
+                    // rolled back above and never made it into storage.
+                    if (insertedIds.length > 0) {
+                        metadata.documentCount += insertedIds.length;
+                        await this.saveMetadata(metadata);
+                    }
                     throw err;
                 }
             }

@@ -13,17 +13,43 @@ export function CollectionsTab({ collections, onRefresh }: { collections: Collec
     const [showInsert, setShowInsert] = useState(false);
     const [insertCollection, setInsertCollection] = useState('');
     const [insertDoc, setInsertDoc] = useState('{\n  "name": "Alice",\n  "email": "alice@example.com"\n}');
+    const [insertVisibility, setInsertVisibility] = useState<'public' | 'private'>('public');
     const [insertResult, setInsertResult] = useState<string | null>(null);
+    const [inserting, setInserting] = useState(false);
     const fileInputRef = useRef<HTMLInputElement>(null);
 
+    // Only offer a visibility choice when this insert would create a brand-new
+    // collection — an existing collection already has its privacy mode set,
+    // and inserting into it shouldn't silently change that.
+    const isNewCollection = isAuthenticated
+        && insertCollection.trim() !== ''
+        && !collections.some(c => c.name === insertCollection.trim());
+
     const handleInsert = async () => {
+        const targetCollection = insertCollection;
+        const claimingOwnership = isNewCollection;
+        setInserting(true);
+        setInsertResult(null);
         try {
             const doc = JSON.parse(insertDoc);
-            const result = await apiPost(`/api/v1/collections/${insertCollection}/insertOne`, { document: doc });
-            setInsertResult(JSON.stringify(result, null, 2));
+            const result = await apiPost(`/api/v1/collections/${targetCollection}/insertOne`, { document: doc });
+            let resultText = JSON.stringify(result, null, 2);
+
+            if (claimingOwnership) {
+                try {
+                    await apiPost(`/api/v1/collections/${targetCollection}/privacy`, { mode: insertVisibility });
+                    resultText += `\n\n✓ "${targetCollection}" created as ${insertVisibility} — you're now its owner.`;
+                } catch (privacyErr) {
+                    resultText += `\n\n⚠ Document inserted, but setting visibility failed: ${privacyErr instanceof Error ? privacyErr.message : 'Unknown error'}. The collection is currently unowned — set it from the Privacy tab.`;
+                }
+            }
+
+            setInsertResult(resultText);
             onRefresh();
         } catch (err) {
             setInsertResult(`Error: ${err instanceof Error ? err.message : 'Unknown'}`);
+        } finally {
+            setInserting(false);
         }
     };
 
@@ -76,17 +102,45 @@ export function CollectionsTab({ collections, onRefresh }: { collections: Collec
                     <div className="grid-2">
                         <div className="input-group">
                             <label className="label">Collection Name</label>
-                            <input className="input" value={insertCollection} onChange={e => setInsertCollection(e.target.value)} placeholder="users" />
+                            <input className="input" value={insertCollection} onChange={e => setInsertCollection(e.target.value)} placeholder="users" disabled={inserting} />
                         </div>
-                        <div />
+                        {isNewCollection && (
+                            <div className="input-group">
+                                <label className="label">Visibility for new collection</label>
+                                <div className="tabs" style={{ marginBottom: 0 }}>
+                                    <button type="button" className={`tab ${insertVisibility === 'public' ? 'active' : ''}`} onClick={() => setInsertVisibility('public')} disabled={inserting}>
+                                        Public
+                                    </button>
+                                    <button type="button" className={`tab ${insertVisibility === 'private' ? 'active' : ''}`} onClick={() => setInsertVisibility('private')} disabled={inserting}>
+                                        Private
+                                    </button>
+                                </div>
+                            </div>
+                        )}
                     </div>
+                    {isNewCollection && (
+                        <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginTop: -8, marginBottom: 16 }}>
+                            {insertVisibility === 'public'
+                                ? `"${insertCollection}" doesn't exist yet — it'll be created as public (world-readable) and you'll be recorded as its owner, so it shows under "My Data".`
+                                : `"${insertCollection}" doesn't exist yet — it'll be created as private (AES-256-GCM encrypted, only you + addresses you whitelist can access) with you as owner.`}
+                        </div>
+                    )}
                     <div className="input-group">
                         <label className="label">Document (JSON)</label>
-                        <textarea className="textarea" value={insertDoc} onChange={e => setInsertDoc(e.target.value)} rows={6} />
+                        <textarea className="textarea" value={insertDoc} onChange={e => setInsertDoc(e.target.value)} rows={6} disabled={inserting} />
                     </div>
-                    <button className="btn btn-primary" onClick={handleInsert} disabled={!insertCollection}>
-                        <Icon name="play" size={16} /> Insert
-                    </button>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                        <button className="btn btn-primary" onClick={handleInsert} disabled={!insertCollection || inserting} style={{ minWidth: 110 }}>
+                            {inserting
+                                ? <><div className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} /> Inserting…</>
+                                : <><Icon name="play" size={16} /> Insert</>}
+                        </button>
+                        {inserting && (
+                            <span className="status-text" style={{ fontSize: 12 }}>
+                                Writing to the blockchain — this takes 10-15s while the transaction confirms.
+                            </span>
+                        )}
+                    </div>
                     {insertResult && (
                         <pre className="json-view" style={{ marginTop: 16 }}>{insertResult}</pre>
                     )}

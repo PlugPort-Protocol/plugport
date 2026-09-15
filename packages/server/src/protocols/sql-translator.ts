@@ -11,6 +11,9 @@
 
 import { createRequire } from 'node:module';
 import type { Filter, SortSpec, Projection, DocumentWithId } from '@plugport/shared';
+import { ErrorCodes } from '@plugport/shared';
+import { DocumentStoreError } from '../storage/document-store.js';
+import { matchesFilter } from '../storage/query-planner.js';
 
 // ---- Types ----
 
@@ -56,6 +59,12 @@ export interface AggregationPlan {
     groupBy: string[];
     aggregates: AggregateFunction[];
     having?: Filter;
+    /**
+     * Aliases in `aggregates` that were added solely to evaluate a HAVING
+     * clause referencing an aggregate not present in the SELECT list —
+     * computed for filtering, then stripped from the final result rows.
+     */
+    havingOnlyAliases?: string[];
 }
 
 export interface AggregateFunction {
@@ -72,10 +81,14 @@ export interface AggregateFunction {
  * Uses node-sql-parser for AST generation, then walks the AST to build
  * PlugPort-compatible DocumentStore operations.
  */
+export type SQLDialect = 'PostgreSQL' | 'MySQL';
+
 export class SQLTranslator {
     private parser: any;
+    private dialect: SQLDialect;
 
-    constructor() {
+    constructor(options?: { dialect?: SQLDialect }) {
+        this.dialect = options?.dialect || 'PostgreSQL';
         // Lazy import — only loaded when SQL protocol is enabled
         try {
             const require = createRequire(import.meta.url);
@@ -143,7 +156,7 @@ export class SQLTranslator {
         // Parse with node-sql-parser
         let ast: any;
         try {
-            ast = this.parser.astify(trimmed, { database: 'PostgreSQL' });
+            ast = this.parser.astify(trimmed, { database: this.dialect });
         } catch (err: any) {
             throw new Error(`SQL parse error: ${err.message}`);
         }
@@ -194,8 +207,12 @@ export class SQLTranslator {
 
         const collection = this.extractTableName(ast.from);
 
-        // Check for COUNT(*) or aggregate functions
-        if (this.hasAggregates(ast.columns)) {
+        // Check for COUNT(*)/aggregate functions, or GROUP BY / HAVING —
+        // both are meaningless outside the aggregate path, so a query like
+        // `SELECT status FROM t GROUP BY status HAVING COUNT(*) > 2` (no
+        // aggregate function in the SELECT list itself) must still route
+        // here, or GROUP BY/HAVING would be silently dropped entirely.
+        if (this.hasAggregates(ast.columns) || ast.groupby || ast.having) {
             return this.translateAggregate(ast, collection);
         }
 
@@ -244,7 +261,11 @@ export class SQLTranslator {
 
     private translateInsert(ast: any): TranslatedQuery {
         const collection = this.extractTableName(ast.table);
-        const columns: string[] = ast.columns ? ast.columns.map((c: any) => c.value || c.column) : [];
+        // node-sql-parser's INSERT column list is a plain string array under
+        // MySQL dialect but an array of {type,value} objects under
+        // PostgreSQL — extractColumnName() already handles both shapes
+        // (it's used for the identical column_ref dialect split elsewhere).
+        const columns: string[] = ast.columns ? ast.columns.map((c: any) => this.extractColumnName(c)) : [];
         const documents: Record<string, unknown>[] = [];
 
         const valueRows = ast.values?.type === 'values' ? ast.values.values : ast.values;
@@ -453,12 +474,16 @@ export class SQLTranslator {
             }
         }
 
-        // GROUP BY
+        // GROUP BY — node-sql-parser wraps the column list as
+        // `{columns: [...]}` (both dialects), not a bare array; each entry
+        // is a `column_ref` node in the same dialect-split shape used
+        // elsewhere, so extractColumnName() already handles both.
         const groupBy: string[] = [];
-        if (ast.groupby) {
-            for (const g of ast.groupby) {
-                if (g.column) groupBy.push(g.column);
-                else if (g.expr?.column) groupBy.push(g.expr.column);
+        const groupByColumns = ast.groupby?.columns;
+        if (Array.isArray(groupByColumns)) {
+            for (const g of groupByColumns) {
+                const col = this.extractColumnName(g);
+                if (col !== 'unknown') groupBy.push(col);
             }
         }
 
@@ -473,8 +498,20 @@ export class SQLTranslator {
             result.filter = this.translateWhere(ast.where);
         }
 
-        // HAVING
+        // HAVING — rewrite any aggregate-function reference (e.g. `SUM(total)`)
+        // into a plain column reference pointing at that aggregate's alias
+        // *before* translating, so translateWhere()'s existing binary-expr
+        // logic can build a normal Filter keyed by the alias that
+        // executeAggregation() will actually compute into each result row.
         if (ast.having) {
+            const originalAliases = new Set(aggregates.map(a => a.alias));
+            this.resolveHavingAggregates(ast.having, aggregates);
+            const havingOnlyAliases = aggregates
+                .filter(a => !originalAliases.has(a.alias))
+                .map(a => a.alias);
+            if (havingOnlyAliases.length > 0) {
+                result.aggregation!.havingOnlyAliases = havingOnlyAliases;
+            }
             result.aggregation!.having = this.translateWhere(ast.having);
         }
 
@@ -620,7 +657,26 @@ export class SQLTranslator {
                 return node.value;
             case 'bool': return node.value;
             case 'null': return null;
-            case 'column_ref': return `$${this.extractColumnName(node)}`; // Field reference
+            case 'column_ref': {
+                // Every call site here (INSERT values, UPDATE SET values,
+                // WHERE comparisons, IN-list entries) expects a literal — a
+                // bare identifier can't legitimately appear in any of these
+                // positions. The far more common cause is a double-quoted
+                // string: under the hardcoded PostgreSQL dialect, double
+                // quotes denote an identifier, not a string literal (single
+                // quotes do), so `"Alice"` parses as a column reference
+                // named Alice rather than the string "Alice". Silently
+                // stringifying that reference used to store garbage data
+                // (`"$Alice"`) with no indication anything went wrong — fail
+                // loudly instead, with a message that explains the actual
+                // fix (use single quotes).
+                const name = this.extractColumnName(node);
+                throw new DocumentStoreError(
+                    ErrorCodes.BadValue,
+                    `SQL parse error: "${name}" was parsed as a column reference, not a value. If you meant a string literal, use single quotes ('${name}') — double quotes denote an identifier in this SQL dialect.`,
+                    'BadValue',
+                );
+            }
             default:
                 if (node.value !== undefined) return node.value;
                 return null;
@@ -705,4 +761,146 @@ export class SQLTranslator {
         if (columns === '*' || !Array.isArray(columns)) return false;
         return columns.some((col: any) => col.expr?.type === 'aggr_func');
     }
+
+    /**
+     * Walks a HAVING clause's AST looking for aggregate-function nodes
+     * (`{type:'aggr_func', name:'SUM', args:{...}}`) and rewrites each one
+     * in place into a plain `column_ref` pointing at that aggregate's
+     * alias — reusing an existing entry in `aggregates` if the same
+     * function+field is already selected, or appending a new one so it
+     * still gets computed even when HAVING references an aggregate that
+     * isn't in the SELECT list. Mutates `node` and `aggregates` directly.
+     */
+    private resolveHavingAggregates(node: any, aggregates: AggregateFunction[]): void {
+        if (!node || typeof node !== 'object') return;
+
+        if (node.type === 'aggr_func') {
+            const argField = node.args?.expr ? this.extractColumnName(node.args.expr) : '*';
+            const fnType = String(node.name).toUpperCase() as AggregateFunction['type'];
+            let match = aggregates.find(a => a.type === fnType && a.field === argField);
+            if (!match) {
+                match = { type: fnType, field: argField, alias: `${node.name}(${argField})` };
+                aggregates.push(match);
+            }
+            node.type = 'column_ref';
+            node.column = match.alias;
+            return;
+        }
+
+        for (const value of Object.values(node)) {
+            if (Array.isArray(value)) {
+                for (const item of value) this.resolveHavingAggregates(item, aggregates);
+            } else if (value && typeof value === 'object') {
+                this.resolveHavingAggregates(value, aggregates);
+            }
+        }
+    }
+}
+
+// ---- Aggregation Execution ----
+//
+// Shared by every consumer of a translated 'aggregate' query (pg-server.ts,
+// mysql-server.ts, and the /api/v1/sql HTTP endpoint) so `COUNT`/`SUM`/`AVG`/
+// `MIN`/`MAX` behave identically regardless of which protocol the query
+// arrived over.
+
+/**
+ * Executes a translated AggregationPlan against an in-memory document set
+ * (already filtered by the plan's WHERE clause via `store.find()`).
+ */
+export function executeAggregation(
+    docs: DocumentWithId[],
+    plan: AggregationPlan,
+): Record<string, unknown>[] {
+    // Group documents
+    const groups = new Map<string, DocumentWithId[]>();
+
+    if (plan.groupBy.length === 0) {
+        // No GROUP BY — entire result is one group
+        groups.set('__all__', docs);
+    } else {
+        for (const doc of docs) {
+            const key = plan.groupBy.map(f => String(doc[f] ?? 'null')).join('|');
+            const group = groups.get(key);
+            if (group) group.push(doc);
+            else groups.set(key, [doc]);
+        }
+    }
+
+    // Compute aggregates per group
+    const results: Record<string, unknown>[] = [];
+
+    for (const [, groupDocs] of groups) {
+        const row: Record<string, unknown> = {};
+
+        // Add GROUP BY columns
+        if (plan.groupBy.length > 0 && groupDocs.length > 0) {
+            for (const field of plan.groupBy) {
+                row[field] = groupDocs[0][field];
+            }
+        }
+
+        // Compute aggregate functions
+        for (const agg of plan.aggregates) {
+            switch (agg.type) {
+                case 'COUNT':
+                    row[agg.alias] = groupDocs.length;
+                    break;
+                case 'SUM': {
+                    let sum = 0;
+                    for (const d of groupDocs) {
+                        const v = Number(d[agg.field]);
+                        if (!isNaN(v)) sum += v;
+                    }
+                    row[agg.alias] = sum;
+                    break;
+                }
+                case 'AVG': {
+                    let s = 0, c = 0;
+                    for (const d of groupDocs) {
+                        const v = Number(d[agg.field]);
+                        if (!isNaN(v)) { s += v; c++; }
+                    }
+                    row[agg.alias] = c > 0 ? s / c : null;
+                    break;
+                }
+                case 'MIN': {
+                    let min: number | null = null;
+                    for (const d of groupDocs) {
+                        const v = Number(d[agg.field]);
+                        if (!isNaN(v) && (min === null || v < min)) min = v;
+                    }
+                    row[agg.alias] = min;
+                    break;
+                }
+                case 'MAX': {
+                    let max: number | null = null;
+                    for (const d of groupDocs) {
+                        const v = Number(d[agg.field]);
+                        if (!isNaN(v) && (max === null || v > max)) max = v;
+                    }
+                    row[agg.alias] = max;
+                    break;
+                }
+            }
+        }
+
+        results.push(row);
+    }
+
+    // HAVING — filters on the aggregated rows themselves (post-grouping),
+    // unlike WHERE which filters the source documents before grouping.
+    let filtered = plan.having ? results.filter(row => matchesFilter(row, plan.having!)) : results;
+
+    // Drop any aggregate that was only computed to evaluate HAVING and
+    // wasn't actually requested in the SELECT list.
+    if (plan.havingOnlyAliases?.length) {
+        filtered = filtered.map(row => {
+            const visible = { ...row };
+            for (const alias of plan.havingOnlyAliases!) delete visible[alias];
+            return visible;
+        });
+    }
+
+    return filtered;
 }

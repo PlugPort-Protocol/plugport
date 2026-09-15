@@ -5,8 +5,26 @@ import { apiPost } from '@/lib/api';
 import { Icon } from '@/lib/icons';
 import type { CollectionInfo } from '../types';
 
+// /api/v1/sql's `result` field varies by operation: `find`/`aggregate`
+// return `{cursor:{firstBatch,id}}` (matching the Mongo endpoints' shape),
+// while `insert`/`update`/`delete`/`createIndex`/`dropIndex` return a flat
+// summary object, and `noop`/`use` (BEGIN, SET, etc.) have no `result` at
+// all — just a `message`. Normalize all of these into the flat row array
+// the results table expects, instead of assuming it's always an array.
+function normalizeSqlResult(response: { result?: unknown; message?: string }): Record<string, unknown>[] {
+    const result = response.result;
+    if (Array.isArray(result)) return result as Record<string, unknown>[];
+    if (result && typeof result === 'object' && 'cursor' in result) {
+        const firstBatch = (result as { cursor?: { firstBatch?: unknown } }).cursor?.firstBatch;
+        if (Array.isArray(firstBatch)) return firstBatch as Record<string, unknown>[];
+    }
+    if (result && typeof result === 'object') return [result as Record<string, unknown>];
+    if (response.message) return [{ message: response.message }];
+    return [];
+}
+
 export function QueryBuilderTab({ collections }: { collections: CollectionInfo[] }) {
-    const [dialect, setDialect] = useState<'mongo' | 'sql' | 'redis'>('mongo');
+    const [dialect, setDialect] = useState<'mongo' | 'postgresql' | 'mysql' | 'redis'>('mongo');
     const [mongoMode, setMongoMode] = useState<'find' | 'aggregate'>('find');
     const [collection, setCollection] = useState(collections[0]?.name || '');
     const [filter, setFilter] = useState('{}');
@@ -63,9 +81,12 @@ export function QueryBuilderTab({ collections }: { collections: CollectionInfo[]
                     `/api/v1/collections/${collection}/find`, body
                 );
                 setResults(result.cursor.firstBatch);
-            } else if (dialect === 'sql') {
-                const result = await apiPost<{ result: Record<string, unknown>[] }>(`/api/v1/sql`, { query: sqlQuery });
-                setResults(result.result || []);
+            } else if (dialect === 'postgresql' || dialect === 'mysql') {
+                const result = await apiPost<{ ok: number; result?: unknown; message?: string; errmsg?: string }>(
+                    `/api/v1/sql`, { query: sqlQuery, dialect }
+                );
+                if (result.ok !== 1) throw new Error(result.errmsg || 'Query failed');
+                setResults(normalizeSqlResult(result));
             } else if (dialect === 'redis') {
                 if (redisCmd.toUpperCase().startsWith('SUBSCRIBE')) {
                     const channel = redisCmd.split(' ')[1];
@@ -118,7 +139,7 @@ export function QueryBuilderTab({ collections }: { collections: CollectionInfo[]
             <div className="card" style={{ marginBottom: 24 }}>
                 <div className="card-header" style={{ alignItems: 'center' }}>
                     <div className="tabs" style={{ marginBottom: 0 }}>
-                        {(['mongo', 'sql', 'redis'] as const).map(d => (
+                        {(['mongo', 'postgresql', 'mysql', 'redis'] as const).map(d => (
                             <button
                                 key={d}
                                 className={`tab ${dialect === d ? 'active' : ''}`}
@@ -217,10 +238,21 @@ export function QueryBuilderTab({ collections }: { collections: CollectionInfo[]
                     </>
                 )}
 
-                {dialect === 'sql' && (
+                {(dialect === 'postgresql' || dialect === 'mysql') && (
                     <div className="input-group">
-                        <label className="label">SQL Query</label>
-                        <textarea className="textarea input-mono" value={sqlQuery} onChange={e => setSqlQuery(e.target.value)} rows={4} placeholder="SELECT * FROM users WHERE age > 18" />
+                        <label className="label">{dialect === 'mysql' ? 'MySQL Query' : 'PostgreSQL Query'}</label>
+                        <textarea
+                            className="textarea input-mono"
+                            value={sqlQuery}
+                            onChange={e => setSqlQuery(e.target.value)}
+                            rows={4}
+                            placeholder={dialect === 'mysql' ? 'SELECT * FROM users WHERE name = "Alice"' : "SELECT * FROM users WHERE name = 'Alice'"}
+                        />
+                        <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 6 }}>
+                            {dialect === 'mysql'
+                                ? 'MySQL dialect — both \'single\' and "double" quotes work for string literals.'
+                                : 'PostgreSQL dialect — string literals need single quotes. Double quotes denote a column name, not a value.'}
+                        </div>
                     </div>
                 )}
 

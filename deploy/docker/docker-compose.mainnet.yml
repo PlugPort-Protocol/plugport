@@ -17,6 +17,13 @@ services:
       - MONAD_CONTRACT_ADDRESS=${MONAD_CONTRACT_ADDRESS}
       # ---- CORS (lock to production domain) ----
       - DASHBOARD_URL=${DASHBOARD_URL}
+      # ---- Public hostname shown in wire-protocol connection strings ----
+      # Deliberately NOT API_DOMAIN: that domain is Cloudflare-proxied, and
+      # Cloudflare's standard proxy only forwards HTTP(S) on 80/443 — a real
+      # mongodb://, postgresql://, mysql:// or redis:// client pointed at it
+      # would silently hang forever. WIRE_PROTOCOL_HOSTNAME must be a
+      # DNS-only ("grey cloud") record pointing directly at this VPS's IP.
+      - PUBLIC_HOSTNAME=${WIRE_PROTOCOL_HOSTNAME}
       # ---- Private Store & PubSub ----
       - PRIVATE_STORE_CONTRACT=${PRIVATE_STORE_CONTRACT:-}
       - MESSAGEBROKER_CONTRACT_ADDRESS=${MESSAGEBROKER_CONTRACT_ADDRESS:-}
