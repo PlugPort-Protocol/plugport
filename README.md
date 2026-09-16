@@ -55,8 +55,10 @@ Server starts on:
 - **HTTP API**: `http://localhost:8080` (Includes `/api/v1/sql`, `/api/v1/redis`, `/api/v1/redis/stream`)
 - **Mongo Wire Protocol**: `mongodb://localhost:27017`
 - **Postgres Wire Protocol**: `postgresql://localhost:5432`
-- **Redis Protocol**: `redis://localhost:6379`
+- **Redis Protocol**: `redis://localhost:6379` — ⚠️ shared keyspace, see note below
 - **Health**: `http://localhost:8080/health`
+
+> **Redis isolation note**: MongoDB, PostgreSQL, MySQL, and the HTTP API all enforce per-collection ownership and privacy (public/private, per-address access control). The Redis protocol does not — every authenticated client (wire or HTTP passthrough) reads and writes the *same* global keyspace, so two different callers using the same key name will collide. Redis wire auth is currently a single shared password with no per-caller identity, so this isn't a quick fix — treat Redis as a shared/dev-oriented cache, not a place to store anything sensitive or tenant-specific, until per-caller isolation ships.
 
 ### Using the CLI
 

@@ -19,6 +19,7 @@ import { getAuthContract } from './auth/auth-contract.js';
 import { PrivacyManager } from './storage/privacy-manager.js';
 import { SQLTranslator, executeAggregation } from './protocols/sql-translator.js';
 import type { TranslatedQuery, SQLDialect } from './protocols/sql-translator.js';
+import { JoinEngine } from './protocols/join-engine.js';
 import { parseRESP } from './protocols/redis-server.js';
 import type { RedisServer } from './protocols/redis-server.js';
 import { VERSION } from '@plugport/shared';
@@ -61,9 +62,20 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
     const apiKeyManager = new ApiKeyManager(kvStore);
     const analyticsRecorder = new AnalyticsRecorder(kvStore);
     const privacyManager = new PrivacyManager(kvStore);
+    const joinEngine = new JoinEngine();
     if ('setPrivacyManager' in kvStore && typeof kvStore.setPrivacyManager === 'function') {
         kvStore.setPrivacyManager(privacyManager);
     }
+
+    // Every write here triggers a real on-chain transaction against the
+    // shared gas-station wallet — the global default (100 req/10s per IP)
+    // left these completely unthrottled, and this session has repeatedly
+    // observed firsthand that even modest concurrent write bursts (well
+    // under 100) cause real RPC nonce contention ("existing transaction had
+    // higher priority"). This is a much stricter per-route cap for exactly
+    // the endpoints that cost real gas, so a single IP can't single-handedly
+    // drain the gas station or starve everyone else's writes out.
+    const WRITE_RATE_LIMIT = { config: { rateLimit: { max: 20, timeWindow: '10 seconds' } } };
 
     const app = Fastify({
         bodyLimit: 52428800, // 50MB limit for bulk operations
@@ -310,7 +322,7 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
         return { collections: mappedCollections.filter((c): c is NonNullable<typeof c> => c !== null), ok: 1 };
     });
 
-    app.post('/api/v1/collections/:name/drop', async (req: FastifyRequest<{ Params: { name: string } }>, reply: FastifyReply) => {
+    app.post('/api/v1/collections/:name/drop', WRITE_RATE_LIMIT, async (req: FastifyRequest<{ Params: { name: string } }>, reply: FastifyReply) => {
         if (!(await checkAccess(req, reply, req.params.name, 'write'))) return;
         const dropped = await store.dropCollection(req.params.name);
         return { acknowledged: true, dropped, ok: 1 };
@@ -318,27 +330,27 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
 
     // ---- Insert ----
 
-    app.post('/api/v1/collections/:name/insertOne', async (
+    app.post('/api/v1/collections/:name/insertOne', WRITE_RATE_LIMIT, async (
         req: FastifyRequest<{ Params: { name: string }; Body: { document: Record<string, unknown> } }>,
         reply: FastifyReply,
     ) => {
         if (!(await checkAccess(req, reply, req.params.name, 'write'))) return;
         try {
             const result = await store.insert(req.params.name, [req.body.document]);
-            return result;
+            return { ...result, ok: 1 };
         } catch (err) {
             return handleError(err, reply);
         }
     });
 
-    app.post('/api/v1/collections/:name/insertMany', async (
+    app.post('/api/v1/collections/:name/insertMany', WRITE_RATE_LIMIT, async (
         req: FastifyRequest<{ Params: { name: string }; Body: { documents: Record<string, unknown>[] } }>,
         reply: FastifyReply,
     ) => {
         if (!(await checkAccess(req, reply, req.params.name, 'write'))) return;
         try {
             const result = await store.insert(req.params.name, req.body.documents);
-            return result;
+            return { ...result, ok: 1 };
         } catch (err) {
             return handleError(err, reply);
         }
@@ -380,7 +392,7 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
 
     // ---- Update ----
 
-    app.post('/api/v1/collections/:name/updateOne', async (
+    app.post('/api/v1/collections/:name/updateOne', WRITE_RATE_LIMIT, async (
         req: FastifyRequest<{
             Params: { name: string };
             Body: { filter: Filter; update: { $set?: Record<string, unknown>; $inc?: Record<string, number>; $unset?: Record<string, unknown> }; upsert?: boolean };
@@ -390,13 +402,14 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
         if (!(await checkAccess(req, reply, req.params.name, 'write'))) return;
         try {
             const { filter, update, upsert } = req.body;
-            return store.updateOne(req.params.name, filter, update, { upsert });
+            const result = await store.updateOne(req.params.name, filter, update, { upsert });
+            return { ...result, ok: 1 };
         } catch (err) {
             return handleError(err, reply);
         }
     });
 
-    app.post('/api/v1/collections/:name/updateMany', async (
+    app.post('/api/v1/collections/:name/updateMany', WRITE_RATE_LIMIT, async (
         req: FastifyRequest<{
             Params: { name: string };
             Body: { filter: Filter; update: { $set?: Record<string, unknown>; $inc?: Record<string, number>; $unset?: Record<string, unknown> }; upsert?: boolean };
@@ -406,7 +419,8 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
         if (!(await checkAccess(req, reply, req.params.name, 'write'))) return;
         try {
             const { filter, update, upsert } = req.body;
-            return store.updateMany(req.params.name, filter, update, { upsert });
+            const result = await store.updateMany(req.params.name, filter, update, { upsert });
+            return { ...result, ok: 1 };
         } catch (err) {
             return handleError(err, reply);
         }
@@ -414,7 +428,7 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
 
     // ---- Delete ----
 
-    app.post('/api/v1/collections/:name/deleteOne', async (
+    app.post('/api/v1/collections/:name/deleteOne', WRITE_RATE_LIMIT, async (
         req: FastifyRequest<{
             Params: { name: string };
             Body: { filter: Filter };
@@ -424,13 +438,14 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
         if (!(await checkAccess(req, reply, req.params.name, 'write'))) return;
         try {
             const { filter } = req.body;
-            return store.deleteOne(req.params.name, filter);
+            const result = await store.deleteOne(req.params.name, filter);
+            return { ...result, ok: 1 };
         } catch (err) {
             return handleError(err, reply);
         }
     });
 
-    app.post('/api/v1/collections/:name/deleteMany', async (
+    app.post('/api/v1/collections/:name/deleteMany', WRITE_RATE_LIMIT, async (
         req: FastifyRequest<{
             Params: { name: string };
             Body: { filter: Filter };
@@ -439,7 +454,8 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
     ) => {
         if (!(await checkAccess(req, reply, req.params.name, 'write'))) return;
         try {
-            return store.deleteMany(req.params.name, req.body.filter);
+            const result = await store.deleteMany(req.params.name, req.body.filter);
+            return { ...result, ok: 1 };
         } catch (err) {
             return handleError(err, reply);
         }
@@ -447,7 +463,7 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
 
     // ---- Index Management ----
 
-    app.post('/api/v1/collections/:name/createIndex', async (
+    app.post('/api/v1/collections/:name/createIndex', WRITE_RATE_LIMIT, async (
         req: FastifyRequest<{
             Params: { name: string };
             Body: { field: string; unique?: boolean };
@@ -455,14 +471,18 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
         reply: FastifyReply,
     ) => {
         if (!(await checkAccess(req, reply, req.params.name, 'write'))) return;
+        if (!req.body.field || typeof req.body.field !== 'string') {
+            return reply.status(400).send({ ok: 0, errmsg: 'field (string) required' });
+        }
         try {
-            return store.createIndex(req.params.name, req.body.field, req.body.unique);
+            const result = await store.createIndex(req.params.name, req.body.field, req.body.unique);
+            return { ...result, ok: 1 };
         } catch (err) {
             return handleError(err, reply);
         }
     });
 
-    app.post('/api/v1/collections/:name/dropIndex', async (
+    app.post('/api/v1/collections/:name/dropIndex', WRITE_RATE_LIMIT, async (
         req: FastifyRequest<{
             Params: { name: string };
             Body: { indexName: string };
@@ -937,7 +957,7 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
             }
 
             let result;
-            if (!translated.collection && translated.type !== 'showDatabases') {
+            if (!translated.collection && translated.type !== 'showDatabases' && translated.type !== 'join') {
                 return reply.status(400).send({ ok: 0, errmsg: 'collection required' });
             }
             const collection = translated.collection as string;
@@ -989,6 +1009,32 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
                     const aggSource = await store.find(collection, translated.filter || {}, {});
                     const aggDocs = executeAggregation(aggSource.cursor.firstBatch, translated.aggregation!);
                     result = { cursor: { firstBatch: aggDocs, id: 0 }, ok: 1 };
+                    break;
+                }
+                case 'createCollection': {
+                    if (!(await checkAccess(req, reply, collection, 'write'))) return;
+                    await store.getOrCreateCollection(collection);
+                    result = { message: 'CREATE TABLE' };
+                    break;
+                }
+                case 'dropCollection': {
+                    if (!(await checkAccess(req, reply, collection, 'write'))) return;
+                    const dropped = await store.dropCollection(collection);
+                    result = { dropped };
+                    break;
+                }
+                case 'join': {
+                    const plan = translated.joinPlan!;
+                    const joinCollections = [
+                        plan.leftCollection,
+                        plan.rightCollection,
+                        ...(plan.additionalJoins || []).map(j => j.rightCollection),
+                    ];
+                    for (const c of joinCollections) {
+                        if (!(await checkAccess(req, reply, c, 'read'))) return;
+                    }
+                    const joinResult = await joinEngine.execute(plan, store);
+                    result = { cursor: { firstBatch: joinResult.documents, id: 0 } };
                     break;
                 }
                 default:
@@ -1292,7 +1338,7 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
     // API Key Management Endpoints
     // ════════════════════════════════════════════════════════
 
-    app.post('/api/v1/keys/generate', async (
+    app.post('/api/v1/keys/generate', WRITE_RATE_LIMIT, async (
         req: FastifyRequest<{ Body: { label: string; permissions?: ApiKeyPermission[]; rateLimit?: number } }>,
         reply: FastifyReply,
     ) => {

@@ -72,8 +72,10 @@ services:
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml
       - prometheus-data:/prometheus
-    ports:
-      - "9090:9090"
+    # No published port — Grafana reaches this over the internal Docker
+    # network (http://prometheus:9090) and never needed the public port to
+    # work. Previously bound directly to the VPS's public IP with zero
+    # authentication of its own.
     depends_on:
       - plugport-server
     restart: unless-stopped
@@ -84,10 +86,13 @@ services:
   grafana:
     image: grafana/grafana:11.3.0
     container_name: plugport-grafana
-    ports:
-      - "3001:3000"
+    # No published port — only reachable through Caddy's basic_auth-gated
+    # reverse proxy now (see Caddyfile). Previously bound directly to the
+    # VPS's public IP with the (undocumented, so left-default) admin
+    # password.
     environment:
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-plugport}
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_USER}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD}
       - GF_USERS_ALLOW_SIGN_UP=false
     volumes:
       - grafana-data:/var/lib/grafana

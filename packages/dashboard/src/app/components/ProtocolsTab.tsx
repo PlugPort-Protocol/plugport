@@ -31,6 +31,14 @@ export function ProtocolsTab() {
         http: 'HTTP REST API — Always enabled. JSON endpoints for all operations',
     };
 
+    // Unlike every other protocol, Redis has no per-caller isolation yet —
+    // every authenticated client (wire or HTTP passthrough) shares one
+    // global keyspace. Surfaced here so anyone about to connect a real
+    // client sees it before storing anything sensitive.
+    const caveatMap: Record<string, string> = {
+        redis: 'Shared keyspace: unlike the other protocols, Redis has no per-caller isolation — every authenticated client reads and writes the same keys. Do not store sensitive or tenant-specific data here.',
+    };
+
     const loadProtocols = useCallback(async () => {
         try {
             const res = await apiGet<{ protocols: ProtocolInfo[]; isDeployer?: boolean; deployerAddress?: string | null }>('/api/v1/protocols');
@@ -105,6 +113,20 @@ export function ProtocolsTab() {
                                         color: 'var(--text-secondary)',
                                     }}>
                                         {p.connectionString}
+                                    </div>
+                                )}
+                                {p.enabled && caveatMap[p.name] && (
+                                    <div style={{
+                                        display: 'flex',
+                                        alignItems: 'flex-start',
+                                        gap: 6,
+                                        marginTop: 8,
+                                        fontSize: 12,
+                                        color: 'var(--accent-warning)',
+                                        maxWidth: 480,
+                                    }}>
+                                        <span style={{ flexShrink: 0, marginTop: 1 }}><Icon name="alert-triangle" size={13} /></span>
+                                        <span>{caveatMap[p.name]}</span>
                                     </div>
                                 )}
                             </div>

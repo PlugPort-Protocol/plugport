@@ -697,11 +697,17 @@ export class SQLTranslator {
     private extractJoinCondition(on: any): { leftField: string; rightField: string } {
         if (!on) return { leftField: '_id', rightField: '_id' };
 
-        // ON a.field = b.field
+        // ON a.field = b.field — under the PostgreSQL dialect, node-sql-parser
+        // wraps `on.left`/`on.right` the same nested {column: {expr: {value}}}
+        // shape as every other column_ref elsewhere in this file (see
+        // extractColumnName's own comment), not a plain `.column` string —
+        // reuse the shared dialect-safe helper instead of reading `.column` raw.
         if (on.type === 'binary_expr' && on.operator === '=') {
+            const leftField = this.extractColumnName(on.left);
+            const rightField = this.extractColumnName(on.right);
             return {
-                leftField: on.left?.column || '_id',
-                rightField: on.right?.column || '_id',
+                leftField: leftField === 'unknown' ? '_id' : leftField,
+                rightField: rightField === 'unknown' ? '_id' : rightField,
             };
         }
 

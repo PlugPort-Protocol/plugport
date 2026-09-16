@@ -333,6 +333,31 @@ function matchesComparison(value: unknown, ops: Record<string, unknown>): boolea
                 if (shouldExist !== doesExist) return false;
                 break;
             }
+            case '$regex': {
+                // SQL's LIKE (sql-translator.ts) compiles to this — WHERE x
+                // LIKE '%foo%' becomes { x: { $regex: '^.*foo.*$' } } — but
+                // this case previously didn't exist here at all, so the
+                // condition was silently dropped and every LIKE matched
+                // every row regardless of the pattern.
+                if (value === undefined || value === null) return false;
+                if (typeof target !== 'string') return false;
+                // A soft length cap on the pattern bounds the worst case for
+                // catastrophic backtracking (this operator also reaches here
+                // directly from a raw Mongo-style filter via the HTTP/wire
+                // document APIs, not only from a SQL-translated LIKE, so an
+                // arbitrary pattern is possible) — not a full ReDoS defense,
+                // just cheap insurance against pathological input.
+                if (target.length > 500) return false;
+                const flags = typeof ops.$options === 'string' ? ops.$options : undefined;
+                let re: RegExp;
+                try {
+                    re = new RegExp(target, flags);
+                } catch {
+                    return false;
+                }
+                if (!re.test(String(value))) return false;
+                break;
+            }
         }
     }
     return true;

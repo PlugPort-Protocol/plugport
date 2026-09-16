@@ -13,6 +13,9 @@ services:
     environment:
       - API_DOMAIN=${API_DOMAIN}
       - DASHBOARD_DOMAIN=${DASHBOARD_DOMAIN}
+      - GRAFANA_DOMAIN=${GRAFANA_DOMAIN}
+      - GRAFANA_USER=${GRAFANA_USER}
+      - GRAFANA_BASIC_AUTH_HASH=${GRAFANA_BASIC_AUTH_HASH}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data

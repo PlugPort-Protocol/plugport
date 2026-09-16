@@ -19,3 +19,17 @@
         reverse_proxy plugport-dashboard:3000
     }
 }
+
+# Grafana — no longer published directly on the host (was :3001, reachable
+# by anyone with the VPS IP and Grafana's own, previously-default, login).
+# Now only reachable through here: Caddy's HTTPS + an extra basic_auth gate
+# in front of Grafana's own login (two independent checkpoints). Prometheus
+# itself is not exposed at all anymore — Grafana already reaches it over the
+# internal Docker network (http://prometheus:9090), which never needed the
+# public port to work.
+{$GRAFANA_DOMAIN} {
+    basic_auth {
+        {$GRAFANA_USER} {$GRAFANA_BASIC_AUTH_HASH}
+    }
+    reverse_proxy plugport-grafana:3000
+}

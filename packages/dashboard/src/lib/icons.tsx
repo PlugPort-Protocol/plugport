@@ -26,6 +26,7 @@ export const Icon = ({ name, size = 20 }: { name: string; size?: number }) => {
         'arrow-right': 'M5 12h14m0 0l-6-6m6 6l-6 6',
         layers: 'M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5',
         activity: 'M22 12h-4l-3 9L9 3l-3 9H2',
+        'alert-triangle': 'M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z',
     };
     return (
         <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="nav-icon">

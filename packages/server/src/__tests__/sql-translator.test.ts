@@ -167,6 +167,20 @@ describe('SQLTranslator', () => {
             expect(result.type).toBe('join');
             expect(result.joinType).toBe('LEFT');
         });
+
+        it('should extract the real ON-condition column names, not "unknown"', () => {
+            // Regression test: extractJoinCondition() used to read on.left.column /
+            // on.right.column directly, but under the PostgreSQL dialect
+            // node-sql-parser wraps a column_ref as { column: { expr: { value } } }
+            // (the same nested shape extractColumnName() already handles
+            // everywhere else in this file) — so on.left.column was always
+            // undefined, joinPlan.onCondition fell back to the hardcoded
+            // default, and every JOIN silently matched on "_id" instead of the
+            // columns actually named in the query.
+            const result = translator.translate('SELECT * FROM users u INNER JOIN orders o ON u.id = o.userId');
+            expect(result.type).toBe('join');
+            expect((result as any).joinPlan.onCondition).toEqual({ leftField: 'id', rightField: 'userId' });
+        });
     });
 
     describe('Aggregate translation', () => {
