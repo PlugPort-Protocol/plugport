@@ -1,12 +1,12 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { apiGet, apiPost, apiDelete } from '@/lib/api';
+import { apiGet, apiPost, apiDelete, getApiBase } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { useSignMessage, useSignTypedData } from 'wagmi';
-import { keccak256, toBytes } from 'viem';
+import { keccak256, toBytes, bytesToHex } from 'viem';
 import { Icon } from '@/lib/icons';
-import type { ApiKeyInfo, KeyAnalytics, OnChainKeyInfo } from '../types';
+import type { ApiKeyInfo, KeyAnalytics, OnChainKeyInfo, ProtocolInfo } from '../types';
 
 // ---- Wallet-Derived Key Helpers ----
 
@@ -23,6 +23,42 @@ function computeCommitment(apiKey: string): string {
 /** Builds the derivation message for a given address and index */
 function buildDerivationMessage(address: string, index: number): string {
     return `PlugPort API Key #${index} for ${address.toLowerCase()}`;
+}
+
+/**
+ * Computes the real RFC 5802 SCRAM-SHA-256 storedKey/serverKey that
+ * wire-server.ts's saslContinue actually verifies a connection against.
+ * This used to just reuse the on-chain commitment (keccak256(apiKey)) for
+ * both fields — a completely different value from real SCRAM math — so no
+ * wallet-derived key could ever successfully authenticate over a real
+ * MongoDB wire connection; auth would always fail with a proof mismatch.
+ * Mirrors wire-server.ts's derivation exactly: salt is the on-chain salt's
+ * first 16 bytes, 4096 PBKDF2 iterations, and the password is the apiKey's
+ * hex string encoded as UTF-8 bytes (matching what a real client sends as
+ * the SCRAM password on the wire, and what the legacy-key path already does
+ * server-side via Node's pbkdf2Sync(apiKeyString, ...)).
+ */
+async function computeScramVerifiers(apiKey: string, saltHex: string): Promise<{ storedKey: `0x${string}`; serverKey: `0x${string}` }> {
+    const ITERATIONS = 4096;
+    const enc = new TextEncoder();
+    const salt = toBytes(saltHex as `0x${string}`).slice(0, 16);
+
+    const passwordKey = await crypto.subtle.importKey('raw', enc.encode(apiKey), 'PBKDF2', false, ['deriveBits']);
+    const saltedPassword = await crypto.subtle.deriveBits(
+        { name: 'PBKDF2', salt, iterations: ITERATIONS, hash: 'SHA-256' },
+        passwordKey,
+        256,
+    );
+
+    const hmacKey = await crypto.subtle.importKey('raw', saltedPassword, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+    const clientKey = await crypto.subtle.sign('HMAC', hmacKey, enc.encode('Client Key'));
+    const storedKeyBits = await crypto.subtle.digest('SHA-256', clientKey);
+    const serverKeyBits = await crypto.subtle.sign('HMAC', hmacKey, enc.encode('Server Key'));
+
+    return {
+        storedKey: bytesToHex(new Uint8Array(storedKeyBits)),
+        serverKey: bytesToHex(new Uint8Array(serverKeyBits)),
+    };
 }
 
 // ---- EIP-712 domain + types for PlugPortAuth meta-transactions ----
@@ -96,6 +132,12 @@ export function ApiKeysTab() {
     const [recoveringKeys, setRecoveringKeys] = useState(false);
     const [activeTab, setActiveTab] = useState<'onchain' | 'legacy'>('onchain');
 
+    // Real connection strings for the usage-instructions snippet below —
+    // fetched from /api/v1/protocols (the same source the Protocols tab
+    // uses) instead of hardcoding localhost, which would only ever work
+    // against a local dev server, not this deployed instance.
+    const [mongoConnectionHost, setMongoConnectionHost] = useState<string | null>(null);
+
     // ---- Legacy Key Management ----
 
     const loadKeys = useCallback(async () => {
@@ -106,14 +148,27 @@ export function ApiKeysTab() {
         setLoading(false);
     }, []);
 
+    const loadProtocolInfo = useCallback(async () => {
+        try {
+            const res = await apiGet<{ protocols: ProtocolInfo[] }>('/api/v1/protocols');
+            const mongo = res.protocols?.find(p => p.name === 'mongodb');
+            if (mongo?.connectionString) {
+                // connectionString is like "mongodb://host:port" — strip the
+                // scheme so it can be re-composed with real credentials below.
+                setMongoConnectionHost(mongo.connectionString.replace(/^mongodb:\/\//, ''));
+            }
+        } catch { /* ignore — falls back to localhost below */ }
+    }, []);
+
     useEffect(() => {
         if (isAuthenticated) {
             loadKeys();
             loadOnChainKeys();
+            loadProtocolInfo();
         } else {
             setLoading(false);
         }
-    }, [isAuthenticated, loadKeys]);
+    }, [isAuthenticated, loadKeys, loadProtocolInfo]);
 
     const handleGenerate = async () => {
         if (!newLabel.trim()) {
@@ -209,8 +264,7 @@ export function ApiKeysTab() {
             const salt = keccak256(
                 toBytes(`${address.toLowerCase()}:${nextIndex}`)
             );
-            const storedKey = commitment; // Placeholder — real SCRAM derivation done server-side
-            const serverKey = commitment;
+            const { storedKey, serverKey } = await computeScramVerifiers(apiKey, salt);
 
             // 4. Sign the real EIP-712 typed-data meta-tx the contract verifies
             // (registerKeyMeta's ecrecover check). The nonce is the account's
@@ -317,8 +371,7 @@ export function ApiKeysTab() {
             const newSalt = keccak256(
                 toBytes(`${address.toLowerCase()}:${nextIndex}`)
             );
-            const newStoredKey = newCommitment; // Placeholder — real SCRAM derivation done server-side
-            const newServerKey = newCommitment;
+            const { storedKey: newStoredKey, serverKey: newServerKey } = await computeScramVerifiers(newApiKey, newSalt);
 
             // 3. Sign the real EIP-712 typed-data meta-tx (rotateKeyMeta's ecrecover check)
             const metaSignature = await signTypedDataAsync({
@@ -773,17 +826,17 @@ export function ApiKeysTab() {
                 </div>
                 <pre className="json-view" style={{ marginTop: 12 }}>
 {`# .env
-PLUGPORT_API_KEY=0x_your_key_here
-PLUGPORT_URL=http://localhost:8080
+PLUGPORT_API_KEY=${generatedKey || '0x_your_key_here'}
+PLUGPORT_URL=${getApiBase()}
 
 # Usage with curl:
-curl -X POST http://localhost:8080/api/v1/collections/users/find \\
-  -H "x-api-key: 0x_your_key_here" \\
+curl -X POST ${getApiBase()}/api/v1/collections/users/find \\
+  -H "x-api-key: ${generatedKey || '0x_your_key_here'}" \\
   -H "Content-Type: application/json" \\
   -d '{"filter": {}}'
 
-# Usage with MongoDB wire protocol (SCRAM-SHA-256):
-mongosh "mongodb://0xYourAddress:0x_your_key_here@localhost:27017"`}
+# Usage with MongoDB wire protocol (SCRAM-SHA-256), username = your wallet address:
+mongosh "mongodb://${address || '0xYourAddress'}:${generatedKey || '0x_your_key_here'}@${mongoConnectionHost || 'localhost:27017'}/?authSource=admin"`}
                 </pre>
             </div>
         </div>
