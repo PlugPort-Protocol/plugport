@@ -238,15 +238,31 @@ export function ApiKeysTab() {
         setOnChainLoading(false);
     }, [address]);
 
+    // The contract's nonce is a single shared counter across register/revoke/
+    // rotate, and it advances every time any of those lands on-chain — a
+    // value cached in React state (onChainNonce/onChainKeys) can go stale
+    // between page load and the moment a user actually signs (a slow page,
+    // an action taken in another tab, a retried submission), producing a
+    // confusing "PlugPortAuth: invalid nonce" revert even though nothing was
+    // wrong with the request itself. Fetch fresh, authoritative state right
+    // before building any signature instead of trusting cached state for it.
+    const fetchFreshAuthState = useCallback(async (addr: string) => {
+        const res = await apiGet<{ activeKeys: OnChainKeyInfo[]; nonce: number }>(`/api/v1/auth/keys/${addr}`);
+        return { activeKeys: res.activeKeys || [], nonce: res.nonce ?? 0 };
+    }, []);
+
     const handleGenerateOnChain = async () => {
         if (!address) return;
         setGeneratingOnChain(true);
         setMessage(null);
 
         try {
-            // Determine next available index
-            const nextIndex = onChainKeys.length > 0
-                ? Math.max(...onChainKeys.map(k => k.keyIndex)) + 1
+            // Fetch authoritative on-chain state right now — not whatever
+            // React state happens to hold — so a stale page can't sign a
+            // request the contract will reject.
+            const fresh = await fetchFreshAuthState(address);
+            const nextIndex = fresh.activeKeys.length > 0
+                ? Math.max(...fresh.activeKeys.map(k => k.keyIndex)) + 1
                 : 0;
 
             // 1. Sign the derivation message
@@ -280,7 +296,7 @@ export function ApiKeysTab() {
                     salt: salt as `0x${string}`,
                     storedKey: storedKey as `0x${string}`,
                     serverKey: serverKey as `0x${string}`,
-                    nonce: BigInt(onChainNonce),
+                    nonce: BigInt(fresh.nonce),
                 },
             });
 
@@ -291,7 +307,7 @@ export function ApiKeysTab() {
                 salt,
                 storedKey,
                 serverKey,
-                nonce: onChainNonce,
+                nonce: fresh.nonce,
                 signature: metaSignature,
             });
 
@@ -320,6 +336,7 @@ export function ApiKeysTab() {
         setMessage(null);
 
         try {
+            const fresh = await fetchFreshAuthState(address);
             const metaSignature = await signTypedDataAsync({
                 domain: authDomain,
                 types: REVOKE_TYPES,
@@ -327,14 +344,14 @@ export function ApiKeysTab() {
                 message: {
                     owner: address as `0x${string}`,
                     keyIndex,
-                    nonce: BigInt(onChainNonce),
+                    nonce: BigInt(fresh.nonce),
                 },
             });
 
             await apiPost('/api/v1/auth/revoke-key', {
                 keyOwner: address,
                 keyIndex,
-                nonce: onChainNonce,
+                nonce: fresh.nonce,
                 signature: metaSignature,
             });
 
@@ -356,9 +373,10 @@ export function ApiKeysTab() {
         setMessage(null);
 
         try {
-            // Determine next available index for the new key
-            const nextIndex = onChainKeys.length > 0
-                ? Math.max(...onChainKeys.map(k => k.keyIndex)) + 1
+            // Fetch authoritative on-chain state right now, not cached React state.
+            const fresh = await fetchFreshAuthState(address);
+            const nextIndex = fresh.activeKeys.length > 0
+                ? Math.max(...fresh.activeKeys.map(k => k.keyIndex)) + 1
                 : 0;
 
             // 1. Derive new API key
@@ -385,7 +403,7 @@ export function ApiKeysTab() {
                     newSalt: newSalt as `0x${string}`,
                     newStoredKey: newStoredKey as `0x${string}`,
                     newServerKey: newServerKey as `0x${string}`,
-                    nonce: BigInt(onChainNonce),
+                    nonce: BigInt(fresh.nonce),
                 },
             });
 
@@ -397,7 +415,7 @@ export function ApiKeysTab() {
                 newSalt,
                 newStoredKey,
                 newServerKey,
-                nonce: onChainNonce,
+                nonce: fresh.nonce,
                 signature: metaSignature,
             });
 
