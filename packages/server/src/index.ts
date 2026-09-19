@@ -14,6 +14,7 @@ import { RedisServer } from './protocols/redis-server.js';
 import { EncryptionLayer } from './storage/encryption-layer.js';
 import { RoutingAdapter } from './storage/routing-adapter.js';
 import { MessageBrokerAdapter } from './storage/message-broker-adapter.js';
+import { resolveKeys, logWalletRoles } from './keys.js';
 import type { PlugPortConfig, KVAdapter, ProtocolType } from '@plugport/shared';
 import { DEFAULT_CONFIG } from '@plugport/shared';
 
@@ -54,18 +55,20 @@ function getConfig(): PlugPortConfig {
 /**
  * Create the appropriate KV adapter based on environment configuration.
  *
- * If MONAD_RPC_URL + MONAD_PRIVATE_KEY + MONAD_CONTRACT_ADDRESS are set:
+ * If MONAD_RPC_URL + a store key (STORE_PRIVATE_KEY, or legacy MONAD_PRIVATE_KEY)
+ * + MONAD_CONTRACT_ADDRESS are set:
  *   - Returns MonadAdapter (production: writes cost MON gas, reads are free)
  *
  * Otherwise:
  *   - Returns InMemoryKVStore (development: free, data lost on restart)
  *
- * If MONAD_PRIVATE_KEY is present:
+ * If an encryption root is configured (ENCRYPTION_KEY, or legacy MONAD_PRIVATE_KEY):
  *   - Wraps the adapter in RoutingAdapter + EncryptionLayer (AES-256-GCM) for parallel public/private channels
  */
 export function createStorageAdapter(config: PlugPortConfig): KVAdapter & { getKeyCount(): number; getEstimatedSizeBytes(): number } {
     const rpcUrl = config.monadRpcUrl;
-    const privateKey = process.env.MONAD_PRIVATE_KEY;
+    const keys = resolveKeys(process.env);
+    const privateKey = keys.store;
     const contractAddress = config.monadContractAddress;
 
     let baseAdapter: KVAdapter & { getKeyCount(): number; getEstimatedSizeBytes(): number };
@@ -82,7 +85,7 @@ export function createStorageAdapter(config: PlugPortConfig): KVAdapter & { getK
         console.log(`  [Storage] Writes cost MON gas. Reads are free.`);
     } else {
         if (rpcUrl && !privateKey) {
-            console.log('  [Storage] WARNING: MONAD_RPC_URL is set but MONAD_PRIVATE_KEY is missing.');
+            console.log('  [Storage] WARNING: MONAD_RPC_URL is set but no store key (STORE_PRIVATE_KEY / MONAD_PRIVATE_KEY) is configured.');
             console.log('  [Storage] Generate a keypair with: npx tsx -e "import { generateKeypair } from \'./src/storage/monaddb-adapter.js\'; console.log(generateKeypair())"');
             console.log('  [Storage] Falling back to in-memory storage.');
         } else if (rpcUrl && privateKey && !contractAddress) {
@@ -97,25 +100,25 @@ export function createStorageAdapter(config: PlugPortConfig): KVAdapter & { getK
         baseAdapter = new InMemoryKVStore();
     }
 
-    // Wrap with encryption routing layer if private key is present
-    if (privateKey) {
+    // Wrap with encryption routing layer if an encryption root is configured
+    if (keys.encryption) {
         console.log('  [Storage] Cryptography: ENABLED (AES-256-GCM, client-side)');
         console.log('  [Storage] Parallel Channels Active (Public & Private).');
         let privateBaseAdapter = baseAdapter;
-        if (rpcUrl && privateKey && config.privateStoreContract) {
+        if (rpcUrl && keys.privateStore && config.privateStoreContract) {
             privateBaseAdapter = createMonadAdapter({
                 rpcUrl,
                 chainId: config.monadChainId || 10143,
-                privateKey,
+                privateKey: keys.privateStore,
                 contractAddress: config.privateStoreContract,
             });
             console.log(`  [Storage] Private Channel: Isolated contract (${config.privateStoreContract})`);
-        } else if (rpcUrl && privateKey) {
+        } else if (rpcUrl && keys.privateStore) {
             console.log('  [Storage] WARNING: PRIVATE_STORE_CONTRACT missing. Using public contract for encrypted data.');
         }
 
         const privateAdapter = new EncryptionLayer(privateBaseAdapter, {
-            privateKey,
+            privateKey: keys.encryption,
             enabled: true,
         });
         const routingAdapter = new RoutingAdapter(baseAdapter, privateAdapter);
@@ -171,16 +174,19 @@ async function main() {
 
     // Initialize Message Broker (optional)
     let messageBroker: MessageBrokerAdapter | null = null;
-    if (config.messageBrokerContract && process.env.MONAD_PRIVATE_KEY && config.monadRpcUrl) {
+    const walletKeys = resolveKeys(process.env);
+    if (config.messageBrokerContract && walletKeys.broker && config.monadRpcUrl) {
         messageBroker = new MessageBrokerAdapter({
             contractAddress: config.messageBrokerContract,
             wsUrl: config.monadWsUrl || config.monadRpcUrl.replace('https://', 'wss://').replace('http://', 'ws://'),
             rpcUrl: config.monadRpcUrl,
-            privateKey: process.env.MONAD_PRIVATE_KEY,
+            privateKey: walletKeys.broker,
             chainId: config.monadChainId || 10143,
         });
         console.log('  [PubSub] Message Broker: ENABLED (on-chain)');
     }
+
+    logWalletRoles(walletKeys, process.env.AUTH_GAS_STATION_PRIVATE_KEYS || process.env.AUTH_GAS_STATION_PRIVATE_KEY);
 
     // Start HTTP server
     const httpServer = await createHttpServer({

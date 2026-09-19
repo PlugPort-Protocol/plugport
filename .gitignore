@@ -16,6 +16,9 @@ out/
 .env
 .env.local
 .env.testnet
+# Wallet-split staging + cold admin keys — never commit, never sync to a server
+.env.admin.*
+.env.split.*
 .env.mainnet
 .env.development.local
 .env.test.local

@@ -9,7 +9,8 @@
 //   4. POST /auth/logout  → destroys session cookie
 //
 // Session secret derivation:
-//   If MONAD_PRIVATE_KEY is set: HMAC-SHA256(MONAD_PRIVATE_KEY, "plugport-session-v1")
+//   If SESSION_SECRET is set: HMAC-SHA256(SESSION_SECRET, "plugport-session-v1")
+//   Else, for existing single-key deployments, the same HMAC over MONAD_PRIVATE_KEY
 //   Otherwise: random 32 bytes (dev mode — sessions lost on restart, acceptable)
 
 import { createHmac, randomBytes } from 'crypto';
@@ -31,24 +32,27 @@ export interface SessionData {
 // ---- Session Secret Derivation ----
 
 /**
- * Derive a stable session encryption password from the server's private key.
- * Uses HMAC-SHA256 with a domain-separation tag so the derived key is
- * independent of the private key's use for transaction signing.
+ * Derive a stable session encryption password.
  *
- * Falls back to a random secret in dev mode (no MONAD_PRIVATE_KEY).
+ * Prefers SESSION_SECRET — an independent secret with no on-chain authority —
+ * so the cookie-signing key isn't tied to a wallet key. MONAD_PRIVATE_KEY is
+ * still honoured as a fallback so existing deployments keep their sessions.
+ * Uses HMAC-SHA256 with a domain-separation tag either way.
+ *
+ * Falls back to a random secret in dev mode (nothing configured).
  */
-function deriveSessionSecret(): string {
-    const privateKey = process.env.MONAD_PRIVATE_KEY;
+export function deriveSessionSecret(env: Record<string, string | undefined> = process.env): string {
+    const seed = env.SESSION_SECRET?.trim() || env.MONAD_PRIVATE_KEY?.trim();
 
-    if (privateKey) {
-        const hmac = createHmac('sha256', privateKey);
+    if (seed) {
+        const hmac = createHmac('sha256', seed);
         hmac.update('plugport-session-v1');
         return hmac.digest('hex');
     }
 
     // Dev mode: generate random secret (sessions won't survive restart)
     console.warn(
-        '  [Auth] WARNING: No MONAD_PRIVATE_KEY set. Using random session secret.',
+        '  [Auth] WARNING: No SESSION_SECRET (or legacy MONAD_PRIVATE_KEY) set. Using random session secret.',
     );
     console.warn(
         '  [Auth] Sessions will not persist across server restarts.',

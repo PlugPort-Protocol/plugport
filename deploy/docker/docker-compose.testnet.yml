@@ -13,7 +13,21 @@ services:
       # ---- Monad Testnet ----
       - MONAD_RPC_URL=${MONAD_RPC_URL}
       - MONAD_CHAIN_ID=10143
-      - MONAD_PRIVATE_KEY=${MONAD_PRIVATE_KEY}
+      # Legacy single key: still honoured as the fallback for every role below,
+      # so an existing deployment keeps working unchanged. Prefer the per-role
+      # keys — one key holding every role means one compromise takes all of it.
+      - MONAD_PRIVATE_KEY=${MONAD_PRIVATE_KEY:-}
+      # ---- Per-role wallets (each falls back to MONAD_PRIVATE_KEY if unset) ----
+      - STORE_PRIVATE_KEY=${STORE_PRIVATE_KEY:-}
+      - PRIVATE_STORE_PRIVATE_KEY=${PRIVATE_STORE_PRIVATE_KEY:-}
+      - MESSAGEBROKER_PRIVATE_KEY=${MESSAGEBROKER_PRIVATE_KEY:-}
+      # ---- Secrets that are NOT wallets (no on-chain authority) ----
+      # ENCRYPTION_KEY: root of the AES key for private collections. Changing it
+      # makes existing encrypted data unreadable — set it to whatever key the
+      # data was originally encrypted under (the legacy MONAD_PRIVATE_KEY).
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY:-}
+      # SESSION_SECRET: seeds the session-cookie secret. Changing it logs users out.
+      - SESSION_SECRET=${SESSION_SECRET:-}
       - MONAD_CONTRACT_ADDRESS=${MONAD_CONTRACT_ADDRESS}
       # ---- CORS ----
       - DASHBOARD_URL=${DASHBOARD_URL}
