@@ -71,12 +71,28 @@ function Dock({ activeTab, setActiveTab, health }: {
 
 // ---- Wallet dock item + popover panel ----
 function WalletDockItem({ health }: { health: Record<string, unknown> | null }) {
-    const { address, isAuthenticated, signOut, serverUrl, setServerUrl: setAuthServerUrl } = useAuth();
+    const { address, isAuthenticated, signOut, serverUrl, setServerUrl: setAuthServerUrl, isWrongNetwork, switchToTargetNetwork } = useAuth();
     const { isConnected } = useAccount();
     const { data: balance } = useBalance({ address: address as `0x${string}` | undefined });
     const [open, setOpen] = useState(false);
     const [showSettings, setShowSettings] = useState(false);
     const [customUrl, setCustomUrl] = useState(serverUrl || '');
+    const [switching, setSwitching] = useState(false);
+    const [switchError, setSwitchError] = useState<string | null>(null);
+
+    const handleSwitchNetwork = async () => {
+        setSwitching(true);
+        setSwitchError(null);
+        try {
+            await switchToTargetNetwork();
+        } catch (err) {
+            setSwitchError(err instanceof Error && /reject|denied/i.test(err.message)
+                ? 'Network switch was declined in your wallet.'
+                : 'Could not switch network — try again, or switch manually in your wallet.');
+        } finally {
+            setSwitching(false);
+        }
+    };
 
     useEffect(() => {
         setApiServerUrl(serverUrl);
@@ -88,7 +104,9 @@ function WalletDockItem({ health }: { health: Record<string, unknown> | null }) 
         setShowSettings(false);
     };
 
-    const walletLabel = isConnected && isAuthenticated && address
+    const walletLabel = isConnected && isWrongNetwork
+        ? 'Wrong network'
+        : isConnected && isAuthenticated && address
         ? `${address.slice(0, 6)}…${address.slice(-4)}${balance ? ` · ${parseFloat(balance.formatted).toFixed(4)} ${balance.symbol}` : ''}`
         : 'Wallet & Settings';
 
@@ -107,6 +125,23 @@ function WalletDockItem({ health }: { health: Record<string, unknown> | null }) 
                         <span className="status-dot" style={{ background: health ? 'var(--accent-success)' : 'var(--accent-error)' }} />
                         {health ? 'Connected' : 'Disconnected'}
                     </div>
+
+                    {isConnected && isWrongNetwork && (
+                        <div className="alert alert-error" style={{ marginBottom: 12, fontSize: 12 }}>
+                            <div style={{ marginBottom: 8 }}>
+                                Your wallet is on a different network. PlugPort runs on Monad Testnet.
+                            </div>
+                            <button
+                                className="btn btn-primary btn-sm"
+                                style={{ width: '100%', justifyContent: 'center' }}
+                                onClick={handleSwitchNetwork}
+                                disabled={switching}
+                            >
+                                {switching ? 'Check your wallet…' : 'Switch to Monad Testnet'}
+                            </button>
+                            {switchError && <div style={{ marginTop: 8 }}>{switchError}</div>}
+                        </div>
+                    )}
 
                     {/* Wallet */}
                     {isConnected ? (

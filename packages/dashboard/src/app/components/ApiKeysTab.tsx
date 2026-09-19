@@ -110,7 +110,7 @@ const ROTATE_TYPES = {
 // ---- Component ----
 
 export function ApiKeysTab() {
-    const { address, isAuthenticated, authMethod } = useAuth();
+    const { address, isAuthenticated, authMethod, ensureNetwork } = useAuth();
     const { signMessageAsync } = useSignMessage();
     const { signTypedDataAsync } = useSignTypedData();
 
@@ -257,6 +257,10 @@ export function ApiKeysTab() {
         setMessage(null);
 
         try {
+            // The EIP-712 domain is bound to this deployment's chain; wallets
+            // refuse to sign it while connected to a different one.
+            await ensureNetwork();
+
             // Fetch authoritative on-chain state right now — not whatever
             // React state happens to hold — so a stale page can't sign a
             // request the contract will reject.
@@ -336,6 +340,10 @@ export function ApiKeysTab() {
         setMessage(null);
 
         try {
+            // The EIP-712 domain is bound to this deployment's chain; wallets
+            // refuse to sign it while connected to a different one.
+            await ensureNetwork();
+
             const fresh = await fetchFreshAuthState(address);
             const metaSignature = await signTypedDataAsync({
                 domain: authDomain,
@@ -373,6 +381,10 @@ export function ApiKeysTab() {
         setMessage(null);
 
         try {
+            // The EIP-712 domain is bound to this deployment's chain; wallets
+            // refuse to sign it while connected to a different one.
+            await ensureNetwork();
+
             // Fetch authoritative on-chain state right now, not cached React state.
             const fresh = await fetchFreshAuthState(address);
             const nextIndex = fresh.activeKeys.length > 0

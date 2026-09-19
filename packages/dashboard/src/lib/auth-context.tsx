@@ -9,7 +9,8 @@ import {
     useRef,
     type ReactNode,
 } from 'react';
-import { useAccount, useDisconnect, useSignMessage } from 'wagmi';
+import { useAccount, useDisconnect, useSignMessage, useSwitchChain } from 'wagmi';
+import { TARGET_CHAIN_ID } from './wallet-provider';
 import { SiweMessage } from 'siwe';
 import { getApiBase, setServerUrl as setSharedServerUrl } from './api';
 
@@ -30,6 +31,12 @@ interface AuthState {
     signIn: () => Promise<void>;
     /** Sign out / disconnect */
     signOut: () => void;
+    /** Connected wallet is on a different chain than this deployment's */
+    isWrongNetwork: boolean;
+    /** Move the wallet to the deployment's chain (adds it first if the wallet doesn't know it) */
+    switchToTargetNetwork: () => Promise<void>;
+    /** Resolves once the wallet is on the right chain; call before signing on-chain actions */
+    ensureNetwork: () => Promise<void>;
     /** Set custom server URL */
     setServerUrl: (url: string | null) => void;
 }
@@ -41,15 +48,19 @@ const AuthContext = createContext<AuthState>({
     serverUrl: null,
     signIn: async () => {},
     signOut: () => {},
+    isWrongNetwork: false,
+    switchToTargetNetwork: async () => {},
+    ensureNetwork: async () => {},
     setServerUrl: () => {},
 });
 
 // ---- Provider ----
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-    const { address: walletAddress, isConnected } = useAccount();
+    const { address: walletAddress, isConnected, chainId: walletChainId } = useAccount();
     const { disconnect } = useDisconnect();
     const { signMessageAsync } = useSignMessage();
+    const { switchChainAsync } = useSwitchChain();
 
     const [authenticatedAddress, setAuthenticatedAddress] = useState<string | null>(null);
     const [serverUrl, setServerUrlState] = useState<string | null>(null);
@@ -167,6 +178,34 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         disconnect();
     }, [serverUrl, disconnect]);
 
+    const isWrongNetwork = isConnected && walletChainId !== undefined && walletChainId !== TARGET_CHAIN_ID;
+
+    // switchChain asks the wallet to switch and, if it has never heard of the
+    // chain, falls back to wallet_addEthereumChain using the config above — so
+    // one approval covers both "add Monad Testnet" and "switch to it".
+    const switchToTargetNetwork = useCallback(async () => {
+        if (walletChainId === TARGET_CHAIN_ID) return;
+        await switchChainAsync({ chainId: TARGET_CHAIN_ID });
+    }, [walletChainId, switchChainAsync]);
+
+    const ensureNetwork = switchToTargetNetwork;
+
+    // Ask once per (wallet, chain) as soon as we see a wrong network. Tracking
+    // the attempt means declining the prompt doesn't re-trigger it in a loop;
+    // the wallet panel keeps a one-click retry available instead.
+    const autoSwitchAttemptRef = useRef<string | null>(null);
+    useEffect(() => {
+        if (!isConnected || !walletAddress) {
+            autoSwitchAttemptRef.current = null;
+            return;
+        }
+        if (walletChainId === undefined || walletChainId === TARGET_CHAIN_ID) return;
+        const attempt = `${walletAddress}:${walletChainId}`;
+        if (autoSwitchAttemptRef.current === attempt) return;
+        autoSwitchAttemptRef.current = attempt;
+        switchToTargetNetwork().catch(() => { /* declined — banner offers a retry */ });
+    }, [isConnected, walletAddress, walletChainId, switchToTargetNetwork]);
+
     // Determine auth method
     const authMethod: AuthMethod = authenticatedAddress && isConnected
         ? 'wallet'
@@ -196,6 +235,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                 serverUrl,
                 signIn,
                 signOut,
+                isWrongNetwork,
+                switchToTargetNetwork,
+                ensureNetwork,
                 setServerUrl,
             }}
         >

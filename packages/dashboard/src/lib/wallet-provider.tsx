@@ -15,6 +15,13 @@ import { useTheme } from 'next-themes';
 
 // ---- Monad Chain Definitions ----
 
+/**
+ * The chain this deployment's contracts live on (baked in at build time, the
+ * same variable the EIP-712 domain uses). The wallet is switched to this
+ * automatically on connect, and again before signing on-chain key actions.
+ */
+export const TARGET_CHAIN_ID = Number(process.env.NEXT_PUBLIC_CHAIN_ID || 10143);
+
 export const monadTestnet = defineChain({
     id: 10143,
     name: 'Monad Testnet',
@@ -23,7 +30,7 @@ export const monadTestnet = defineChain({
         default: { http: ['https://testnet-rpc.monad.xyz'] },
     },
     blockExplorers: {
-        default: { name: 'Monad Explorer', url: 'https://testnet.monadexplorer.com' },
+        default: { name: 'MonadScan', url: 'https://testnet.monadscan.com' },
     },
     testnet: true,
 });
