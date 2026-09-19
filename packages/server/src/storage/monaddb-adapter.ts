@@ -15,6 +15,7 @@
 //   - MONAD_CONTRACT_ADDRESS — Deployed PlugPortStore contract address
 
 import { ethers } from 'ethers';
+import { sendContractTx } from './tx-sequencer.js';
 import type { KVAdapter, KVEntry, ScanOptions } from '@plugport/shared';
 import { PLUGPORT_STORE_ABI } from './contract-abi.js';
 
@@ -417,14 +418,14 @@ export class MonadAdapter implements KVAdapter {
         const registryEntry = await this.reserveRegistryEntry(key);
 
         if (registryEntry) {
-            const tx = await this.contract.batchWrite(
+            const tx = await sendContractTx(this.wallet, () => this.contract.batchWrite.populateTransaction(
                 [hash, hashKey(registryEntry.key)],
                 [hexValue, ethers.hexlify(registryEntry.value)],
                 [],
-            );
+            ));
             await tx.wait();
         } else {
-            const tx = await this.contract.put(hash, hexValue);
+            const tx = await sendContractTx(this.wallet, () => this.contract.put.populateTransaction(hash, hexValue));
             await tx.wait();
         }
 
@@ -440,7 +441,7 @@ export class MonadAdapter implements KVAdapter {
             const exists = await this.contract.exists(hash);
             if (!exists) return false;
 
-            const tx = await this.contract.del(hash);
+            const tx = await sendContractTx(this.wallet, () => this.contract.del.populateTransaction(hash));
             await tx.wait();
 
             // Update local caches
@@ -469,7 +470,7 @@ export class MonadAdapter implements KVAdapter {
 
             for (let i = 0; i < hashes.length; i += BATCH) {
                 const batch = hashes.slice(i, i + BATCH);
-                const tx = await this.contract.batchWrite([], [], batch);
+                const tx = await sendContractTx(this.wallet, () => this.contract.batchWrite.populateTransaction([], [], batch));
                 await tx.wait();
             }
         }
@@ -531,7 +532,7 @@ export class MonadAdapter implements KVAdapter {
             const batchDeleteKeys = deleteKeys.slice(i, i + BATCH);
 
             try {
-                const tx = await this.contract.batchWrite(batchPutKeys, batchPutValues, batchDeleteKeys);
+                const tx = await sendContractTx(this.wallet, () => this.contract.batchWrite.populateTransaction(batchPutKeys, batchPutValues, batchDeleteKeys));
                 await tx.wait();
             } catch (err) {
                 // Revert local caches for the real (non-bookkeeping) puts in this chunk

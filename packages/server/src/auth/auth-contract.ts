@@ -12,6 +12,7 @@
 //   - AUTH_GAS_STATION_PRIVATE_KEYS — Comma-separated list of 64-char hex private keys for gas station wallets
 
 import { ethers } from 'ethers';
+import { sendContractTx } from '../storage/tx-sequencer.js';
 
 // ---- ABI (minimal interface for server-side interactions) ----
 
@@ -35,6 +36,13 @@ const PLUGPORT_AUTH_ABI = [
     'event KeyRegistered(address indexed keyOwner, uint8 keyIndex, uint256 timestamp)',
     'event KeyRevoked(address indexed keyOwner, uint8 keyIndex, uint256 timestamp)',
 ];
+
+/** Waits for a transaction to be mined; ethers types wait() as nullable. */
+async function confirmed(tx: ethers.TransactionResponse): Promise<ethers.TransactionReceipt> {
+    const receipt = await tx.wait();
+    if (!receipt) throw new Error(`Transaction ${tx.hash} was not confirmed`);
+    return receipt;
+}
 
 // ---- Types ----
 
@@ -188,7 +196,7 @@ export class AuthContractAdapter {
 
         console.log(`[AuthContract] registerKeyMeta for ${keyOwner} (nonce: ${nonce})`);
 
-        const tx = await contract.registerKeyMeta(
+        const tx = await sendContractTx(contract.runner as ethers.Signer, () => contract.registerKeyMeta.populateTransaction(
             keyOwner,
             commitment,
             salt,
@@ -196,9 +204,9 @@ export class AuthContractAdapter {
             serverKey,
             nonce,
             signature,
-        );
+        ));
 
-        const receipt = await tx.wait();
+        const receipt = await confirmed(tx);
         console.log(`[AuthContract] Key registered — tx: ${receipt.hash}`);
 
         // Parse the KeyRegistered event to get the assigned key index
@@ -233,13 +241,13 @@ export class AuthContractAdapter {
 
         console.log(`[AuthContract] revokeKeyMeta for ${keyOwner} (index: ${keyIndex}, nonce: ${nonce})`);
 
-        const tx = await contract.revokeKeyMeta(
+        const tx = await sendContractTx(contract.runner as ethers.Signer, () => contract.revokeKeyMeta.populateTransaction(
             keyOwner,
             keyIndex,
             nonce,
             signature,
-        );
-        const receipt = await tx.wait();
+        ));
+        const receipt = await confirmed(tx);
         console.log(`[AuthContract] Key revoked — tx: ${receipt.hash}`);
 
         return { txHash: receipt.hash };
@@ -263,7 +271,7 @@ export class AuthContractAdapter {
 
         console.log(`[AuthContract] rotateKeyMeta for ${keyOwner} (oldIndex: ${oldKeyIndex}, nonce: ${nonce})`);
 
-        const tx = await contract.rotateKeyMeta(
+        const tx = await sendContractTx(contract.runner as ethers.Signer, () => contract.rotateKeyMeta.populateTransaction(
             keyOwner,
             oldKeyIndex,
             newCommitment,
@@ -272,8 +280,8 @@ export class AuthContractAdapter {
             newServerKey,
             nonce,
             signature,
-        );
-        const receipt = await tx.wait();
+        ));
+        const receipt = await confirmed(tx);
         console.log(`[AuthContract] Key rotated — tx: ${receipt.hash}`);
 
         // Parse KeyRotated event to get the new key index
