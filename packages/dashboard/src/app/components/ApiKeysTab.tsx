@@ -128,6 +128,10 @@ export function ApiKeysTab() {
     const [onChainKeys, setOnChainKeys] = useState<OnChainKeyInfo[]>([]);
     const [onChainNonce, setOnChainNonce] = useState(0);
     const [onChainLoading, setOnChainLoading] = useState(false);
+    // "No keys" may only be shown once a load has actually SUCCEEDED. Before
+    // that, an empty list means "unknown", not "you have none".
+    const [onChainLoaded, setOnChainLoaded] = useState(false);
+    const [onChainError, setOnChainError] = useState<string | null>(null);
     const [generatingOnChain, setGeneratingOnChain] = useState(false);
     const [recoveringKeys, setRecoveringKeys] = useState(false);
     const [activeTab, setActiveTab] = useState<'onchain' | 'legacy'>('onchain');
@@ -163,7 +167,6 @@ export function ApiKeysTab() {
     useEffect(() => {
         if (isAuthenticated) {
             loadKeys();
-            loadOnChainKeys();
             loadProtocolInfo();
         } else {
             setLoading(false);
@@ -234,9 +237,31 @@ export function ApiKeysTab() {
             );
             setOnChainKeys(res.activeKeys || []);
             setOnChainNonce(res.nonce ?? 0);
-        } catch { /* ignore */ }
-        setOnChainLoading(false);
+            setOnChainLoaded(true);
+            setOnChainError(null);
+        } catch (err) {
+            // A failed load is NOT "no keys". Keep whatever we last knew and
+            // say what happened, so the list can't silently vanish.
+            const msg = err instanceof Error ? err.message : '';
+            setOnChainError(
+                /JSON|fetch|network|timed out/i.test(msg) || !msg
+                    ? 'Couldn\u2019t reach the server to load your keys \u2014 nothing has been lost, try again.'
+                    : msg,
+            );
+        } finally {
+            setOnChainLoading(false);
+        }
     }, [address]);
+
+    // Loaded in its own effect (below the loader it depends on) so switching wallets reloads the list
+    // (loadOnChainKeys changes with the address).
+    useEffect(() => {
+        if (isAuthenticated) {
+            setOnChainLoaded(false);
+            setOnChainError(null);
+            loadOnChainKeys();
+        }
+    }, [isAuthenticated, loadOnChainKeys]);
 
     // The contract's nonce is a single shared counter across register/revoke/
     // rotate, and it advances every time any of those lands on-chain — a
@@ -598,9 +623,20 @@ export function ApiKeysTab() {
 
                     {/* Active on-chain keys list */}
                     <div style={{ display: 'grid', gap: 16 }}>
-                        {onChainLoading ? (
+                        {onChainError && (
+                            <div className="alert alert-error" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+                                <div>
+                                    {onChainError}
+                                    {onChainLoaded && onChainKeys.length > 0 && ' Showing the last keys we loaded.'}
+                                </div>
+                                <button className="btn btn-sm btn-secondary" onClick={loadOnChainKeys} disabled={onChainLoading}>
+                                    {onChainLoading ? 'Retrying\u2026' : 'Retry'}
+                                </button>
+                            </div>
+                        )}
+                        {!onChainLoaded && !onChainError ? (
                             <div className="loading-center"><div className="spinner" /></div>
-                        ) : onChainKeys.length === 0 ? (
+                        ) : !onChainLoaded ? null : onChainKeys.length === 0 ? (
                             <div className="card">
                                 <div className="empty-state">
                                     <Icon name="lock" size={40} />

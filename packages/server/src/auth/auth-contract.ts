@@ -13,6 +13,8 @@
 
 import { ethers } from 'ethers';
 import { sendContractTx } from '../storage/tx-sequencer.js';
+import { withRetry } from '../storage/monaddb-adapter.js';
+import { createRpcProvider } from '../storage/rpc-provider.js';
 
 // ---- ABI (minimal interface for server-side interactions) ----
 
@@ -63,9 +65,43 @@ export interface ScramVerifier {
     active: boolean;
 }
 
+/**
+ * Multicall3 lets many view calls run in ONE eth_call. It matters here because
+ * this RPC tolerates roughly 3-5 sequential calls per second and rejects
+ * parallel/batched ones (see storage/rpc-provider.ts), so a wallet with N keys
+ * — 1 + 1 + 2N calls one by one — took several seconds and timed the dashboard
+ * out. Same canonical address on every chain that has it.
+ */
+const MULTICALL3_ADDRESS = '0xcA11bde05977b3631167028862bE2a173976CA11';
+const MULTICALL3_ABI = [
+    'function aggregate3(tuple(address target, bool allowFailure, bytes callData)[] calls) payable returns (tuple(bool success, bytes returnData)[] returnData)',
+];
+
+/**
+ * A read from the chain failed even after retries. Distinct from "the chain
+ * says there is nothing": callers must not treat this as an empty result.
+ */
+export class AuthReadError extends Error {
+    constructor(what: string, options?: { cause?: unknown }) {
+        super(`Could not read ${what} from the chain right now (temporary RPC issue) — nothing has been lost, try again`, options);
+        this.name = 'AuthReadError';
+    }
+}
+
 // ---- Adapter ----
 
 export class AuthContractAdapter {
+    /**
+     * The public Monad RPC intermittently fails view calls with "missing revert
+     * data" even though the contract is fine. Reads are free and idempotent, so
+     * retry them before giving up.
+     */
+    static READ_RETRY = { attempts: 4, baseDelayMs: 300 };
+
+    private readWithRetry<T>(fn: () => Promise<T>): Promise<T> {
+        return withRetry(fn, AuthContractAdapter.READ_RETRY.attempts, AuthContractAdapter.READ_RETRY.baseDelayMs);
+    }
+
     private provider: ethers.JsonRpcProvider;
     private gasStationWallets: ethers.Wallet[] = [];
     private writeContracts: ethers.Contract[] = [];
@@ -83,7 +119,9 @@ export class AuthContractAdapter {
         const keysEnv = process.env.AUTH_GAS_STATION_PRIVATE_KEYS || process.env.AUTH_GAS_STATION_PRIVATE_KEY || '';
         const keys = keysEnv.split(',').map(k => k.trim()).filter(k => k.length > 0);
 
-        this.provider = new ethers.JsonRpcProvider(rpcUrl);
+        // No request batching: this RPC rejects most batched/parallel calls, which
+        // is what made wallets' key lists intermittently come back empty.
+        this.provider = createRpcProvider(rpcUrl, Number(process.env.MONAD_CHAIN_ID || 10143));
 
         if (this.contractAddress) {
             this.readContract = new ethers.Contract(this.contractAddress, PLUGPORT_AUTH_ABI, this.provider);
@@ -306,39 +344,111 @@ export class AuthContractAdapter {
     // ---- Read Operations (free RPC reads) ----
 
     /**
-     * Get all active key indices for an address.
+     * Run several view calls on the auth contract in a single eth_call.
+     * Results come back decoded, in call order. Throws if any inner call reverts.
      */
-    async getActiveKeys(address: string): Promise<OnChainKeyEntry[]> {
-        if (!this.isReadable) return [];
+    protected async multicall(calls: { fn: string; args: unknown[] }[]): Promise<ethers.Result[]> {
+        const iface = this.readContract!.interface;
+        const mc = new ethers.Contract(MULTICALL3_ADDRESS, MULTICALL3_ABI, this.provider);
+        const encoded = calls.map((c) => ({
+            target: this.contractAddress,
+            allowFailure: false,
+            callData: iface.encodeFunctionData(c.fn, c.args),
+        }));
+        const results: { returnData: string }[] = await this.readWithRetry(() => mc.aggregate3.staticCall(encoded));
+        return results.map((r, i) => iface.decodeFunctionResult(calls[i].fn, r.returnData));
+    }
+
+    /** A wallet's whole key state in two RPC calls, regardless of how many keys it has. */
+    private async getKeyStateViaMulticall(address: string): Promise<{ activeKeys: OnChainKeyEntry[]; nonce: number }> {
+        const [[indices], [nonce]] = await this.multicall([
+            { fn: 'getActiveKeys', args: [address] },
+            { fn: 'nonces', args: [address] },
+        ]);
+        const activeIndices: number[] = (indices as bigint[]).map((n) => Number(n));
+        if (activeIndices.length === 0) return { activeKeys: [], nonce: Number(nonce) };
+
+        const detail = await this.multicall(
+            activeIndices.flatMap((idx) => [
+                { fn: 'getCommitment', args: [address, idx] },
+                { fn: 'getVerifier', args: [address, idx] },
+            ]),
+        );
+        const activeKeys = activeIndices.map((idx, n): OnChainKeyEntry => {
+            const commitment = detail[n * 2][0] as string;
+            const v = detail[n * 2 + 1];
+            return {
+                keyIndex: idx,
+                commitment,
+                salt: v.salt,
+                storedKey: v.storedKey,
+                serverKey: v.serverKey,
+                active: v.active,
+                createdAt: 0,
+            };
+        });
+        return { activeKeys, nonce: Number(nonce) };
+    }
+
+    /** One RPC call per value. Slow for many keys, but needs nothing beyond the auth contract itself. */
+    private async getActiveKeysPerCall(address: string): Promise<OnChainKeyEntry[]> {
+        const activeIndices: number[] = (await this.readWithRetry(() => this.readContract!.getActiveKeys(address)))
+            .map((n: bigint) => Number(n));
+
+        return Promise.all(
+            activeIndices.map(async (idx) => {
+                const [commitment, verifier] = await Promise.all([
+                    this.readWithRetry(() => this.readContract!.getCommitment(address, idx)),
+                    this.readWithRetry(() => this.readContract!.getVerifier(address, idx)),
+                ]);
+                return {
+                    keyIndex: idx,
+                    commitment,
+                    salt: verifier.salt,
+                    storedKey: verifier.storedKey,
+                    serverKey: verifier.serverKey,
+                    active: verifier.active,
+                    createdAt: 0,
+                } satisfies OnChainKeyEntry;
+            }),
+        );
+    }
+
+    /**
+     * A wallet's active keys and its meta-tx nonce, read together.
+     *
+     * Uses Multicall3 (two RPC calls total) and falls back to individual calls
+     * if it's unavailable. Returns an empty list only when the chain was read
+     * successfully and the address has no keys (or the adapter isn't configured);
+     * if the read fails after retries this THROWS AuthReadError. It used to
+     * return [] / 0 on any error, which the dashboard rendered as "you have no
+     * keys" and which made it sign new keys against the wrong index and nonce.
+     */
+    async getKeyState(address: string): Promise<{ activeKeys: OnChainKeyEntry[]; nonce: number }> {
+        if (!this.isReadable) return { activeKeys: [], nonce: 0 };
 
         try {
-            const activeIndices: number[] = (await this.readContract!.getActiveKeys(address))
-                .map((n: bigint) => Number(n));
-
-            // I4: Batch RPC calls with Promise.all instead of sequential fetches
-            const entries = await Promise.all(
-                activeIndices.map(async (idx) => {
-                    const [commitment, verifier] = await Promise.all([
-                        this.readContract!.getCommitment(address, idx),
-                        this.readContract!.getVerifier(address, idx),
-                    ]);
-                    return {
-                        keyIndex: idx,
-                        commitment,
-                        salt: verifier.salt,
-                        storedKey: verifier.storedKey,
-                        serverKey: verifier.serverKey,
-                        active: verifier.active,
-                        createdAt: 0,
-                    } satisfies OnChainKeyEntry;
-                }),
-            );
-
-            return entries;
-        } catch (err) {
-            console.error(`[AuthContract] getActiveKeys failed for ${address}:`, err);
-            return [];
+            return await this.getKeyStateViaMulticall(address);
+        } catch (mcErr) {
+            console.warn(`[AuthContract] multicall read failed for ${address}, falling back to per-call reads:`,
+                mcErr instanceof Error ? mcErr.message.split('\n')[0].slice(0, 120) : mcErr);
         }
+
+        try {
+            const [activeKeys, nonce] = await Promise.all([
+                this.getActiveKeysPerCall(address),
+                this.readWithRetry(() => this.readContract!.nonces(address)),
+            ]);
+            return { activeKeys, nonce: Number(nonce) };
+        } catch (err) {
+            console.error(`[AuthContract] getKeyState failed for ${address} after retries:`, err);
+            throw new AuthReadError('your keys', { cause: err });
+        }
+    }
+
+    /** Get all active keys for an address. Throws AuthReadError if the chain can't be read. */
+    async getActiveKeys(address: string): Promise<OnChainKeyEntry[]> {
+        return (await this.getKeyState(address)).activeKeys;
     }
 
     /**
@@ -348,7 +458,7 @@ export class AuthContractAdapter {
         if (!this.isReadable) return null;
 
         try {
-            const result = await this.readContract!.getVerifier(address, keyIndex);
+            const result = await this.readWithRetry(() => this.readContract!.getVerifier(address, keyIndex));
             return {
                 salt: result.salt,
                 storedKey: result.storedKey,
@@ -369,7 +479,7 @@ export class AuthContractAdapter {
         if (!this.isReadable) return false;
 
         try {
-            return await this.readContract!.validateKey(address, keyHash);
+            return await this.readWithRetry(() => this.readContract!.validateKey(address, keyHash));
         } catch (err) {
             console.error(`[AuthContract] validateKey failed:`, err);
             return false;
@@ -383,7 +493,7 @@ export class AuthContractAdapter {
         if (!this.isReadable) return false;
 
         try {
-            return await this.readContract!.isKeyActive(address, keyIndex);
+            return await this.readWithRetry(() => this.readContract!.isKeyActive(address, keyIndex));
         } catch (err) {
             return false;
         }
@@ -391,14 +501,19 @@ export class AuthContractAdapter {
 
     /**
      * Get the current nonce for meta-transaction replay protection.
+     *
+     * Throws if the read fails. It used to return 0, and a caller that then
+     * signed with nonce 0 produced a "PlugPortAuth: invalid nonce" revert for
+     * any wallet that had already used its nonces.
      */
     async getNonce(address: string): Promise<number> {
         if (!this.isReadable) return 0;
 
         try {
-            return Number(await this.readContract!.nonces(address));
+            return Number(await this.readWithRetry(() => this.readContract!.nonces(address)));
         } catch (err) {
-            return 0;
+            console.error(`[AuthContract] getNonce failed for ${address} after retries:`, err);
+            throw new AuthReadError('your signing nonce', { cause: err });
         }
     }
 

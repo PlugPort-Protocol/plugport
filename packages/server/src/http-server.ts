@@ -15,7 +15,7 @@ import { MetricsCollector } from './metrics.js';
 import { getSessionOptions, type SessionData } from './auth/session.js';
 import { ApiKeyManager, type ApiKeyPermission } from './auth/api-key-manager.js';
 import { AnalyticsRecorder } from './auth/analytics-recorder.js';
-import { getAuthContract } from './auth/auth-contract.js';
+import { getAuthContract, AuthReadError } from './auth/auth-contract.js';
 import { PrivacyManager } from './storage/privacy-manager.js';
 import { SQLTranslator, executeAggregation } from './protocols/sql-translator.js';
 import type { TranslatedQuery, SQLDialect } from './protocols/sql-translator.js';
@@ -867,10 +867,7 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
                 // The dashboard needs the nonce to build a valid EIP-712 signature
                 // for register/revoke/rotate — it's a single incrementing counter
                 // per address shared across all three operations, not the key index.
-                const [activeKeys, nonce] = await Promise.all([
-                    authContract.getActiveKeys(address),
-                    authContract.getNonce(address),
-                ]);
+                const { activeKeys, nonce } = await authContract.getKeyState(address);
                 return {
                     ok: 1,
                     address,
@@ -888,6 +885,11 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
                 nonce: 0,
             };
         } catch (err) {
+            // A failed chain read is NOT "no keys". Say so, so the client can
+            // show an error and retry instead of an empty list.
+            if (err instanceof AuthReadError) {
+                return reply.status(503).send({ ok: 0, errmsg: err.message, retryable: true });
+            }
             return handleError(err, reply);
         }
     });
@@ -1607,11 +1609,25 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
             }
         }
 
+        // Keys live in two independent systems: the legacy off-chain store and
+        // the on-chain PlugPortAuth registry — count both. If the chain read
+        // fails, fall back to the legacy count rather than failing the whole
+        // metrics page, and say the count is partial.
+        let onChainKeyCount = 0;
+        let apiKeysComplete = true;
+        try {
+            onChainKeyCount = (await getAuthContract().getActiveKeys(address)).length;
+        } catch (err) {
+            apiKeysComplete = false;
+            console.warn('[Metrics] On-chain key count unavailable:', err instanceof Error ? err.message : err);
+        }
+
         return {
             address,
             collections: userCollections,
             documents: userDocuments,
-            apiKeys: keys.length,
+            apiKeys: keys.length + onChainKeyCount,
+            apiKeysComplete,
             totalRequests: overview.totalRequests,
             ok: 1,
         };
