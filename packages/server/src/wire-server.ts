@@ -5,6 +5,7 @@
 //           saslStart/saslContinue (SCRAM-SHA-256 + PLAIN), buildInfo, getLog, whatsmyuri
 
 import * as net from 'net';
+import { MONGO_MAX_MESSAGE_BYTES, PRE_AUTH_MAX_BYTES, MAX_CONNECTIONS_PER_PROTOCOL } from './protocols/connection-limits.js';
 import { BSON, ObjectId as BSONObjectId, Long } from 'bson';
 import { createHmac, pbkdf2Sync, randomBytes, timingSafeEqual, createHash } from 'crypto';
 import { DocumentStore, DocumentStoreError } from './storage/document-store.js';
@@ -71,8 +72,11 @@ setInterval(() => {
 
 const { OP_MSG, HEADER_SIZE, MAX_WIRE_VERSION, MIN_WIRE_VERSION } = WireProtocol;
 
-/** Maximum allowed wire protocol message size (48MB, matching MongoDB) */
-const MAX_MESSAGE_SIZE = 48 * 1024 * 1024;
+/**
+ * Maximum message size for authenticated connections (8 MB; MongoDB's own is 48 MB).
+ * Before authentication PRE_AUTH_MAX_BYTES applies — see connection-limits.ts for why.
+ */
+const MAX_MESSAGE_SIZE = MONGO_MAX_MESSAGE_BYTES;
 
 let nextConnectionId = 1;
 
@@ -254,11 +258,16 @@ export function createWireServer(options: WireServerOptions): net.Server {
             socket.destroy();
         });
 
+        // Every message is parsed into objects several times its size, so an
+        // unauthenticated client (only a handshake and login to send) gets a
+        // much smaller limit than an authenticated one.
+        const messageLimit = () => (!apiKey || authenticatedConnections.has(connectionId) ? MAX_MESSAGE_SIZE : PRE_AUTH_MAX_BYTES);
+
         socket.on('data', async (chunk) => {
             buffer = Buffer.concat([buffer, chunk]);
 
-            // OOM protection: reject connections whose buffer grows beyond MAX_MESSAGE_SIZE
-            if (buffer.length > MAX_MESSAGE_SIZE) {
+            // OOM protection: reject connections whose buffer grows beyond the limit
+            if (buffer.length > messageLimit() + HEADER_SIZE) {
                 socket.destroy();
                 buffer = Buffer.alloc(0);
                 return;
@@ -267,12 +276,13 @@ export function createWireServer(options: WireServerOptions): net.Server {
             // Process complete messages
             while (buffer.length >= HEADER_SIZE) {
                 const messageLength = buffer.readInt32LE(0);
+                const limit = messageLimit();
 
                 // DoS protection: reject oversized messages
-                if (messageLength > MAX_MESSAGE_SIZE) {
+                if (messageLength > limit) {
                     const errResponse = {
                         ok: 0,
-                        errmsg: `Message size ${messageLength} exceeds maximum allowed size of ${MAX_MESSAGE_SIZE} bytes`,
+                        errmsg: `Message size ${messageLength} exceeds maximum allowed size of ${limit} bytes`,
                         code: 10334,
                     };
                     const reply = buildOpMsgReply(requestIdCounter++, 0, errResponse);
@@ -364,6 +374,7 @@ export function createWireServer(options: WireServerOptions): net.Server {
         });
     });
 
+    server.maxConnections = MAX_CONNECTIONS_PER_PROTOCOL;
     return server;
 }
 

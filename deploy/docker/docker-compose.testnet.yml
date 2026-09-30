@@ -8,6 +8,10 @@ services:
   plugport-server:
     environment:
       - NODE_ENV=production
+      # Heap sized to the 512M container limit below (Node would otherwise pick about
+      # half of it), leaving room for buffers and native memory. On a fatal error
+      # such as OOM, Node writes a diagnostic report (JS stack, heap stats) to /tmp.
+      - NODE_OPTIONS=--max-old-space-size=384 --report-on-fatalerror --report-directory=/tmp
       - IS_TESTNET=true
       - LOG_LEVEL=info
       # ---- Monad Testnet ----

@@ -18,6 +18,7 @@ import { DocumentStore } from '../storage/document-store.js';
 import { SQLTranslator, executeAggregation, type TranslatedQuery } from './sql-translator.js';
 import { JoinEngine } from './join-engine.js';
 import type { ProtocolServerInstance } from './protocol-manager.js';
+import { PRE_AUTH_MAX_BYTES, SQL_WIRE_MAX_MESSAGE_BYTES, MAX_CONNECTIONS_PER_PROTOCOL, closeUnlessAuthenticatedWithin } from './connection-limits.js';
 import type { MetricsCollector } from '../metrics.js';
 import type { ProtocolType, DocumentWithId } from '@plugport/shared';
 
@@ -121,6 +122,7 @@ export class MySQLServer implements ProtocolServerInstance {
 
         return new Promise((resolve, reject) => {
             this.server = net.createServer((socket) => this.handleConnection(socket));
+            this.server.maxConnections = MAX_CONNECTIONS_PER_PROTOCOL;
             this.server.on('error', reject);
             this.server.listen(this.port, this.host, () => {
                 console.log(`[PlugPort] MySQL protocol listening on ${this.host}:${this.port}`);
@@ -178,14 +180,31 @@ export class MySQLServer implements ProtocolServerInstance {
         this.sendHandshake(socket, connectionId, authChallenge);
         sequenceId = 1;
 
+        const authenticated = () => !this.apiKey || this.authenticatedSockets.has(socket);
+        // Parsed packets are far larger than their bytes (see connection-limits.ts).
+        const packetLimit = () => (authenticated() ? SQL_WIRE_MAX_MESSAGE_BYTES : PRE_AUTH_MAX_BYTES);
+        if (this.apiKey) closeUnlessAuthenticatedWithin(socket, authenticated);
+
         socket.on('data', async (data) => {
             buffer = Buffer.concat([buffer, data]);
+            if (buffer.length > packetLimit() + 4) {
+                socket.destroy();
+                buffer = Buffer.alloc(0);
+                return;
+            }
 
             try {
                 while (buffer.length >= 4) {
                     // MySQL packet header: 3-byte length + 1-byte sequence ID
                     const payloadLength = buffer[0] | (buffer[1] << 8) | (buffer[2] << 16);
                     const _seqId = buffer[3];
+
+                    if (payloadLength > packetLimit()) {
+                        this.sendERR(socket, _seqId + 1, `Packet of ${payloadLength} bytes exceeds the maximum of ${packetLimit()}`);
+                        socket.destroy();
+                        buffer = Buffer.alloc(0);
+                        return;
+                    }
 
                     if (buffer.length < 4 + payloadLength) break; // Incomplete packet
 

@@ -17,8 +17,11 @@ import { DocumentStore } from '../storage/document-store.js';
 import { SQLTranslator, executeAggregation, type TranslatedQuery } from './sql-translator.js';
 import { JoinEngine } from './join-engine.js';
 import type { ProtocolServerInstance } from './protocol-manager.js';
+import { PRE_AUTH_MAX_BYTES, SQL_WIRE_MAX_MESSAGE_BYTES, MAX_CONNECTIONS_PER_PROTOCOL, closeUnlessAuthenticatedWithin } from './connection-limits.js';
 import type { MetricsCollector } from '../metrics.js';
 import type { ProtocolType, DocumentWithId } from '@plugport/shared';
+
+const MAX_STARTUP_PACKET_LENGTH = 10_000;
 
 /** Constant-time string comparison to prevent timing attacks on the password. */
 function safeCompare(a: string, b: string): boolean {
@@ -125,6 +128,7 @@ export class PGServer implements ProtocolServerInstance {
 
         return new Promise((resolve, reject) => {
             this.server = net.createServer((socket) => this.handleConnection(socket));
+            this.server.maxConnections = MAX_CONNECTIONS_PER_PROTOCOL;
             this.server.on('error', reject);
             this.server.listen(this.port, this.host, () => {
                 console.log(`[PlugPort] PostgreSQL protocol listening on ${this.host}:${this.port}`);
@@ -176,8 +180,18 @@ export class PGServer implements ProtocolServerInstance {
         let buffer = Buffer.alloc(0);
         let startupComplete = false;
 
+        const authenticated = () => !this.apiKey || this.authenticatedSockets.has(socket);
+        // Parsed messages are far larger than their bytes (see connection-limits.ts).
+        const messageLimit = () => (authenticated() ? SQL_WIRE_MAX_MESSAGE_BYTES : PRE_AUTH_MAX_BYTES);
+        if (this.apiKey) closeUnlessAuthenticatedWithin(socket, authenticated);
+
         socket.on('data', async (data) => {
             buffer = Buffer.concat([buffer, data]);
+            if (buffer.length > messageLimit() + 5) {
+                socket.destroy();
+                buffer = Buffer.alloc(0);
+                return;
+            }
 
             try {
                 if (!startupComplete) {
@@ -185,6 +199,13 @@ export class PGServer implements ProtocolServerInstance {
                     if (buffer.length >= 8) {
                         const length = buffer.readInt32BE(0);
                         const protocolVersion = buffer.readInt32BE(4);
+
+                        // PostgreSQL itself rejects startup packets outside 8..10000 bytes.
+                        if (length < 8 || length > MAX_STARTUP_PACKET_LENGTH) {
+                            socket.destroy();
+                            buffer = Buffer.alloc(0);
+                            return;
+                        }
 
                         if (protocolVersion === 80877103) {
                             // SSLRequest — decline with 'N'
@@ -215,6 +236,15 @@ export class PGServer implements ProtocolServerInstance {
                 while (buffer.length >= 5) {
                     const msgType = buffer[0];
                     const msgLength = buffer.readInt32BE(1);
+
+                    // The length counts itself, so anything under 4 is malformed —
+                    // and a negative one would re-read the same bytes forever.
+                    if (msgLength < 4 || msgLength > messageLimit()) {
+                        this.sendError(socket, `Invalid message length ${msgLength} (maximum ${messageLimit()} bytes)`);
+                        socket.destroy();
+                        buffer = Buffer.alloc(0);
+                        return;
+                    }
 
                     if (buffer.length < msgLength + 1) break; // Incomplete message
 

@@ -80,7 +80,10 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
     const WRITE_RATE_LIMIT = { config: { rateLimit: { max: 20, timeWindow: '10 seconds' } } };
 
     const app = Fastify({
-        bodyLimit: 52428800, // 50MB limit for bulk operations
+        // A parsed JSON body can take 21x its size in heap (measured: 6 MB of
+        // `[{},{},…]` → 128 MB), so 50 MB bodies could exhaust the heap alone.
+        // Documents are capped at 1 MB; 4 MB still allows sizeable batches.
+        bodyLimit: 4 * 1024 * 1024,
         logger: process.env.NODE_ENV === 'production'
             ? { level: 'info' } // JSON logs for production (Railway, Docker, etc.)
             : {

@@ -18,6 +18,7 @@ import { timingSafeEqual } from 'node:crypto';
 import type { DocumentStore } from '../storage/document-store.js';
 import type { KVAdapter } from '@plugport/shared';
 import type { ProtocolServerInstance } from './protocol-manager.js';
+import { PRE_AUTH_MAX_BYTES, REDIS_MAX_BUFFER_BYTES, REDIS_MAX_ARRAY_ELEMENTS, MAX_CONNECTIONS_PER_PROTOCOL, closeUnlessAuthenticatedWithin } from './connection-limits.js';
 import type { MetricsCollector } from '../metrics.js';
 import type { ProtocolType } from '@plugport/shared';
 
@@ -46,7 +47,23 @@ interface RESPValue {
     value: string | number | null | RESPValue[];
 }
 
-export function parseRESP(data: Buffer): { value: RESPValue; bytesConsumed: number } | null {
+/** Bounds on what a client may send; server replies are parsed without them. */
+export interface RespLimits {
+    maxBulkBytes: number;
+    maxArrayElements: number;
+}
+
+/** Input a client should never send. The connection cannot recover, so it is closed. */
+export class RespLimitError extends Error {}
+
+const CLIENT_RESP_LIMITS: RespLimits = { maxBulkBytes: REDIS_MAX_BUFFER_BYTES, maxArrayElements: REDIS_MAX_ARRAY_ELEMENTS };
+
+/**
+ * Parse one RESP value. With `limits` (client input), oversized lengths, huge
+ * arrays and nested arrays — commands are flat arrays of bulk strings — throw
+ * RespLimitError before anything is allocated for them.
+ */
+export function parseRESP(data: Buffer, limits?: RespLimits, depth = 0): { value: RESPValue; bytesConsumed: number } | null {
     if (data.length === 0) return null;
 
     const type = String.fromCharCode(data[0]);
@@ -71,6 +88,9 @@ export function parseRESP(data: Buffer): { value: RESPValue; bytesConsumed: numb
 
         case '$': { // Bulk string
             const length = parseInt(data.subarray(1, crlfIndex).toString('utf-8'), 10);
+            if (limits && !(length >= -1 && length <= limits.maxBulkBytes)) {
+                throw new RespLimitError(`Protocol error: invalid bulk length`);
+            }
             if (length === -1) {
                 return { value: { type: 'null', value: null }, bytesConsumed: crlfIndex + 2 };
             }
@@ -82,6 +102,9 @@ export function parseRESP(data: Buffer): { value: RESPValue; bytesConsumed: numb
 
         case '*': { // Array
             const count = parseInt(data.subarray(1, crlfIndex).toString('utf-8'), 10);
+            if (limits && (depth > 0 || !(count >= -1 && count <= limits.maxArrayElements))) {
+                throw new RespLimitError(depth > 0 ? 'Protocol error: nested arrays are not supported' : 'Protocol error: invalid multibulk length');
+            }
             if (count === -1) {
                 return { value: { type: 'null', value: null }, bytesConsumed: crlfIndex + 2 };
             }
@@ -90,7 +113,7 @@ export function parseRESP(data: Buffer): { value: RESPValue; bytesConsumed: numb
             const elements: RESPValue[] = [];
 
             for (let i = 0; i < count; i++) {
-                const result = parseRESP(data.subarray(offset));
+                const result = parseRESP(data.subarray(offset), limits, depth + 1);
                 if (!result) return null;
                 elements.push(result.value);
                 offset += result.bytesConsumed;
@@ -173,6 +196,7 @@ export class RedisServer implements ProtocolServerInstance {
 
         return new Promise((resolve, reject) => {
             this.server = net.createServer((socket) => this.handleConnection(socket));
+            this.server.maxConnections = MAX_CONNECTIONS_PER_PROTOCOL;
             this.server.on('error', reject);
             this.server.listen(this.port, this.host, () => {
                 console.log(`[PlugPort] Redis protocol listening on ${this.host}:${this.port}`);
@@ -224,12 +248,21 @@ export class RedisServer implements ProtocolServerInstance {
 
         let buffer = Buffer.alloc(0);
 
+        const authenticated = () => !this.apiKey || this.authenticatedSockets.has(socket);
+        if (this.apiKey) closeUnlessAuthenticatedWithin(socket, authenticated);
+
         socket.on('data', async (data) => {
             buffer = Buffer.concat([buffer, data]);
+            // Parsed commands are larger than their bytes (see connection-limits.ts).
+            if (buffer.length > (authenticated() ? REDIS_MAX_BUFFER_BYTES : PRE_AUTH_MAX_BYTES)) {
+                socket.destroy();
+                buffer = Buffer.alloc(0);
+                return;
+            }
 
             try {
                 while (buffer.length > 0) {
-                    const result = parseRESP(buffer);
+                    const result = parseRESP(buffer, CLIENT_RESP_LIMITS);
                     if (!result) break; // Incomplete message
 
                     buffer = buffer.subarray(result.bytesConsumed);
@@ -249,6 +282,10 @@ export class RedisServer implements ProtocolServerInstance {
                 }
             } catch (err: any) {
                 socket.write(encodeError(err.message));
+                if (err instanceof RespLimitError) {
+                    buffer = Buffer.alloc(0);
+                    socket.destroy();
+                }
             }
         });
 
