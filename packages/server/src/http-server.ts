@@ -204,6 +204,12 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
         request.user = { authMethod: 'none' };
     });
 
+    // Analytics are batched in memory (see AnalyticsRecorder) — write out
+    // whatever is pending when the server shuts down.
+    app.addHook('onClose', async () => {
+        await analyticsRecorder.close();
+    });
+
     // Request timing + API key analytics
     app.addHook('onResponse', async (request, reply) => {
         const duration = reply.elapsedTime;
