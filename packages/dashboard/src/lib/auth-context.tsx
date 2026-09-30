@@ -64,6 +64,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     const [authenticatedAddress, setAuthenticatedAddress] = useState<string | null>(null);
     const [serverUrl, setServerUrlState] = useState<string | null>(null);
+    // False until the first /auth/me answer is in. Without this, a refresh looks
+    // like "wallet connected, not signed in" for the few hundred ms the session
+    // check takes, and the auto sign-in below asks for a needless signature —
+    // and disconnects the wallet if the user dismisses it.
+    const [sessionChecked, setSessionChecked] = useState(false);
     const isSigningInRef = useRef(false);
 
     // Load persisted state from localStorage
@@ -89,7 +94,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                     setAuthenticatedAddress(null);
                 }
             })
-            .catch(() => setAuthenticatedAddress(null));
+            .catch(() => setAuthenticatedAddress(null))
+            .finally(() => setSessionChecked(true));
     }, [serverUrl]);
 
     // Clear authenticated state when wallet disconnects
@@ -207,7 +213,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }, [isConnected, walletAddress, walletChainId, switchToTargetNetwork]);
 
     // Determine auth method
-    const authMethod: AuthMethod = authenticatedAddress && isConnected
+    // The session must belong to the connected account: switching accounts in the
+    // wallet must not inherit the previous account's session.
+    const sessionMatchesWallet = !!authenticatedAddress && !!walletAddress
+        && authenticatedAddress.toLowerCase() === walletAddress.toLowerCase();
+
+    const authMethod: AuthMethod = sessionMatchesWallet && isConnected
         ? 'wallet'
         : process.env.NEXT_PUBLIC_TDBX_API_KEY
             ? 'apiKey'
@@ -218,13 +229,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     // Auto sign-in when wallet connects
     useEffect(() => {
-        if (isConnected && walletAddress && !authenticatedAddress) {
+        if (sessionChecked && isConnected && walletAddress && !sessionMatchesWallet) {
             signIn().catch((err) => {
                 console.error('Auto sign-in failed', err);
                 disconnect(); // Disconnect wallet if they reject the signature
             });
         }
-    }, [isConnected, walletAddress, authenticatedAddress, signIn, disconnect]);
+    }, [sessionChecked, isConnected, walletAddress, sessionMatchesWallet, signIn, disconnect]);
 
     return (
         <AuthContext.Provider
