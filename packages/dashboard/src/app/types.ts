@@ -58,6 +58,8 @@ export interface UserMetrics {
     collections: number;
     documents: number;
     apiKeys: number;
+    /** False when the on-chain key registry could not be read and apiKeys counts legacy keys only. */
+    apiKeysComplete?: boolean;
     totalRequests: number;
 }
 

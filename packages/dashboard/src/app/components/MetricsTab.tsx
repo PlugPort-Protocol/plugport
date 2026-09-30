@@ -1,24 +1,37 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { apiGet } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import type { MetricsData, UserMetrics, ScopeState } from '../types';
 import { formatUptime, formatBytes } from '../types';
 import { ScopeToggle } from './ScopeToggle';
+import { NOT_LOADED, loadSucceeded, loadFailed, type LoadStatus } from '@/lib/load-status';
 
-export function MetricsTab({ metrics }: { metrics: MetricsData | null }) {
+export function MetricsTab({ metrics, metricsStatus }: { metrics: MetricsData | null; metricsStatus: LoadStatus }) {
     const { address, isAuthenticated } = useAuth();
     const [scope, setScope] = useState<ScopeState>(isAuthenticated ? 'both' : 'all');
     const [userMetrics, setUserMetrics] = useState<UserMetrics | null>(null);
+    const [userMetricsStatus, setUserMetricsStatus] = useState<LoadStatus>(NOT_LOADED);
+
+    const loadUserMetrics = useCallback(() => {
+        if (!isAuthenticated || !address) return;
+        apiGet<UserMetrics>(`/api/v1/user/${address}/metrics`)
+            .then((res) => { setUserMetrics(res); setUserMetricsStatus(loadSucceeded()); })
+            .catch((err) => setUserMetricsStatus((prev) => loadFailed(prev, err)));
+    }, [isAuthenticated, address]);
 
     useEffect(() => {
-        if (isAuthenticated && address) {
-            apiGet<UserMetrics>(`/api/v1/user/${address}/metrics`).then(setUserMetrics).catch(() => {});
-        }
-    }, [isAuthenticated, address]);
+        setUserMetrics(null);
+        setUserMetricsStatus(NOT_LOADED);
+        loadUserMetrics();
+    }, [loadUserMetrics]);
+
     if (!metrics) {
-        return <div className="loading-center"><div className="spinner" /></div>;
+        // The page-level banner explains a failed load; don't spin forever under it.
+        return metricsStatus.error
+            ? <div className="empty-state"><div className="empty-state-text">Server metrics could not be loaded — see the message above.</div></div>
+            : <div className="loading-center"><div className="spinner" /></div>;
     }
 
     const commandData = Object.entries(metrics.requests.byCommand).map(([name, count]) => ({ name, count }));
@@ -32,6 +45,12 @@ export function MetricsTab({ metrics }: { metrics: MetricsData | null }) {
             )}
 
             {/* User-scoped metrics */}
+            {isAuthenticated && !userMetrics && userMetricsStatus.error && (scope === 'my' || scope === 'both') && (
+                <div className="alert alert-error" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 24 }}>
+                    <div>Couldn&apos;t load your metrics: {userMetricsStatus.error}.</div>
+                    <button className="btn btn-sm btn-secondary" onClick={loadUserMetrics}>Retry</button>
+                </div>
+            )}
             {isAuthenticated && userMetrics && (scope === 'my' || scope === 'both') && (
                 <div style={{ marginBottom: 24 }}>
                     <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--accent-primary-light)', marginBottom: 10, textTransform: 'uppercase', letterSpacing: 1 }}>My Metrics</div>

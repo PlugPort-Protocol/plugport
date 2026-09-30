@@ -1,10 +1,11 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { motion, type Variants } from 'framer-motion';
 import { apiGet } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { Icon } from '@/lib/icons';
+import { NOT_LOADED, loadSucceeded, loadFailed, formatClock, type LoadStatus } from '@/lib/load-status';
 import type { CollectionInfo, MetricsData, UserMetrics, ProtocolInfo } from '../types';
 import { formatUptime } from '../types';
 
@@ -53,24 +54,55 @@ function Sparkline({ values }: { values: number[] }) {
     );
 }
 
-export function OverviewTab({ collections, metrics }: { collections: CollectionInfo[]; metrics: MetricsData | null }) {
+/** Inline error with a retry button, for one section of the page. */
+function SectionError({ message, onRetry }: { message: string; onRetry: () => void }) {
+    return (
+        <div className="alert alert-error" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+            <div>{message}</div>
+            <button className="btn btn-sm btn-secondary" onClick={onRetry}>Retry</button>
+        </div>
+    );
+}
+
+export function OverviewTab({ collections, collectionsStatus, metrics, metricsStatus }: {
+    collections: CollectionInfo[];
+    collectionsStatus: LoadStatus;
+    metrics: MetricsData | null;
+    metricsStatus: LoadStatus;
+}) {
     const { address, isAuthenticated } = useAuth();
     const [userMetrics, setUserMetrics] = useState<UserMetrics | null>(null);
+    const [userMetricsStatus, setUserMetricsStatus] = useState<LoadStatus>(NOT_LOADED);
     const [protocols, setProtocols] = useState<ProtocolInfo[]>([]);
+    const [protocolsStatus, setProtocolsStatus] = useState<LoadStatus>(NOT_LOADED);
     const totalDocs = collections.reduce((s, c) => s + c.documentCount, 0);
     const totalIndexes = collections.reduce((s, c) => s + c.indexCount, 0);
     const qpsHistory = useQpsHistory(metrics);
     const currentQps = qpsHistory.length ? qpsHistory[qpsHistory.length - 1] : 0;
+    // Counts only mean something once a load has succeeded; before that, a 0 would claim an empty database.
+    const count = (n: number) => (collectionsStatus.loaded ? n.toLocaleString() : '—');
 
-    useEffect(() => {
-        if (isAuthenticated && address) {
-            apiGet<UserMetrics>(`/api/v1/user/${address}/metrics`).then(setUserMetrics).catch(() => {});
-        }
+    const loadUserMetrics = useCallback(() => {
+        if (!isAuthenticated || !address) return;
+        apiGet<UserMetrics>(`/api/v1/user/${address}/metrics`)
+            .then((res) => { setUserMetrics(res); setUserMetricsStatus(loadSucceeded()); })
+            .catch((err) => setUserMetricsStatus((prev) => loadFailed(prev, err)));
     }, [isAuthenticated, address]);
 
-    useEffect(() => {
-        apiGet<{ protocols: ProtocolInfo[] }>('/api/v1/protocols').then(res => setProtocols(res.protocols || [])).catch(() => {});
+    const loadProtocols = useCallback(() => {
+        apiGet<{ protocols: ProtocolInfo[] }>('/api/v1/protocols')
+            .then((res) => { setProtocols(res.protocols || []); setProtocolsStatus(loadSucceeded()); })
+            .catch((err) => setProtocolsStatus((prev) => loadFailed(prev, err)));
     }, []);
+
+    useEffect(() => {
+        // A different wallet's numbers must not linger under this one.
+        setUserMetrics(null);
+        setUserMetricsStatus(NOT_LOADED);
+        loadUserMetrics();
+    }, [loadUserMetrics]);
+
+    useEffect(loadProtocols, [loadProtocols]);
 
     return (
         <motion.div variants={container} initial="hidden" animate="show">
@@ -91,7 +123,7 @@ export function OverviewTab({ collections, metrics }: { collections: CollectionI
                         <div className="stat-label">Collections</div>
                         <div className="icon-badge icon-badge-secondary"><Icon name="database" size={15} /></div>
                     </div>
-                    <div className="stat-value">{collections.length}</div>
+                    <div className="stat-value">{count(collections.length)}</div>
                     <div className="stat-change">active namespaces</div>
                 </div>
                 <div className="stat-card">
@@ -99,7 +131,7 @@ export function OverviewTab({ collections, metrics }: { collections: CollectionI
                         <div className="stat-label">Documents</div>
                         <div className="icon-badge icon-badge-tertiary"><Icon name="layers" size={15} /></div>
                     </div>
-                    <div className="stat-value">{totalDocs.toLocaleString()}</div>
+                    <div className="stat-value">{count(totalDocs)}</div>
                     <div className="stat-change">across all collections</div>
                 </div>
                 <div className="stat-card">
@@ -107,7 +139,7 @@ export function OverviewTab({ collections, metrics }: { collections: CollectionI
                         <div className="stat-label">Indexes</div>
                         <div className="icon-badge icon-badge-warning"><Icon name="index" size={15} /></div>
                     </div>
-                    <div className="stat-value">{totalIndexes}</div>
+                    <div className="stat-value">{count(totalIndexes)}</div>
                     <div className="stat-change">including _id indexes</div>
                 </div>
             </motion.div>
@@ -118,7 +150,9 @@ export function OverviewTab({ collections, metrics }: { collections: CollectionI
                     <div className="icon-badge icon-badge-primary"><Icon name="plug" size={15} /></div>
                     <div className="section-label">Protocol lines</div>
                 </div>
-                {protocols.length === 0 ? (
+                {!protocolsStatus.loaded && protocolsStatus.error ? (
+                    <SectionError message={`Couldn't load protocols: ${protocolsStatus.error}.`} onRetry={loadProtocols} />
+                ) : protocols.length === 0 ? (
                     <div style={{ display: 'flex', gap: 10 }}>
                         {[88, 76, 92, 70].map((w, i) => <div key={i} className="skeleton-pill" style={{ width: w, animationDelay: `${i * 0.12}s` }} />)}
                     </div>
@@ -137,27 +171,42 @@ export function OverviewTab({ collections, metrics }: { collections: CollectionI
             </motion.div>
 
             {/* User-scoped stats (when wallet connected) */}
-            {isAuthenticated && userMetrics && (
+            {isAuthenticated && (userMetrics || userMetricsStatus.error) && (
                 <motion.div variants={item} style={{ marginBottom: 28 }}>
                     <div className="section-label user" style={{ marginBottom: 12 }}>Your account</div>
-                    <div className="stats-grid" style={{ gridTemplateColumns: 'repeat(4, 1fr)' }}>
-                        <div className="stat-card">
-                            <div className="stat-label">Collections</div>
-                            <div className="stat-value">{userMetrics.collections}</div>
+                    {userMetricsStatus.error && (
+                        <div style={{ marginBottom: userMetrics ? 12 : 0 }}>
+                            <SectionError
+                                message={userMetrics && userMetricsStatus.updatedAt !== null
+                                    ? `Couldn't refresh your account stats: ${userMetricsStatus.error}. Showing data from ${formatClock(userMetricsStatus.updatedAt)}.`
+                                    : `Couldn't load your account stats: ${userMetricsStatus.error}.`}
+                                onRetry={loadUserMetrics}
+                            />
                         </div>
-                        <div className="stat-card">
-                            <div className="stat-label">Documents</div>
-                            <div className="stat-value">{userMetrics.documents.toLocaleString()}</div>
+                    )}
+                    {userMetrics && (
+                        <div className="stats-grid" style={{ gridTemplateColumns: 'repeat(4, 1fr)' }}>
+                            <div className="stat-card">
+                                <div className="stat-label">Collections</div>
+                                <div className="stat-value">{userMetrics.collections}</div>
+                            </div>
+                            <div className="stat-card">
+                                <div className="stat-label">Documents</div>
+                                <div className="stat-value">{userMetrics.documents.toLocaleString()}</div>
+                            </div>
+                            <div className="stat-card">
+                                <div className="stat-label">API keys</div>
+                                <div className="stat-value">{userMetrics.apiKeys}</div>
+                                {userMetrics.apiKeysComplete === false && (
+                                    <div className="stat-change" title="The on-chain key registry could not be read, so only legacy keys are counted.">on-chain keys unavailable</div>
+                                )}
+                            </div>
+                            <div className="stat-card">
+                                <div className="stat-label">Requests</div>
+                                <div className="stat-value">{userMetrics.totalRequests.toLocaleString()}</div>
+                            </div>
                         </div>
-                        <div className="stat-card">
-                            <div className="stat-label">API keys</div>
-                            <div className="stat-value">{userMetrics.apiKeys}</div>
-                        </div>
-                        <div className="stat-card">
-                            <div className="stat-label">Requests</div>
-                            <div className="stat-value">{userMetrics.totalRequests.toLocaleString()}</div>
-                        </div>
-                    </div>
+                    )}
                 </motion.div>
             )}
 
@@ -169,7 +218,11 @@ export function OverviewTab({ collections, metrics }: { collections: CollectionI
                             <div className="card-title">Recent collections</div>
                         </div>
                     </div>
-                    {collections.length === 0 ? (
+                    {!collectionsStatus.loaded ? (
+                        collectionsStatus.error
+                            ? <div className="empty-state"><div className="empty-state-text">Collections could not be loaded — see the message above.</div></div>
+                            : <div className="loading-center"><div className="spinner" /></div>
+                    ) : collections.length === 0 ? (
                         <div className="empty-state">
                             <div className="empty-state-title">No collections yet</div>
                             <div className="empty-state-text">Insert a document through any protocol to create one automatically.</div>
@@ -232,6 +285,8 @@ export function OverviewTab({ collections, metrics }: { collections: CollectionI
                                 <span style={{ fontWeight: 600, fontFamily: 'var(--font-mono)' }}>{formatUptime(metrics.uptime)}</span>
                             </div>
                         </div>
+                    ) : metricsStatus.error ? (
+                        <div className="empty-state"><div className="empty-state-text">Server metrics could not be loaded — see the message above.</div></div>
                     ) : (
                         <div className="loading-center"><div className="spinner" /></div>
                     )}

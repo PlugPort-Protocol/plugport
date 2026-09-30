@@ -10,6 +10,7 @@ import { ConnectButton } from '@rainbow-me/rainbowkit';
 import { useAccount, useBalance } from 'wagmi';
 import { ThemeToggle } from './theme-toggle';
 import { Icon } from '@/lib/icons';
+import { NOT_LOADED, loadSucceeded, loadFailed, loadErrorBanner, type LoadStatus } from '@/lib/load-status';
 import type { CollectionInfo, MetricsData, TabId } from './types';
 
 import {
@@ -205,25 +206,54 @@ function WalletDockItem({ health }: { health: Record<string, unknown> | null }) 
     );
 }
 
+/**
+ * Says when the data on screen did not come from the server: nothing loaded
+ * yet, or a failed refresh (older data still shown). Renders nothing when fine.
+ */
+function DataStatusBanner({ collectionsStatus, metricsStatus, onRetry }: {
+    collectionsStatus: LoadStatus;
+    metricsStatus: LoadStatus;
+    onRetry: () => void;
+}) {
+    const messages = [loadErrorBanner('collections', collectionsStatus), loadErrorBanner('server metrics', metricsStatus)]
+        .filter((m): m is string => m !== null);
+    if (messages.length === 0) return null;
+    return (
+        <div className="alert alert-error" role="alert" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 20 }}>
+            <div style={{ display: 'grid', gap: 4 }}>{messages.map((m) => <div key={m}>{m}</div>)}</div>
+            <button className="btn btn-sm btn-secondary" onClick={onRetry}>Retry</button>
+        </div>
+    );
+}
+
 // ---- Main Dashboard ----
 export default function Dashboard() {
     const [activeTab, setActiveTab] = useState<TabId>('overview');
     const [collections, setCollections] = useState<CollectionInfo[]>([]);
+    const [collectionsStatus, setCollectionsStatus] = useState<LoadStatus>(NOT_LOADED);
     const [metrics, setMetrics] = useState<MetricsData | null>(null);
+    const [metricsStatus, setMetricsStatus] = useState<LoadStatus>(NOT_LOADED);
     const [health, setHealth] = useState<Record<string, unknown> | null>(null);
 
+    // A failed refresh keeps the last data on screen; the status says it is stale.
     const loadCollections = useCallback(async () => {
         try {
             const res = await apiGet<{ collections: CollectionInfo[] }>('/api/v1/collections');
             setCollections(res.collections);
-        } catch { /* ignore */ }
+            setCollectionsStatus(loadSucceeded());
+        } catch (err) {
+            setCollectionsStatus((prev) => loadFailed(prev, err));
+        }
     }, []);
 
     const loadMetrics = useCallback(async () => {
         try {
             const res = await apiGet<MetricsData>('/api/v1/metrics');
             setMetrics(res);
-        } catch { /* ignore */ }
+            setMetricsStatus(loadSucceeded());
+        } catch (err) {
+            setMetricsStatus((prev) => loadFailed(prev, err));
+        }
     }, []);
 
     const loadHealth = useCallback(async () => {
@@ -233,16 +263,19 @@ export default function Dashboard() {
         } catch { setHealth(null); }
     }, []);
 
-    useEffect(() => {
+    const reloadAll = useCallback(() => {
         loadCollections();
         loadMetrics();
         loadHealth();
-        const interval = setInterval(() => {
-            loadMetrics();
-            loadCollections();
-        }, 5000);
-        return () => clearInterval(interval);
     }, [loadCollections, loadMetrics, loadHealth]);
+
+    useEffect(() => {
+        reloadAll();
+        // Health is polled too: checked only once, the header kept saying
+        // "connected" after the server went down.
+        const interval = setInterval(reloadAll, 5000);
+        return () => clearInterval(interval);
+    }, [reloadAll]);
 
     const tabTitles: Record<TabId, { title: string; subtitle: string }> = {
         overview: { title: 'Overview', subtitle: 'plugport console · monaddb store' },
@@ -275,6 +308,7 @@ export default function Dashboard() {
                     </div>
                 </div>
                 <div className="page-body">
+                    <DataStatusBanner collectionsStatus={collectionsStatus} metricsStatus={metricsStatus} onRetry={reloadAll} />
                     <AnimatePresence mode="wait">
                         <motion.div
                             key={activeTab}
@@ -283,13 +317,13 @@ export default function Dashboard() {
                             exit={{ opacity: 0, y: -6 }}
                             transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
                         >
-                            {activeTab === 'overview' && <OverviewTab collections={collections} metrics={metrics} />}
+                            {activeTab === 'overview' && <OverviewTab collections={collections} collectionsStatus={collectionsStatus} metrics={metrics} metricsStatus={metricsStatus} />}
                             {activeTab === 'collections' && <CollectionsTab collections={collections} onRefresh={loadCollections} />}
                             {activeTab === 'protocols' && <ProtocolsTab />}
                             {activeTab === 'query' && <QueryBuilderTab collections={collections} />}
                             {activeTab === 'explorer' && <DocumentExplorerTab collections={collections} />}
                             {activeTab === 'indexes' && <IndexManagerTab collections={collections} onRefresh={loadCollections} />}
-                            {activeTab === 'metrics' && <MetricsTab metrics={metrics} />}
+                            {activeTab === 'metrics' && <MetricsTab metrics={metrics} metricsStatus={metricsStatus} />}
                             {activeTab === 'deploy' && <DeployTab />}
                             {activeTab === 'privacy' && <PrivacyTab collections={collections} />}
                             {activeTab === 'apikeys' && <ApiKeysTab />}

@@ -109,6 +109,28 @@ export function useApi<T>(path: string, options?: { autoFetch?: boolean }) {
 
 // ---- Direct API Calls ----
 
+/** An API failure; `status` is the HTTP status (0 when no response arrived). */
+export class ApiError extends Error {
+    constructor(message: string, readonly status: number) {
+        super(message);
+    }
+}
+
+/**
+ * Parse a response body, failing with the HTTP status attached. A proxy error
+ * page (Caddy's 502 while the server restarts) is HTML, and calling res.json()
+ * on it used to surface as "Unexpected token '<'" with the status lost.
+ */
+async function readJson(res: Response): Promise<unknown> {
+    const json = await res.json().catch(() => null) as Record<string, unknown> | null;
+    if (!res.ok) {
+        const errmsg = typeof json?.errmsg === 'string' && json.errmsg ? json.errmsg : `HTTP ${res.status}`;
+        throw new ApiError(errmsg, res.status);
+    }
+    if (json === null) throw new ApiError(`HTTP ${res.status}: response was not JSON`, res.status);
+    return json;
+}
+
 export async function apiPost<T>(path: string, body: unknown): Promise<T> {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), WRITE_TIMEOUT_MS);
@@ -127,11 +149,7 @@ export async function apiPost<T>(path: string, body: unknown): Promise<T> {
             credentials: 'include',
         });
         clearTimeout(timeoutId);
-        const json = await res.json();
-        if (!res.ok) {
-            throw new Error((json as Record<string, string>).errmsg || `HTTP ${res.status}`);
-        }
-        return json as T;
+        return await readJson(res) as T;
     } catch (err: any) {
         clearTimeout(timeoutId);
         if (err?.name === 'AbortError') throw new Error(`Request timed out after ${WRITE_TIMEOUT_MS / 1000}s`, { cause: err });
@@ -148,11 +166,7 @@ export async function apiGet<T>(path: string): Promise<T> {
             ...getCommonOptions(),
         });
         clearTimeout(timeoutId);
-        const json = await res.json();
-        if (!res.ok) {
-            throw new Error((json as Record<string, string>).errmsg || `HTTP ${res.status}`);
-        }
-        return json as T;
+        return await readJson(res) as T;
     } catch (err: any) {
         clearTimeout(timeoutId);
         if (err?.name === 'AbortError') throw new Error(`Request timed out after ${READ_TIMEOUT_MS / 1000}s`, { cause: err });
@@ -176,11 +190,7 @@ export async function apiDelete<T>(path: string): Promise<T> {
             credentials: 'include',
         });
         clearTimeout(timeoutId);
-        const json = await res.json();
-        if (!res.ok) {
-            throw new Error((json as Record<string, string>).errmsg || `HTTP ${res.status}`);
-        }
-        return json as T;
+        return await readJson(res) as T;
     } catch (err: any) {
         clearTimeout(timeoutId);
         if (err?.name === 'AbortError') throw new Error(`Request timed out after ${WRITE_TIMEOUT_MS / 1000}s`, { cause: err });
@@ -206,11 +216,7 @@ export async function apiPut<T>(path: string, body: unknown): Promise<T> {
             credentials: 'include',
         });
         clearTimeout(timeoutId);
-        const json = await res.json();
-        if (!res.ok) {
-            throw new Error((json as Record<string, string>).errmsg || `HTTP ${res.status}`);
-        }
-        return json as T;
+        return await readJson(res) as T;
     } catch (err: any) {
         clearTimeout(timeoutId);
         if (err?.name === 'AbortError') throw new Error(`Request timed out after ${WRITE_TIMEOUT_MS / 1000}s`, { cause: err });
