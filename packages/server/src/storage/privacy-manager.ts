@@ -39,6 +39,8 @@ export class PrivacyManager {
     // I3: In-memory cache to avoid repeated KV reads (30s TTL)
     private cache: Map<string, { data: CollectionPrivacy; expires: number }> = new Map();
     private static CACHE_TTL_MS = 30_000;
+    // Concurrent first writes to the same new collection must not race two records into existence.
+    private claims: Map<string, Promise<boolean>> = new Map();
 
     constructor(kvStore: KVAdapter, options?: { prefix?: string }) {
         this.kvStore = kvStore;
@@ -103,6 +105,26 @@ export class PrivacyManager {
 
         await this.putPrivacy(collection, privacy);
         return privacy;
+    }
+
+    /**
+     * Record `ownerAddress` as the owner of `collection` if nobody owns it yet.
+     * The first wallet to write to a collection — over any protocol — becomes its
+     * owner, which is what lists it under "My Collections" in the dashboard. Only
+     * ever creates a record (public mode); an existing owner or privacy setting is
+     * never changed. Returns true when this call created the record.
+     */
+    async claimIfUnowned(collection: string, ownerAddress: string): Promise<boolean> {
+        if (!ownerAddress) return false;
+        const inFlight = this.claims.get(collection);
+        if (inFlight) return inFlight;
+        const claim = (async () => {
+            if (await this.getCollectionPrivacy(collection)) return false;
+            await this.setCollectionPrivacy(collection, 'public', ownerAddress);
+            return true;
+        })().finally(() => this.claims.delete(collection));
+        this.claims.set(collection, claim);
+        return claim;
     }
 
     /**

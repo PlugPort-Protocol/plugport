@@ -47,6 +47,8 @@ interface ScramState {
     serverKey: Buffer;
     iterationCount: number;
     createdAt: number; // Unix timestamp for TTL cleanup
+    /** Set only when the verifier came from the on-chain registry — i.e. the wallet is proven, not merely claimed. */
+    walletAddress?: string;
 }
 const scramSessions = new Map<number, ScramState>();
 
@@ -206,12 +208,35 @@ export interface WireServerOptions {
     apiKey?: string;
     store: DocumentStore;
     metrics: MetricsCollector;
+    /**
+     * Called after a write by a connection that authenticated as a wallet, so the
+     * collection can be recorded as that wallet's (and show up in its dashboard).
+     */
+    claimCollection?: (collection: string, ownerAddress: string) => Promise<unknown>;
+}
+
+/** Per-connection ownership context passed to handleCommand. */
+export interface WireOwnership {
+    owners: Map<number, string>;
+    claim?: WireServerOptions['claimCollection'];
+}
+
+async function claimForConnection(ownership: WireOwnership | undefined, connectionId: number, collection: string): Promise<void> {
+    const owner = ownership?.owners.get(connectionId);
+    if (!owner || !ownership?.claim) return;
+    try {
+        await ownership.claim(collection, owner);
+    } catch (err) {
+        // Recording ownership must never fail the user's write.
+        console.warn(`[MongoDB] Could not record owner of "${collection}":`, err instanceof Error ? err.message : err);
+    }
 }
 
 export function createWireServer(options: WireServerOptions): net.Server {
     const { store, metrics, apiKey } = options;
 
     const authenticatedConnections = new Set<number>();
+    const ownership: WireOwnership = { owners: new Map(), claim: options.claimCollection };
 
     const server = net.createServer((socket) => {
         metrics.connectionOpened('wire');
@@ -286,7 +311,7 @@ export function createWireServer(options: WireServerOptions): net.Server {
                         const docSequences = sections.filter((s) => s.kind === 1);
 
                         const isAuthenticated = !apiKey || authenticatedConnections.has(connectionId);
-                        const response = await handleCommand(store, body, docSequences, connectionId, isAuthenticated, apiKey, authenticatedConnections);
+                        const response = await handleCommand(store, body, docSequences, connectionId, isAuthenticated, apiKey, authenticatedConnections, ownership);
                         reply = buildOpMsgReply(requestIdCounter++, header.requestID, response);
 
                         const command = getCommandName(body);
@@ -324,6 +349,7 @@ export function createWireServer(options: WireServerOptions): net.Server {
 
         socket.on('close', () => {
             authenticatedConnections.delete(connectionId);
+            ownership.owners.delete(connectionId);
             metrics.connectionClosed('wire');
         });
 
@@ -377,7 +403,8 @@ export async function handleCommand(
     connectionId: number,
     isAuthenticated: boolean,
     apiKey: string | undefined,
-    authenticatedConnections: Set<number>
+    authenticatedConnections: Set<number>,
+    ownership?: WireOwnership,
 ): Promise<Record<string, unknown>> {
     const command = getCommandName(body);
     const db = (body.$db || 'test') as string;
@@ -454,6 +481,7 @@ export async function handleCommand(
                     let serverKey: Buffer;
                     const iterationCount = 4096;
                     let usedOnChain = false;
+                    let verifiedWallet: string | undefined;
 
                     const authContract = getAuthContract();
                     if (authContract.isReadable && username.startsWith('0x')) {
@@ -476,6 +504,7 @@ export async function handleCommand(
                                     storedKey = Buffer.from(verifier.storedKey.replace('0x', ''), 'hex');
                                     serverKey = Buffer.from(verifier.serverKey.replace('0x', ''), 'hex');
                                     usedOnChain = true;
+                                    verifiedWallet = walletAddress.toLowerCase();
                                 }
                             } else {
                                 // Try all active keys — find the first active one
@@ -489,6 +518,7 @@ export async function handleCommand(
                                         storedKey = Buffer.from(verifier.storedKey.replace('0x', ''), 'hex');
                                         serverKey = Buffer.from(verifier.serverKey.replace('0x', ''), 'hex');
                                         usedOnChain = true;
+                                        verifiedWallet = walletAddress.toLowerCase();
                                     }
                                 }
                             }
@@ -532,6 +562,7 @@ export async function handleCommand(
                         serverKey: serverKey!,
                         iterationCount,
                         createdAt: Date.now(),
+                        walletAddress: usedOnChain ? verifiedWallet : undefined,
                     });
 
                     return {
@@ -632,6 +663,7 @@ export async function handleCommand(
 
                 // Mark connection as authenticated
                 authenticatedConnections.add(connectionId);
+                if (scramState.walletAddress) ownership?.owners.set(connectionId, scramState.walletAddress);
                 scramSessions.delete(connectionId);
 
                 return {
@@ -726,6 +758,7 @@ export async function handleCommand(
         case 'create': {
             const collName = body.create as string;
             await store.getOrCreateCollection(collName);
+            await claimForConnection(ownership, connectionId, collName);
             return { ok: 1 };
         }
 
@@ -751,6 +784,7 @@ export async function handleCommand(
 
             try {
                 const result = await store.insert(collName, documents);
+                await claimForConnection(ownership, connectionId, collName);
                 return { n: result.insertedCount, ok: 1 };
             } catch (err) {
                 if (err instanceof DocumentStoreError) {

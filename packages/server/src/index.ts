@@ -6,6 +6,7 @@ import { createMonadAdapter, generateKeypair } from './storage/monaddb-adapter.j
 import { DocumentStore } from './storage/document-store.js';
 import { createHttpServer } from './http-server.js';
 import { createWireServer } from './wire-server.js';
+import { PrivacyManager } from './storage/privacy-manager.js';
 import { MetricsCollector } from './metrics.js';
 import { ProtocolManager } from './protocols/protocol-manager.js';
 import { PGServer } from './protocols/pg-server.js';
@@ -207,12 +208,14 @@ async function main() {
 
     // Start Wire Protocol server (MongoDB)
     if (config.protocols.mongodb.enabled) {
+        const wirePrivacy = new PrivacyManager(kvStore);
         const wireServer = createWireServer({
             port: config.protocols.mongodb.port,
             host: config.host,
             apiKey: config.apiKey,
             store,
             metrics,
+            claimCollection: (collection, owner) => wirePrivacy.claimIfUnowned(collection, owner),
         });
 
         wireServer.listen(config.protocols.mongodb.port, config.host, () => {

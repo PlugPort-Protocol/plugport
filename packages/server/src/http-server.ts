@@ -274,6 +274,18 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
         return metrics.getSnapshot();
     });
 
+    // The first wallet to write to an unowned collection becomes its owner, so it
+    // appears under that wallet's "My Collections" whichever protocol wrote it.
+    async function claimForWallet(req: FastifyRequest, collection: string): Promise<void> {
+        const address = req.user?.address;
+        if (!address) return;
+        try {
+            await privacyManager.claimIfUnowned(collection, address);
+        } catch (err) {
+            console.warn(`[Ownership] Could not record owner of "${collection}":`, err instanceof Error ? err.message : err);
+        }
+    }
+
     // ---- Access Control Helper ----
 
     async function checkAccess(req: FastifyRequest, reply: FastifyReply, collection: string, type: 'read' | 'write'): Promise<boolean> {
@@ -337,6 +349,7 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
         if (!(await checkAccess(req, reply, req.params.name, 'write'))) return;
         try {
             const result = await store.insert(req.params.name, [req.body.document]);
+            await claimForWallet(req, req.params.name);
             return { ...result, ok: 1 };
         } catch (err) {
             return handleError(err, reply);
@@ -350,6 +363,7 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
         if (!(await checkAccess(req, reply, req.params.name, 'write'))) return;
         try {
             const result = await store.insert(req.params.name, req.body.documents);
+            await claimForWallet(req, req.params.name);
             return { ...result, ok: 1 };
         } catch (err) {
             return handleError(err, reply);
