@@ -1,0 +1,11 @@
+# Every alert goes to Telegram. Alerts with the same name are grouped into one
+# message, and a still-firing alert is repeated every 4 hours.
+apiVersion: 1
+
+policies:
+  - orgId: 1
+    receiver: telegram
+    group_by: ['alertname']
+    group_wait: 30s
+    group_interval: 5m
+    repeat_interval: 4h

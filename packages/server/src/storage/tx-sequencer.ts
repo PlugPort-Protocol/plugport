@@ -21,6 +21,7 @@
 //   - nonce-class rejections resync from the chain and retry.
 
 import { makeError, type ethers } from 'ethers';
+import { emitTxFailed } from './chain-events.js';
 
 const DEFAULT_MAX_ATTEMPTS = 6;
 const DEFAULT_RETRY_DELAY_MS = 250;
@@ -167,12 +168,17 @@ export async function sendContractTx(
     populate: () => Promise<ethers.ContractTransaction>,
     opts: SequencerOptions = {},
 ): Promise<ethers.TransactionResponse> {
-    const base = await populate();
-    // A placeholder nonce stops populateTransaction from fetching one we'd
-    // discard anyway; the real one is assigned inside the lock.
-    const prepared = await signer.populateTransaction({ ...base, nonce: 0 });
-    delete (prepared as { from?: unknown }).from;
-    return sendSequenced(signer, (nonce) => signer.sendTransaction({ ...prepared, nonce }), opts);
+    try {
+        const base = await populate();
+        // A placeholder nonce stops populateTransaction from fetching one we'd
+        // discard anyway; the real one is assigned inside the lock.
+        const prepared = await signer.populateTransaction({ ...base, nonce: 0 });
+        delete (prepared as { from?: unknown }).from;
+        return await sendSequenced(signer, (nonce) => signer.sendTransaction({ ...prepared, nonce }), opts);
+    } catch (err) {
+        emitTxFailed('send', err);
+        throw err;
+    }
 }
 
 export interface ConfirmOptions {
@@ -227,7 +233,10 @@ export async function confirmTx(
             }
             delay = pollIntervalMs;
         } catch (err) {
-            if ((err as { code?: string }).code === 'CALL_EXCEPTION') throw err;
+            if ((err as { code?: string }).code === 'CALL_EXCEPTION') {
+                emitTxFailed('confirm', err);
+                throw err;
+            }
             lastErr = err;
             delay = Math.min(delay * 2, maxBackoffMs);
             console.warn(`[TxSequencer] receipt poll for ${tx.hash} failed — retrying in ${delay}ms:`,
@@ -235,7 +244,9 @@ export async function confirmTx(
         }
         if (Date.now() + delay > deadline) {
             const detail = lastErr instanceof Error ? ` (last RPC error: ${lastErr.message.slice(0, 200)})` : '';
-            throw new Error(`Transaction ${tx.hash} was not confirmed within ${timeoutMs}ms${detail}`);
+            const timeout = new Error(`Transaction ${tx.hash} was not confirmed within ${timeoutMs}ms${detail}`);
+            emitTxFailed('confirm', timeout);
+            throw timeout;
         }
         await sleep(delay);
     }

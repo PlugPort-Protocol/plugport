@@ -1,6 +1,7 @@
 // PlugPort Metrics Collector
 // Prometheus-compatible metrics for monitoring QPS, latency, errors, and storage
 
+import { getHeapStatistics } from 'node:v8';
 import { Registry, Counter, Histogram, Gauge, collectDefaultMetrics } from 'prom-client';
 import type { MetricsSnapshot } from '@plugport/shared';
 
@@ -12,6 +13,9 @@ export class MetricsCollector {
     private activeConnections: Gauge;
     private storageKeyCount: Gauge;
     private storageSizeBytes: Gauge;
+    private rpcFailovers: Counter;
+    private txFailures: Counter;
+    private walletBalance: Gauge;
     private startTime: number;
 
     // In-memory tracking for snapshot API
@@ -68,6 +72,48 @@ export class MetricsCollector {
             help: 'Estimated storage size in bytes',
             registers: [this.registry],
         });
+
+        // ---- Alerting signals (see deploy/docker/grafana/provisioning/alerting) ----
+
+        this.rpcFailovers = new Counter({
+            name: 'plugport_rpc_failovers_total',
+            help: 'Times the server switched from the primary RPC endpoint to the fallback',
+            registers: [this.registry],
+        });
+
+        this.txFailures = new Counter({
+            name: 'plugport_chain_tx_failures_total',
+            help: 'Server transactions that failed (send: estimate/sign/broadcast, confirm: revert or timeout)',
+            labelNames: ['stage'],
+            registers: [this.registry],
+        });
+
+        this.walletBalance = new Gauge({
+            name: 'plugport_wallet_balance_mon',
+            help: 'Balance of each gas-paying server wallet, in MON',
+            labelNames: ['role', 'address'],
+            registers: [this.registry],
+        });
+
+        // prom-client's defaults report heap use but not the limit, which
+        // --max-old-space-size sets; alerting needs both to compute a ratio.
+        new Gauge({
+            name: 'plugport_heap_limit_bytes',
+            help: 'V8 heap size limit',
+            registers: [this.registry],
+        }).set(getHeapStatistics().heap_size_limit);
+    }
+
+    recordRpcFailover(): void {
+        this.rpcFailovers.inc();
+    }
+
+    recordTxFailure(stage: 'send' | 'confirm'): void {
+        this.txFailures.inc({ stage });
+    }
+
+    setWalletBalance(role: string, address: string, balanceMon: number): void {
+        this.walletBalance.set({ role, address }, balanceMon);
     }
 
     recordRequest(command: string, protocol: 'http' | 'wire', durationMs: number, success: boolean): void {

@@ -1,0 +1,177 @@
+# PlugPort alert rules (Grafana-managed, evaluated every minute).
+#
+# Each rule runs one PromQL query (refId A) and compares it with a threshold
+# (refId C). Background: in September 2026 the server crashed on an RPC rate
+# limit and on a heap OOM, and the Store gas wallet ran dry so every write
+# failed for two days — all found by hand, days later.
+#
+# Annotations avoid `$` template variables: Grafana expands $VAR in
+# provisioning files as environment variables. `index .Labels "x"` is used instead.
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: plugport
+    folder: PlugPort
+    interval: 1m
+    rules:
+      - uid: plugport-server-down
+        title: PlugPort server down
+        condition: C
+        for: 1m
+        noDataState: Alerting
+        execErrState: Error
+        labels: { severity: critical }
+        annotations:
+          summary: The PlugPort server is not answering Prometheus scrapes.
+          description: Nothing is served over HTTP or the wire protocols. Check `docker ps` and `docker logs plugport-server` on the VPS.
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: plugport-prometheus
+            model: { refId: A, expr: 'up{job="plugport-server"}', instant: true }
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions: [{ evaluator: { type: lt, params: [1] } }]
+
+      - uid: plugport-server-restarted
+        title: PlugPort server restarted
+        condition: C
+        for: 0s
+        noDataState: OK
+        execErrState: Error
+        labels: { severity: info }
+        annotations:
+          summary: The PlugPort server process restarted in the last 10 minutes.
+          description: Expected after a deploy. Otherwise it crashed and Docker restarted it — check `docker logs plugport-server` and /tmp for a Node diagnostic report.
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: plugport-prometheus
+            model: { refId: A, expr: 'changes(process_start_time_seconds{job="plugport-server"}[10m])', instant: true }
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions: [{ evaluator: { type: gt, params: [0] } }]
+
+      - uid: plugport-heap-high
+        title: PlugPort heap above 80%
+        condition: C
+        for: 2m
+        noDataState: OK
+        execErrState: Error
+        labels: { severity: warning }
+        annotations:
+          summary: The server's JavaScript heap has been above 80% of its limit for 2 minutes.
+          description: At the limit the process dies of OOM (as on 2026-09-27). Check the Grafana overview for which traffic grew.
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: plugport-prometheus
+            model: { refId: A, expr: 'nodejs_heap_size_used_bytes{job="plugport-server"} / plugport_heap_limit_bytes{job="plugport-server"}', instant: true }
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions: [{ evaluator: { type: gt, params: [0.8] } }]
+
+      - uid: plugport-wallet-low
+        title: Gas wallet low
+        condition: C
+        for: 10m
+        noDataState: OK
+        execErrState: Error
+        labels: { severity: critical }
+        annotations:
+          summary: A gas-paying server wallet has less than 1 MON.
+          description: 'The {{ index .Labels "role" }} wallet {{ index .Labels "address" }} is below 1 MON. When it is empty, that role''s transactions fail (store = every document write). Send it testnet MON.'
+        data:
+          - refId: A
+            relativeTimeRange: { from: 900, to: 0 }
+            datasourceUid: plugport-prometheus
+            model: { refId: A, expr: 'plugport_wallet_balance_mon{job="plugport-server"}', instant: true }
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions: [{ evaluator: { type: lt, params: [1] } }]
+
+      - uid: plugport-wallet-balances-missing
+        title: Gas wallet balances not reported
+        condition: C
+        for: 30m
+        noDataState: OK
+        execErrState: Error
+        labels: { severity: warning }
+        annotations:
+          summary: The server has not reported gas wallet balances for 30 minutes.
+          description: The "Gas wallet low" alert cannot fire without them. Check the server log for "[Balances]" warnings.
+        data:
+          - refId: A
+            relativeTimeRange: { from: 900, to: 0 }
+            datasourceUid: plugport-prometheus
+            model: { refId: A, expr: 'absent(plugport_wallet_balance_mon{job="plugport-server"})', instant: true }
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions: [{ evaluator: { type: gt, params: [0] } }]
+
+      - uid: plugport-chain-writes-failing
+        title: On-chain writes failing
+        condition: C
+        for: 0s
+        noDataState: OK
+        execErrState: Error
+        labels: { severity: critical }
+        annotations:
+          summary: More than 2 server transactions failed in the last 15 minutes.
+          description: 'Stage "send" usually means a wallet is out of MON or the RPC is refusing transactions; "confirm" means reverts or receipts timing out. Check `docker logs plugport-server`.'
+        data:
+          - refId: A
+            relativeTimeRange: { from: 900, to: 0 }
+            datasourceUid: plugport-prometheus
+            model: { refId: A, expr: 'sum by (stage) (increase(plugport_chain_tx_failures_total{job="plugport-server"}[15m]))', instant: true }
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions: [{ evaluator: { type: gt, params: [2] } }]
+
+      - uid: plugport-rpc-unstable
+        title: RPC endpoint unstable
+        condition: C
+        for: 0s
+        noDataState: OK
+        execErrState: Error
+        labels: { severity: warning }
+        annotations:
+          summary: The server switched to the fallback RPC more than 10 times in 15 minutes.
+          description: A restart alone causes about 5 switches. Sustained switching means Monad's public RPC is rate-limiting or failing, and reads and writes are running on the Alchemy fallback's smaller budget.
+        data:
+          - refId: A
+            relativeTimeRange: { from: 900, to: 0 }
+            datasourceUid: plugport-prometheus
+            model: { refId: A, expr: 'increase(plugport_rpc_failovers_total{job="plugport-server"}[15m])', instant: true }
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions: [{ evaluator: { type: gt, params: [10] } }]

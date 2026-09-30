@@ -1,0 +1,17 @@
+# Where PlugPort alerts are delivered: a Telegram bot.
+#
+# TELEGRAM_BOT_TOKEN (from @BotFather) and TELEGRAM_CHAT_ID are passed to the
+# Grafana container from the environment (see docker-compose.yml) and never
+# committed. Grafana expands ${VAR} in provisioning files.
+apiVersion: 1
+
+contactPoints:
+  - orgId: 1
+    name: telegram
+    receivers:
+      - uid: plugport-telegram
+        type: telegram
+        settings:
+          bottoken: ${TELEGRAM_BOT_TOKEN}
+          chatid: ${TELEGRAM_CHAT_ID}
+        disableResolveMessage: false

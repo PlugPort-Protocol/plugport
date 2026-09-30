@@ -31,6 +31,7 @@
 // fallback has its own limiter (RPC_FALLBACK_MAX_REQUESTS_PER_SECOND).
 
 import { ethers } from 'ethers';
+import { emitRpcFailover } from './chain-events.js';
 
 const DEFAULT_MAX_REQUESTS_PER_SECOND = 40;
 // Alchemy's free tier budgets compute units per second rather than requests;
@@ -194,6 +195,7 @@ class ThrottledJsonRpcProvider extends ethers.JsonRpcProvider {
         primaryOutages.set(this.url, Date.now() + FAILOVER_COOLDOWN_MS);
         if (!alreadyDown) {
             console.warn(`[RPC] Primary endpoint failed (${describeFailure(reason)}) — using fallback for ${FAILOVER_COOLDOWN_MS / 1000}s`);
+            emitRpcFailover(describeFailure(reason));
         }
     }
 }

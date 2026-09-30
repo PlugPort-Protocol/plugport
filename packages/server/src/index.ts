@@ -15,7 +15,10 @@ import { RedisServer } from './protocols/redis-server.js';
 import { EncryptionLayer, createRegistryCodec } from './storage/encryption-layer.js';
 import { RoutingAdapter } from './storage/routing-adapter.js';
 import { MessageBrokerAdapter } from './storage/message-broker-adapter.js';
-import { resolveKeys, logWalletRoles } from './keys.js';
+import { resolveKeys, logWalletRoles, describeRoles } from './keys.js';
+import { onRpcFailover, onTxFailed } from './storage/chain-events.js';
+import { createRpcProvider } from './storage/rpc-provider.js';
+import { startWalletBalanceMonitor } from './wallet-balance-monitor.js';
 import type { PlugPortConfig, KVAdapter, ProtocolType } from '@plugport/shared';
 import { DEFAULT_CONFIG } from '@plugport/shared';
 
@@ -191,7 +194,23 @@ async function main() {
         console.log('  [PubSub] Message Broker: ENABLED (on-chain)');
     }
 
-    logWalletRoles(walletKeys, process.env.AUTH_GAS_STATION_PRIVATE_KEYS || process.env.AUTH_GAS_STATION_PRIVATE_KEY);
+    const authKeysCsv = process.env.AUTH_GAS_STATION_PRIVATE_KEYS || process.env.AUTH_GAS_STATION_PRIVATE_KEY;
+    logWalletRoles(walletKeys, authKeysCsv);
+
+    // Alerting signals: chain-layer failures become counters, and every
+    // gas-paying wallet's balance is polled (see wallet-balance-monitor.ts).
+    onRpcFailover(() => metrics.recordRpcFailover());
+    onTxFailed((stage) => metrics.recordTxFailure(stage));
+    if (config.monadRpcUrl) {
+        try {
+            const wallets = describeRoles(walletKeys, authKeysCsv).roles;
+            if (wallets.length > 0) {
+                startWalletBalanceMonitor(createRpcProvider(config.monadRpcUrl, config.monadChainId || 10143), wallets, metrics);
+            }
+        } catch (err) {
+            console.warn('  [Balances] Wallet balance monitoring disabled:', err instanceof Error ? err.message : err);
+        }
+    }
 
     // Start HTTP server
     const httpServer = await createHttpServer({
