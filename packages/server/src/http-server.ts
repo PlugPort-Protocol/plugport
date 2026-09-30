@@ -50,6 +50,8 @@ export interface HttpServerOptions {
         disableProtocol(name: string): Promise<void>;
     };
     whitelistAddresses?: string[];
+    /** Share with every other component that reads or claims collection privacy, so its cache stays coherent. */
+    privacyManager?: PrivacyManager;
     /** Allowed origin for CORS credentials (defaults to DASHBOARD_URL env var) */
     dashboardUrl?: string;
 }
@@ -61,7 +63,7 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
     const sessionOptions = getSessionOptions();
     const apiKeyManager = new ApiKeyManager(kvStore);
     const analyticsRecorder = new AnalyticsRecorder(kvStore);
-    const privacyManager = new PrivacyManager(kvStore);
+    const privacyManager = options.privacyManager ?? new PrivacyManager(kvStore);
     const joinEngine = new JoinEngine();
     if ('setPrivacyManager' in kvStore && typeof kvStore.setPrivacyManager === 'function') {
         kvStore.setPrivacyManager(privacyManager);

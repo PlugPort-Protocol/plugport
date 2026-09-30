@@ -158,6 +158,9 @@ async function main() {
     const kvStore = createStorageAdapter(config);
     const store = new DocumentStore(kvStore, config.maxDocumentSize);
     const metrics = new MetricsCollector();
+    // One instance for the whole process: its cache (including "no settings")
+    // is only invalidated by writes made through the same instance.
+    const privacyManager = new PrivacyManager(kvStore);
 
     // Initialize Protocol Manager
     const protocolManager = new ProtocolManager({
@@ -199,6 +202,7 @@ async function main() {
         metrics,
         kvStore,
         protocolManager,
+        privacyManager,
     });
 
     await httpServer.listen({ port: config.httpPort, host: config.host });
@@ -208,14 +212,13 @@ async function main() {
 
     // Start Wire Protocol server (MongoDB)
     if (config.protocols.mongodb.enabled) {
-        const wirePrivacy = new PrivacyManager(kvStore);
         const wireServer = createWireServer({
             port: config.protocols.mongodb.port,
             host: config.host,
             apiKey: config.apiKey,
             store,
             metrics,
-            claimCollection: (collection, owner) => wirePrivacy.claimIfUnowned(collection, owner),
+            claimCollection: (collection, owner) => privacyManager.claimIfUnowned(collection, owner),
         });
 
         wireServer.listen(config.protocols.mongodb.port, config.host, () => {

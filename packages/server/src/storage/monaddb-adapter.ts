@@ -17,6 +17,7 @@
 import type { RegistryCodec } from './encryption-layer.js';
 import { ethers } from 'ethers';
 import { sendContractTx, confirmTx } from './tx-sequencer.js';
+import { createRpcProvider } from './rpc-provider.js';
 import type { KVAdapter, KVEntry, ScanOptions } from '@plugport/shared';
 import { PLUGPORT_STORE_ABI } from './contract-abi.js';
 
@@ -130,6 +131,13 @@ export class MonadAdapter implements KVAdapter {
     /** Local read cache for recently accessed values */
     private readCache: Map<string, Buffer> = new Map();
 
+    /**
+     * Uncached reads currently in flight, by key. Concurrent callers asking for
+     * the same key share one RPC round trip — after a restart every dashboard
+     * poll scans the same `meta:collection:*` keys before any of them is cached.
+     */
+    private pendingReads: Map<string, Promise<Buffer | null>> = new Map();
+
     /** In-flight/completed key-registry load, single-flight across concurrent callers */
     private indexLoadPromise: Promise<void> | null = null;
 
@@ -141,10 +149,8 @@ export class MonadAdapter implements KVAdapter {
 
     constructor(config: MonadConfig) {
         this.registryCodec = config.registryCodec;
-        this.provider = new ethers.JsonRpcProvider(config.rpcUrl, {
-            chainId: config.chainId,
-            name: 'monad-testnet',
-        });
+        // Shares the process-wide RPC rate limit — see rpc-provider.ts.
+        this.provider = createRpcProvider(config.rpcUrl, config.chainId, { name: 'monad-testnet' });
 
         const pk = config.privateKey.startsWith('0x') ? config.privateKey : `0x${config.privateKey}`;
         this.wallet = new ethers.Wallet(pk, this.provider);
@@ -315,6 +321,33 @@ export class MonadAdapter implements KVAdapter {
             return this.readCache.get(key)!;
         }
 
+        const pending = this.pendingReads.get(key);
+        if (pending) return pending;
+        const read: Promise<Buffer | null> = this.readFromChain(key).then((buf) => {
+            // A write to this key while the read was in flight drops it from
+            // pendingReads (forgetPendingRead) — don't cache the older value.
+            if (this.pendingReads.get(key) === read) {
+                this.pendingReads.delete(key);
+                if (buf) {
+                    this.readCache.set(key, buf);
+                    this.keyIndex.set(key, hashKey(key));
+                }
+            }
+            return buf;
+        }, (err) => {
+            if (this.pendingReads.get(key) === read) this.pendingReads.delete(key);
+            throw err;
+        });
+        this.pendingReads.set(key, read);
+        return read;
+    }
+
+    /** A write supersedes any read of the same key that is still in flight. */
+    private forgetPendingRead(key: string): void {
+        this.pendingReads.delete(key);
+    }
+
+    private async readFromChain(key: string): Promise<Buffer | null> {
         try {
             const hash = hashKey(key);
             // testnet-rpc.monad.xyz occasionally fails an individual call
@@ -330,13 +363,7 @@ export class MonadAdapter implements KVAdapter {
             const value: string = await withRetry(() => this.contract.get(hash));
             if (!value || value === '0x') return null;
 
-            const buf = Buffer.from(ethers.getBytes(value));
-            this.readCache.set(key, buf);
-
-            // Track in key index
-            this.keyIndex.set(key, hash);
-
-            return buf;
+            return Buffer.from(ethers.getBytes(value));
         } catch (err) {
             console.warn(`[MonadAdapter] RPC read failed for key "${key}" after retries:`, err instanceof Error ? err.message : 'unknown');
             return null;
@@ -442,6 +469,7 @@ export class MonadAdapter implements KVAdapter {
         }
 
         // Update local caches
+        this.forgetPendingRead(key);
         this.readCache.set(key, buf);
         this.keyIndex.set(key, hash);
     }
@@ -457,6 +485,7 @@ export class MonadAdapter implements KVAdapter {
             await confirmTx(tx);
 
             // Update local caches
+            this.forgetPendingRead(key);
             this.readCache.delete(key);
             this.keyIndex.delete(key);
 
@@ -487,6 +516,7 @@ export class MonadAdapter implements KVAdapter {
             }
         }
 
+        this.pendingReads.clear();
         this.readCache.clear();
         this.keyIndex.clear();
     }
@@ -526,12 +556,14 @@ export class MonadAdapter implements KVAdapter {
             putOwners.push(key);
 
             // Update local caches
+            this.forgetPendingRead(key);
             this.readCache.set(key, buf);
             this.keyIndex.set(key, hashKey(key));
         }
 
         for (const key of deletes) {
             deleteKeys.push(hashKey(key));
+            this.forgetPendingRead(key);
             this.readCache.delete(key);
             this.keyIndex.delete(key);
         }

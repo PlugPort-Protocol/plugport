@@ -36,8 +36,13 @@ export interface CollectionPrivacy {
 export class PrivacyManager {
     private kvStore: KVAdapter;
     private prefix: string;
-    // I3: In-memory cache to avoid repeated KV reads (30s TTL)
-    private cache: Map<string, { data: CollectionPrivacy; expires: number }> = new Map();
+    // I3: In-memory cache to avoid repeated KV reads (30s TTL). "No settings" is
+    // cached too: most collections have no record, and on the Monad adapter a
+    // missing key is an uncached RPC call — the dashboard's 5s poll of
+    // /api/v1/collections re-read every unowned collection from the chain.
+    // Safe because every write goes through putPrivacy(), which invalidates —
+    // as long as the process shares one PrivacyManager (see index.ts).
+    private cache: Map<string, { data: CollectionPrivacy | null; expires: number }> = new Map();
     private static CACHE_TTL_MS = 30_000;
     // Concurrent first writes to the same new collection must not race two records into existence.
     private claims: Map<string, Promise<boolean>> = new Map();
@@ -65,7 +70,10 @@ export class PrivacyManager {
 
         const key = `${this.prefix}${collection}`;
         const data = await this.kvStore.get(key);
-        if (!data) return null;
+        if (!data) {
+            this.cache.set(collection, { data: null, expires: Date.now() + PrivacyManager.CACHE_TTL_MS });
+            return null;
+        }
         try {
             const parsed = JSON.parse(data.toString()) as CollectionPrivacy;
             this.cache.set(collection, { data: parsed, expires: Date.now() + PrivacyManager.CACHE_TTL_MS });

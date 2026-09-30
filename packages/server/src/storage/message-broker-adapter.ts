@@ -14,6 +14,7 @@
 
 import { ethers } from 'ethers';
 import { sendContractTx, confirmTx } from './tx-sequencer.js';
+import { createRpcProvider } from './rpc-provider.js';
 
 // ---- ABI (PlugPortMessageBroker.sol) ----
 
@@ -92,7 +93,7 @@ export class MessageBrokerAdapter {
         this.config = config;
 
         // HTTP provider for write transactions
-        this.httpProvider = new ethers.JsonRpcProvider(config.rpcUrl, config.chainId);
+        this.httpProvider = createRpcProvider(config.rpcUrl, config.chainId);
         this.wallet = new ethers.Wallet(config.privateKey, this.httpProvider);
         this.writeContract = new ethers.Contract(
             config.contractAddress,
