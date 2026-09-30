@@ -1491,7 +1491,20 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
         if (!mode || !['public', 'private'].includes(mode)) {
             return reply.status(400).send({ ok: 0, errmsg: 'mode must be "public" or "private"' });
         }
-        await privacyManager.setCollectionPrivacy(req.params.name, mode, req.user.address, contractAddress);
+        const switchMode = async () => {
+            await privacyManager.setCollectionPrivacy(req.params.name, mode, req.user!.address!, contractAddress);
+        };
+        const currentMode = existingPrivacy?.mode ?? 'public';
+        try {
+            if (mode !== currentMode && 'migrateCollection' in kvStore && typeof kvStore.migrateCollection === 'function') {
+                // Reads route by mode, so the existing documents must move with it.
+                const moved = await kvStore.migrateCollection(req.params.name, mode === 'private', switchMode);
+                return { ok: 1, collection: req.params.name, mode, migrated: moved };
+            }
+            await switchMode();
+        } catch (err) {
+            return handleError(err, reply);
+        }
         return { ok: 1, collection: req.params.name, mode };
     });
 

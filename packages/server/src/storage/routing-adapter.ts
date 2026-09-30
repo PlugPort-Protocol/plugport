@@ -46,11 +46,54 @@ export class RoutingAdapter implements KVAdapter {
      * Extract collection name from a key.
      */
     private extractCollection(key: string): string | null {
-        if (key.startsWith('col:')) {
-            const parts = key.split(':');
-            return parts[1] || null;
+        // Real storage keys are `doc:<coll>:<id>` and `idx:<coll>:<field>:…`
+        // (see key-encoding.ts); `col:` is kept for the legacy/test shape. This
+        // used to match only `col:`, so no real key ever routed to the private
+        // adapter and private collections were written unencrypted.
+        // Collection names cannot contain ':', so the second segment is exact.
+        if (key.startsWith('doc:') || key.startsWith('idx:') || key.startsWith('col:')) {
+            return key.split(':')[1] || null;
         }
         return null;
+    }
+
+    /** True/false when the key or prefix names a collection; null when it spans several. */
+    private async isPrivatePrefix(prefix: string | undefined): Promise<boolean | null> {
+        if (!prefix || !this.privacyManager) return null;
+        const collection = this.extractCollection(prefix);
+        if (!collection) return null;
+        return (await this.privacyManager.getCollectionPrivacy(collection))?.mode === 'private';
+    }
+
+    /**
+     * Move every key of a collection between the public and private adapters —
+     * needed when its mode changes, because after the switch reads are routed to
+     * the other adapter and would otherwise find nothing. Order: copy everything,
+     * run `switchMode` (records the new mode so reads route to the copy), then
+     * delete the originals. An interruption leaves duplicates rather than loss,
+     * and reads never hit an adapter that has already been emptied.
+     * Note the chain keeps history: values written while public stay readable in
+     * old transactions; only the live copy moves.
+     */
+    async migrateCollection(collection: string, toPrivate: boolean, switchMode: () => Promise<void>): Promise<number> {
+        if (this.publicAdapter === this.privateAdapter) {
+            await switchMode();
+            return 0;
+        }
+        const from = toPrivate ? this.publicAdapter : this.privateAdapter;
+        const to = toPrivate ? this.privateAdapter : this.publicAdapter;
+        let moved = 0;
+        const keys: string[] = [];
+        for (const prefix of [`doc:${collection}:`, `idx:${collection}:`]) {
+            for (const entry of await from.scan({ prefix, limit: 100000 })) {
+                await to.put(entry.key, entry.value);
+                keys.push(entry.key);
+                moved++;
+            }
+        }
+        await switchMode();
+        for (const key of keys) await from.delete(key);
+        return moved;
     }
 
     async get(key: string): Promise<Buffer | null> {
@@ -80,14 +123,10 @@ export class RoutingAdapter implements KVAdapter {
             return this.publicAdapter.scan(options);
         }
 
-        if (options.prefix && options.prefix.startsWith('col:')) {
-            const collection = this.extractCollection(options.prefix);
-            if (collection && this.privacyManager) {
-                const privacy = await this.privacyManager.getCollectionPrivacy(collection);
-                if (privacy?.mode === 'private') {
-                    return this.privateAdapter.scan(options);
-                }
-            }
+        // A scan inside one collection goes to exactly one adapter.
+        const isPrivate = await this.isPrivatePrefix(options.prefix);
+        if (isPrivate !== null) {
+            return (isPrivate ? this.privateAdapter : this.publicAdapter).scan(options);
         }
 
         // A7 fix: Global scans should merge results from both adapters
@@ -109,14 +148,9 @@ export class RoutingAdapter implements KVAdapter {
             return this.publicAdapter.count(prefix);
         }
 
-        if (prefix && prefix.startsWith('col:')) {
-            const collection = this.extractCollection(prefix);
-            if (collection && this.privacyManager) {
-                const privacy = await this.privacyManager.getCollectionPrivacy(collection);
-                if (privacy?.mode === 'private') {
-                    return this.privateAdapter.count(prefix);
-                }
-            }
+        const isPrivate = await this.isPrivatePrefix(prefix);
+        if (isPrivate !== null) {
+            return (isPrivate ? this.privateAdapter : this.publicAdapter).count(prefix);
         }
 
         // A7 fix: Global count should sum both adapters

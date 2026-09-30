@@ -11,7 +11,7 @@ import { ProtocolManager } from './protocols/protocol-manager.js';
 import { PGServer } from './protocols/pg-server.js';
 import { MySQLServer } from './protocols/mysql-server.js';
 import { RedisServer } from './protocols/redis-server.js';
-import { EncryptionLayer } from './storage/encryption-layer.js';
+import { EncryptionLayer, createRegistryCodec } from './storage/encryption-layer.js';
 import { RoutingAdapter } from './storage/routing-adapter.js';
 import { MessageBrokerAdapter } from './storage/message-broker-adapter.js';
 import { resolveKeys, logWalletRoles } from './keys.js';
@@ -111,6 +111,7 @@ export function createStorageAdapter(config: PlugPortConfig): KVAdapter & { getK
                 chainId: config.monadChainId || 10143,
                 privateKey: keys.privateStore,
                 contractAddress: config.privateStoreContract,
+                registryCodec: createRegistryCodec(keys.encryption),
             });
             console.log(`  [Storage] Private Channel: Isolated contract (${config.privateStoreContract})`);
         } else if (rpcUrl && keys.privateStore) {

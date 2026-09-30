@@ -14,6 +14,7 @@
 //   - MONAD_PRIVATE_KEY     — 64-char hex private key (owner wallet)
 //   - MONAD_CONTRACT_ADDRESS — Deployed PlugPortStore contract address
 
+import type { RegistryCodec } from './encryption-layer.js';
 import { ethers } from 'ethers';
 import { sendContractTx, confirmTx } from './tx-sequencer.js';
 import type { KVAdapter, KVEntry, ScanOptions } from '@plugport/shared';
@@ -22,6 +23,12 @@ import { PLUGPORT_STORE_ABI } from './contract-abi.js';
 // ---- Types ----
 
 export interface MonadConfig {
+    /**
+     * Encrypts the plaintext keys written to the registry log. Set this for a
+     * private contract: registry entries contain document ids and indexed field
+     * values, which would otherwise sit in the clear next to encrypted documents.
+     */
+    registryCodec?: RegistryCodec;
     /** Monad testnet RPC URL */
     rpcUrl: string;
     /** Chain ID (10143 for Monad testnet) */
@@ -118,6 +125,8 @@ export class MonadAdapter implements KVAdapter {
     /** Local index: string key → bytes32 hash (for scan/prefix support) */
     private keyIndex: Map<string, string> = new Map();
 
+    private registryCodec?: RegistryCodec;
+
     /** Local read cache for recently accessed values */
     private readCache: Map<string, Buffer> = new Map();
 
@@ -131,6 +140,7 @@ export class MonadAdapter implements KVAdapter {
     private registryMutex = new Mutex();
 
     constructor(config: MonadConfig) {
+        this.registryCodec = config.registryCodec;
         this.provider = new ethers.JsonRpcProvider(config.rpcUrl, {
             chainId: config.chainId,
             name: 'monad-testnet',
@@ -207,7 +217,8 @@ export class MonadAdapter implements KVAdapter {
             const entryHash = hashKey(registryEntryKey(seq));
             const rawKey: string = await withRetry(() => this.contract.get(entryHash), attempts, baseDelayMs);
             if (!rawKey || rawKey === '0x') return true;
-            const plaintextKey = Buffer.from(ethers.getBytes(rawKey)).toString('utf-8');
+            const stored = Buffer.from(ethers.getBytes(rawKey));
+            const plaintextKey = (this.registryCodec ? this.registryCodec.decode(stored) : stored).toString('utf-8');
 
             // Skip ghost entries — the underlying key was since deleted.
             const stillLive = await withRetry(() => this.contract.exists(hashKey(plaintextKey)), attempts, baseDelayMs);
@@ -289,7 +300,8 @@ export class MonadAdapter implements KVAdapter {
         try {
             if (this.keyIndex.has(key)) return null; // lost the race, already registered
             const seq = this.registryCount++;
-            return { key: registryEntryKey(seq), value: Buffer.from(key, 'utf-8') };
+            const plain = Buffer.from(key, 'utf-8');
+            return { key: registryEntryKey(seq), value: this.registryCodec ? this.registryCodec.encode(plain) : plain };
         } finally {
             unlock();
         }

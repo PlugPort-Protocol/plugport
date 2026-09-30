@@ -288,3 +288,39 @@ export class EncryptionLayer implements KVAdapter {
         return Buffer.concat([decipher.update(ciphertext), decipher.final()]);
     }
 }
+
+
+// ---- Registry-log codec ----
+//
+// MonadAdapter keeps an append-only log of every plaintext storage key so scans
+// survive a restart. Those keys embed document ids and the *values* of indexed
+// fields (`idx:<collection>:<field>:<value>`), so on a private contract they must
+// not be written in the clear. The codec wraps each entry in AES-256-GCM under a
+// key derived separately from the data key.
+
+const REGISTRY_MAGIC = Buffer.from('PPR1');
+
+export interface RegistryCodec {
+    encode(plain: Buffer): Buffer;
+    /** Accepts legacy plaintext entries (no magic prefix) unchanged. */
+    decode(stored: Buffer): Buffer;
+}
+
+export function createRegistryCodec(rootKey: string): RegistryCodec {
+    const key = createHmac('sha256', deriveAESKey(rootKey)).update('registry-log-v1').digest();
+    return {
+        encode(plain) {
+            const iv = randomBytes(12);
+            const cipher = createCipheriv('aes-256-gcm', key, iv);
+            const ct = Buffer.concat([cipher.update(plain), cipher.final()]);
+            return Buffer.concat([REGISTRY_MAGIC, iv, cipher.getAuthTag(), ct]);
+        },
+        decode(stored) {
+            if (stored.length < REGISTRY_MAGIC.length || !stored.subarray(0, 4).equals(REGISTRY_MAGIC)) return stored;
+            const body = stored.subarray(4);
+            const decipher = createDecipheriv('aes-256-gcm', key, body.subarray(0, 12));
+            decipher.setAuthTag(body.subarray(12, 28));
+            return Buffer.concat([decipher.update(body.subarray(28)), decipher.final()]);
+        },
+    };
+}
