@@ -95,10 +95,9 @@ services:
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD}
       - GF_USERS_ALLOW_SIGN_UP=false
       # Alert delivery (grafana/provisioning/alerting/contact-points.yml). The
-      # placeholders keep Grafana starting when they are unset — provisioning
+      # placeholder keeps Grafana starting when it is unset — provisioning
       # rejects an empty bot token — and sends then fail with a logged error.
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-not-configured}
-      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-not-configured}
     volumes:
       - grafana-data:/var/lib/grafana
       - ./grafana/provisioning:/etc/grafana/provisioning
