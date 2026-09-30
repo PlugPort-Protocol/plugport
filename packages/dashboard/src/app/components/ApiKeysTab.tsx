@@ -3,9 +3,12 @@
 import { useState, useEffect, useCallback } from 'react';
 import { apiGet, apiPost, apiDelete, getApiBase } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
+import toast from 'react-hot-toast';
 import { useSignMessage, useSignTypedData } from 'wagmi';
 import { keccak256, toBytes, bytesToHex } from 'viem';
 import { Icon } from '@/lib/icons';
+import { recoverKeys, recoverOne } from '@/lib/key-recovery';
+import { KeyGenerationModal, type KeyModalPhase } from './KeyGenerationModal';
 import type { ApiKeyInfo, KeyAnalytics, OnChainKeyInfo, ProtocolInfo } from '../types';
 
 // ---- Wallet-Derived Key Helpers ----
@@ -18,6 +21,21 @@ function deriveApiKeyFromSignature(signature: string): string {
 /** Computes keccak256 hash commitment of an API key */
 function computeCommitment(apiKey: string): string {
     return keccak256(toBytes(apiKey));
+}
+
+/**
+ * The slot the contract will assign to the next key: PlugPortAuth reuses the
+ * lowest inactive slot, otherwise appends. That is the smallest index not held
+ * by an active key. Deriving from this (rather than "highest + 1") keeps the
+ * derivation index and the on-chain slot identical, so two active keys can
+ * never come from the same index — which used to register the same key value
+ * in several slots, so revoking one left an identical live copy behind.
+ */
+function nextFreeKeyIndex(active: { keyIndex: number }[]): number {
+    const taken = new Set(active.map(k => k.keyIndex));
+    let i = 0;
+    while (taken.has(i)) i++;
+    return i;
 }
 
 /** Builds the derivation message for a given address and index */
@@ -120,6 +138,9 @@ export function ApiKeysTab() {
     const [newLabel, setNewLabel] = useState('');
     const [newPermissions, setNewPermissions] = useState<string[]>(['all']);
     const [generatedKey, setGeneratedKey] = useState<string | null>(null);
+    // Legacy keys show in the inline banner; wallet-derived keys reveal in the modal.
+    const [generatedSource, setGeneratedSource] = useState<'legacy' | 'onchain'>('legacy');
+    const [keyModal, setKeyModal] = useState<{ phase: KeyModalPhase; kind: 'generate' | 'rotate' } | null>(null);
     const [expandedKey, setExpandedKey] = useState<string | null>(null);
     const [keyAnalytics, setKeyAnalytics] = useState<KeyAnalytics | null>(null);
     const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
@@ -184,6 +205,7 @@ export function ApiKeysTab() {
                 permissions: newPermissions,
             });
             setGeneratedKey(res.apiKey);
+            setGeneratedSource('legacy');
             setMessage({ type: 'success', text: 'API key generated! Copy it now — it won\'t be shown again.' });
             setNewLabel('');
             loadKeys();
@@ -195,10 +217,10 @@ export function ApiKeysTab() {
     const handleRevoke = async (hash: string) => {
         try {
             await apiDelete(`/api/v1/keys/${hash}`);
-            setMessage({ type: 'success', text: 'Key revoked' });
+            toast.success('Key revoked');
             loadKeys();
         } catch (err) {
-            setMessage({ type: 'error', text: err instanceof Error ? err.message : 'Failed' });
+            toast.error(err instanceof Error ? err.message : 'Failed');
         }
     };
 
@@ -206,10 +228,11 @@ export function ApiKeysTab() {
         try {
             const res = await apiPost<{ apiKey: string }>(`/api/v1/keys/${hash}/rotate`, {});
             setGeneratedKey(res.apiKey);
-            setMessage({ type: 'success', text: 'Key rotated! Copy the new key.' });
+            setGeneratedSource('legacy');
+            toast.success('Key rotated! Copy the new key.');
             loadKeys();
         } catch (err) {
-            setMessage({ type: 'error', text: err instanceof Error ? err.message : 'Failed' });
+            toast.error(err instanceof Error ? err.message : 'Failed');
         }
     };
 
@@ -276,9 +299,18 @@ export function ApiKeysTab() {
         return { activeKeys: res.activeKeys || [], nonce: res.nonce ?? 0 };
     }, []);
 
+    // PlugPortAuth.MAX_KEYS_PER_ADDRESS: active keys per wallet (revoking frees a slot).
+    const MAX_ONCHAIN_KEYS = 10;
+    const atKeyCap = onChainLoaded && onChainKeys.length >= MAX_ONCHAIN_KEYS;
+
     const handleGenerateOnChain = async () => {
         if (!address) return;
+        if (atKeyCap) {
+            toast.error(`You have ${MAX_ONCHAIN_KEYS} of ${MAX_ONCHAIN_KEYS} keys. Revoke one to free a slot, then generate again.`);
+            return;
+        }
         setGeneratingOnChain(true);
+        setKeyModal({ phase: 'signing', kind: 'generate' });
         setMessage(null);
 
         try {
@@ -290,9 +322,7 @@ export function ApiKeysTab() {
             // React state happens to hold — so a stale page can't sign a
             // request the contract will reject.
             const fresh = await fetchFreshAuthState(address);
-            const nextIndex = fresh.activeKeys.length > 0
-                ? Math.max(...fresh.activeKeys.map(k => k.keyIndex)) + 1
-                : 0;
+            const nextIndex = nextFreeKeyIndex(fresh.activeKeys);
 
             // 1. Sign the derivation message
             const derivationMessage = buildDerivationMessage(address, nextIndex);
@@ -301,6 +331,9 @@ export function ApiKeysTab() {
             // 2. Derive API key
             const apiKey = deriveApiKeyFromSignature(signature);
             const commitment = computeCommitment(apiKey);
+            if (fresh.activeKeys.some(k => k.commitment.toLowerCase() === commitment.toLowerCase())) {
+                throw new Error('This key is already registered on your wallet. Revoke the duplicate and try again.');
+            }
 
             // 3. Compute SCRAM verifiers (salt is deterministic from address + index).
             // Full 32-byte hash — the contract's `salt` param is `bytes32`, and
@@ -330,6 +363,7 @@ export function ApiKeysTab() {
             });
 
             // 5. Relay to server
+            setKeyModal({ phase: 'registering', kind: 'generate' });
             await apiPost('/api/v1/auth/register-key', {
                 keyOwner: address,
                 commitment,
@@ -341,20 +375,20 @@ export function ApiKeysTab() {
             });
 
             setGeneratedKey(apiKey);
-            setMessage({
-                type: 'success',
-                text: `Wallet-derived key #${nextIndex} registered! Copy it now — you can always recover it with your wallet.`,
-            });
+            setGeneratedSource('onchain');
+            setKeyModal({ phase: 'done', kind: 'generate' });
 
             await loadOnChainKeys();
         } catch (err) {
+            setKeyModal(null);
             const isNetworkError = err instanceof TypeError && err.message.includes('fetch');
-            setMessage({
-                type: 'error',
-                text: isNetworkError 
-                    ? 'Failed to reach backend for SCRAM derivation. Is the server running?' 
-                    : (err instanceof Error ? err.message : 'Failed to generate key'),
-            });
+            const text = isNetworkError
+                ? 'Failed to reach backend for SCRAM derivation. Is the server running?'
+                : err instanceof Error && /max keys reached/i.test(err.message)
+                    ? `You have reached the limit of ${MAX_ONCHAIN_KEYS} active keys per wallet. Revoke one to free a slot, then generate again.`
+                    : (err instanceof Error ? err.message : 'Failed to generate key');
+            if (/max keys reached|limit of/i.test(text)) toast.error(text);
+            else setMessage({ type: 'error', text });
         } finally {
             setGeneratingOnChain(false);
         }
@@ -388,21 +422,19 @@ export function ApiKeysTab() {
                 signature: metaSignature,
             });
 
-            setMessage({ type: 'success', text: `Key #${keyIndex} revoked on-chain` });
+            toast.success(`Key #${keyIndex} revoked on-chain`);
             await loadOnChainKeys();
         } catch (err) {
             const isNetworkError = err instanceof TypeError && err.message.includes('fetch');
-            setMessage({
-                type: 'error',
-                text: isNetworkError 
-                    ? 'Failed to reach backend. Is the server running?' 
-                    : (err instanceof Error ? err.message : 'Failed to revoke key'),
-            });
+            toast.error(isNetworkError
+                ? 'Failed to reach backend. Is the server running?'
+                : (err instanceof Error ? err.message : 'Failed to revoke key'));
         }
     };
 
     const handleRotateOnChain = async (oldKeyIndex: number) => {
         if (!address) return;
+        setKeyModal({ phase: 'signing', kind: 'rotate' });
         setMessage(null);
 
         try {
@@ -412,9 +444,7 @@ export function ApiKeysTab() {
 
             // Fetch authoritative on-chain state right now, not cached React state.
             const fresh = await fetchFreshAuthState(address);
-            const nextIndex = fresh.activeKeys.length > 0
-                ? Math.max(...fresh.activeKeys.map(k => k.keyIndex)) + 1
-                : 0;
+            const nextIndex = nextFreeKeyIndex(fresh.activeKeys);
 
             // 1. Derive new API key
             const derivationMessage = buildDerivationMessage(address, nextIndex);
@@ -445,6 +475,7 @@ export function ApiKeysTab() {
             });
 
             // 4. Relay to server
+            setKeyModal({ phase: 'registering', kind: 'rotate' });
             await apiPost('/api/v1/auth/rotate-key', {
                 keyOwner: address,
                 oldKeyIndex,
@@ -457,20 +488,46 @@ export function ApiKeysTab() {
             });
 
             setGeneratedKey(newApiKey);
-            setMessage({
-                type: 'success',
-                text: `Key #${oldKeyIndex} rotated to key #${nextIndex}! Copy the new key now.`,
-            });
+            setGeneratedSource('onchain');
+            setKeyModal({ phase: 'done', kind: 'rotate' });
 
             await loadOnChainKeys();
         } catch (err) {
+            setKeyModal(null);
             const isNetworkError = err instanceof TypeError && err.message.includes('fetch');
-            setMessage({
-                type: 'error',
-                text: isNetworkError 
-                    ? 'Failed to reach backend for SCRAM derivation. Is the server running?' 
-                    : (err instanceof Error ? err.message : 'Failed to rotate key'),
+            toast.error(isNetworkError
+                ? 'Failed to reach backend for SCRAM derivation. Is the server running?'
+                : (err instanceof Error ? err.message : 'Failed to rotate key'));
+        }
+    };
+
+    const [recoveringSlot, setRecoveringSlot] = useState<number | null>(null);
+
+    /** Recover a single key: usually one signature (its own slot's derivation index). */
+    const handleRecoverOne = async (key: OnChainKeyInfo) => {
+        if (!address || recoveringSlot !== null) return;
+        setRecoveringSlot(key.keyIndex);
+        try {
+            const res = await recoverOne({
+                chainKey: key,
+                derive: async (i) => deriveApiKeyFromSignature(
+                    await signMessageAsync({ message: buildDerivationMessage(address, i) }),
+                ),
+                commitmentOf: computeCommitment,
+                maxScan: MAX_ONCHAIN_KEYS + 1,
             });
+            if (res.derivedKey) {
+                setOnChainKeys(prev => prev.map(k => k.commitment === key.commitment ? { ...k, derivedKey: res.derivedKey } : k));
+                toast.success(`Key #${key.keyIndex} recovered.`);
+            } else if (res.interrupted) {
+                toast.error('Signing was cancelled.');
+            } else {
+                toast(`Key #${key.keyIndex} wasn't created from this wallet's signatures, so it can't be re-derived. Revoke or rotate it.`, { duration: 8000 });
+            }
+        } catch (err) {
+            toast.error(err instanceof Error ? err.message : 'Recovery failed');
+        } finally {
+            setRecoveringSlot(null);
         }
     };
 
@@ -479,44 +536,35 @@ export function ApiKeysTab() {
         setRecoveringKeys(true);
         setMessage(null);
 
-        const recoveredKeys: OnChainKeyInfo[] = [];
-        const MAX_SCAN = 10; // Max keys per wallet
-
         try {
-            for (let i = 0; i < MAX_SCAN; i++) {
-                try {
-                    const msg = buildDerivationMessage(address, i);
-                    const sig = await signMessageAsync({ message: msg });
-                    const apiKey = deriveApiKeyFromSignature(sig);
-                    const commitment = computeCommitment(apiKey);
-
-                    recoveredKeys.push({
-                        keyIndex: i,
-                        commitment,
-                        active: true, // Will be verified against on-chain state
-                        createdAt: Date.now(),
-                        derivedKey: apiKey,
-                    });
-                } catch {
-                    // User rejected signing — stop scanning
-                    break;
-                }
+            // Start from what the chain actually holds. Keys are only ever shown
+            // if they exist on-chain; a derived key that matches nothing is not a key.
+            const fresh = await fetchFreshAuthState(address);
+            if (fresh.activeKeys.length === 0) {
+                setOnChainKeys([]);
+                toast('No keys are registered for this wallet yet.');
+                return;
             }
 
-            if (recoveredKeys.length > 0) {
-                setOnChainKeys(recoveredKeys);
-                setMessage({
-                    type: 'success',
-                    text: `Recovered ${recoveredKeys.length} key(s). Active keys are shown below.`,
-                });
+            const result = await recoverKeys({
+                chainKeys: fresh.activeKeys,
+                derive: async (i) => deriveApiKeyFromSignature(
+                    await signMessageAsync({ message: buildDerivationMessage(address, i) }),
+                ),
+                commitmentOf: computeCommitment,
+                maxScan: MAX_ONCHAIN_KEYS + 1, // derivation index can sit one past the last slot on older keys
+            });
+
+            setOnChainKeys(result.keys);
+            if (result.recovered === result.total) {
+                toast.success(`Recovered ${result.recovered} key${result.recovered === 1 ? '' : 's'}.`);
+            } else if (result.interrupted) {
+                toast.error(`Recovered ${result.recovered} of ${result.total} keys — signing was cancelled.`);
             } else {
-                setMessage({ type: 'error', text: 'No keys found for this wallet.' });
+                toast(`Recovered ${result.recovered} of ${result.total} keys. The rest were not created from this wallet's signatures, so they can't be re-derived — revoke or rotate them.`, { duration: 8000 });
             }
         } catch (err) {
-            setMessage({
-                type: 'error',
-                text: err instanceof Error ? err.message : 'Recovery failed',
-            });
+            toast.error(err instanceof Error ? err.message : 'Recovery failed');
         } finally {
             setRecoveringKeys(false);
         }
@@ -542,10 +590,19 @@ export function ApiKeysTab() {
 
     return (
         <div className="fade-in">
+            {keyModal && (
+                <KeyGenerationModal
+                    phase={keyModal.phase}
+                    kind={keyModal.kind}
+                    apiKey={generatedKey}
+                    onClose={() => setKeyModal(null)}
+                />
+            )}
+
             {message && <div className={`alert alert-${message.type}`}>{message.text}</div>}
 
             {/* Generated key display */}
-            {generatedKey && (
+            {generatedKey && generatedSource === 'legacy' && (
                 <div className="alert alert-success" style={{ fontFamily: 'JetBrains Mono', fontSize: 13, flexDirection: 'column', alignItems: 'flex-start', gap: 8 }}>
                     <div style={{ fontWeight: 700 }}>Your API Key (copy now — shown only once):</div>
                     <div style={{ display: 'flex', gap: 8, width: '100%' }}>
@@ -588,6 +645,11 @@ export function ApiKeysTab() {
                     <div className="card" style={{ marginBottom: 24 }}>
                         <div className="card-header">
                             <div className="card-title">Generate Wallet-Derived API Key</div>
+                            {onChainLoaded && (
+                                <span style={{ fontSize: 12, color: atKeyCap ? 'var(--error, #ef4444)' : 'var(--text-tertiary)' }}>
+                                    {onChainKeys.length}/{MAX_ONCHAIN_KEYS} keys
+                                </span>
+                            )}
                         </div>
                         <div style={{ fontSize: 13, color: 'var(--text-tertiary)', marginBottom: 16, lineHeight: 1.6 }}>
                             Derive a new API key from your wallet signature. The key is <strong>deterministic</strong> — you can always recover it by signing the same message again.
@@ -597,7 +659,8 @@ export function ApiKeysTab() {
                             <button
                                 className="btn btn-primary"
                                 onClick={handleGenerateOnChain}
-                                disabled={generatingOnChain}
+                                disabled={generatingOnChain || atKeyCap}
+                                title={atKeyCap ? `Limit of ${MAX_ONCHAIN_KEYS} active keys reached — revoke one first` : undefined}
                                 style={{ minWidth: 200 }}
                             >
                                 {generatingOnChain ? (
@@ -688,6 +751,15 @@ export function ApiKeysTab() {
                                         </div>
                                         {k.active && (
                                             <div style={{ display: 'flex', gap: 8 }}>
+                                                {!k.derivedKey && (
+                                                    <button
+                                                        className="btn btn-sm btn-secondary"
+                                                        onClick={() => handleRecoverOne(k)}
+                                                        disabled={recoveringSlot !== null || recoveringKeys}
+                                                    >
+                                                        {recoveringSlot === k.keyIndex ? 'Signing…' : 'Recover'}
+                                                    </button>
+                                                )}
                                                 <button
                                                     className="btn btn-sm btn-secondary"
                                                     onClick={() => handleRotateOnChain(k.keyIndex)}

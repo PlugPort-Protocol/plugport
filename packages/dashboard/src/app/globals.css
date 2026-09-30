@@ -1011,3 +1011,112 @@ a:hover { color: var(--accent-primary); }
   .scope-toggle-btn { flex: 1; text-align: center; }
   .gas-station-panel > div:last-child { grid-template-columns: 1fr !important; }
 }
+
+/* ---- Key generation sheet (Apple-style frosted glass) ---- */
+.kg-overlay {
+  position: fixed; inset: 0; z-index: 300;
+  display: flex; align-items: center; justify-content: center;
+  padding: 24px;
+  background: rgba(4, 0, 9, 0.38);
+  backdrop-filter: blur(6px) saturate(1.1);
+  -webkit-backdrop-filter: blur(6px) saturate(1.1);
+  animation: kgFade 0.28s ease-out;
+}
+.kg-sheet {
+  width: 100%; max-width: 400px;
+  padding: 36px 28px 28px;
+  text-align: center;
+  border-radius: 28px;
+  background: linear-gradient(180deg, rgba(255,255,255,0.09), rgba(255,255,255,0.03)), var(--bg-glass);
+  backdrop-filter: blur(40px) saturate(1.8);
+  -webkit-backdrop-filter: blur(40px) saturate(1.8);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 30px 80px rgba(0,0,0,0.5), 0 0 0 0.5px rgba(255,255,255,0.05), inset 0 1px 0 rgba(255,255,255,0.14);
+  animation: kgPop 0.42s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.kg-sheet-done { max-width: 440px; }
+.kg-badge {
+  width: 64px; height: 64px; margin: 0 auto 20px;
+  border-radius: 20px;
+  display: flex; align-items: center; justify-content: center;
+  color: #fff;
+  background: linear-gradient(145deg, #8a73ff, #5236d1);
+  box-shadow: 0 10px 28px rgba(110, 84, 255, 0.45), inset 0 1px 0 rgba(255,255,255,0.35);
+  transition: background 0.4s ease, box-shadow 0.4s ease;
+}
+.kg-badge-done {
+  background: linear-gradient(145deg, #4fe3a2, #2fb87a);
+  box-shadow: 0 10px 28px rgba(62, 207, 142, 0.4), inset 0 1px 0 rgba(255,255,255,0.35);
+  animation: kgBounce 0.5s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.kg-ring {
+  width: 26px; height: 26px; border-radius: 50%;
+  border: 2.5px solid rgba(255,255,255,0.3); border-top-color: #fff;
+  animation: spin 0.9s linear infinite;
+}
+.kg-check { stroke-dasharray: 26; stroke-dashoffset: 26; animation: kgDraw 0.45s 0.15s ease-out forwards; }
+.kg-title { font-size: 22px; font-weight: 700; letter-spacing: -0.5px; margin: 0 0 6px; }
+.kg-sub { font-size: 14px; color: var(--text-tertiary); margin: 0 0 24px; line-height: 1.5; }
+
+.kg-steps { list-style: none; margin: 0; padding: 6px; text-align: left; border-radius: 16px; background: rgba(255,255,255,0.04); }
+.kg-step { display: flex; align-items: center; gap: 14px; padding: 12px; border-radius: 12px; transition: opacity 0.3s ease, background 0.3s ease; }
+.kg-step-pending { opacity: 0.4; }
+.kg-step-active { background: rgba(110, 84, 255, 0.12); }
+.kg-dot {
+  flex: none; width: 24px; height: 24px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  border: 1.5px solid var(--border-primary); color: #fff;
+  transition: background 0.3s ease, border-color 0.3s ease;
+}
+.kg-step-active .kg-dot { border-color: var(--accent-primary); }
+.kg-step-complete .kg-dot { background: var(--accent-success); border-color: var(--accent-success); animation: kgBounce 0.4s cubic-bezier(0.34, 1.56, 0.64, 1); }
+.kg-dot-pulse { width: 8px; height: 8px; border-radius: 50%; background: var(--accent-primary); animation: kgPulse 1.3s ease-in-out infinite; }
+.kg-step-text { display: flex; flex-direction: column; gap: 1px; }
+.kg-step-label { font-size: 14px; font-weight: 600; }
+.kg-step-hint { font-size: 12px; color: var(--text-tertiary); }
+
+.kg-key {
+  display: block; width: 100%; cursor: pointer; text-align: left;
+  padding: 16px; border-radius: 16px;
+  background: rgba(0,0,0,0.28);
+  border: 1px solid rgba(255,255,255,0.1);
+  color: var(--text-primary);
+  transition: transform 0.15s ease, border-color 0.25s ease, background 0.25s ease;
+}
+.kg-key:hover { border-color: var(--border-hover); background: rgba(110, 84, 255, 0.1); }
+.kg-key:active { transform: scale(0.985); }
+.kg-key:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
+.kg-key-copied, .kg-key-copied:hover { border-color: rgba(62, 207, 142, 0.55); background: rgba(62, 207, 142, 0.1); }
+.kg-key-text { display: block; font-family: var(--font-mono); font-size: 12.5px; line-height: 1.55; word-break: break-all; color: var(--text-secondary); }
+.kg-key-cta {
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+  margin-top: 14px; padding-top: 12px;
+  border-top: 1px solid rgba(255,255,255,0.08);
+  font-size: 13px; font-weight: 600; color: var(--accent-primary-light);
+}
+.kg-key-copied .kg-key-cta { color: var(--accent-success); }
+.kg-done {
+  width: 100%; margin-top: 16px; padding: 14px; border: none; border-radius: 14px; cursor: pointer;
+  font-size: 15px; font-weight: 600; color: #fff;
+  background: linear-gradient(180deg, #7d66ff, #5a3fe0);
+  box-shadow: 0 6px 18px rgba(110, 84, 255, 0.35), inset 0 1px 0 rgba(255,255,255,0.25);
+  transition: transform 0.15s ease, filter 0.2s ease;
+}
+.kg-done:hover { filter: brightness(1.08); }
+.kg-done:active { transform: scale(0.98); }
+
+@keyframes kgFade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes kgPop { from { opacity: 0; transform: scale(0.92) translateY(10px); } to { opacity: 1; transform: none; } }
+@keyframes kgBounce { 0% { transform: scale(0.6); } 100% { transform: scale(1); } }
+@keyframes kgDraw { to { stroke-dashoffset: 0; } }
+@keyframes kgPulse { 0%, 100% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.5); opacity: 0.55; } }
+@media (prefers-reduced-motion: reduce) {
+  .kg-sheet, .kg-overlay, .kg-badge-done, .kg-step-complete .kg-dot, .kg-dot-pulse, .kg-ring { animation: none; }
+  .kg-check { animation: none; stroke-dashoffset: 0; }
+}
+[data-theme='light'] .kg-overlay { background: rgba(12, 0, 23, 0.22); }
+[data-theme='light'] .kg-sheet { border-color: rgba(12, 0, 23, 0.08); box-shadow: 0 30px 80px rgba(12,0,23,0.18), inset 0 1px 0 rgba(255,255,255,0.9); }
+[data-theme='light'] .kg-steps { background: rgba(12, 0, 23, 0.04); }
+[data-theme='light'] .kg-key { background: rgba(12, 0, 23, 0.04); border-color: rgba(12, 0, 23, 0.1); }
+[data-theme='light'] .kg-key-cta { border-top-color: rgba(12, 0, 23, 0.08); }
+.kg-sheet { max-height: calc(100vh - 48px); overflow-y: auto; }
