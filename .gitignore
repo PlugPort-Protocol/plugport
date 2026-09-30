@@ -89,3 +89,16 @@ yarn.lock
 
 # Allowed Lockfiles
 !docs/package-lock.json
+
+# Personal reference notes — kept locally, never committed
+/TODO.md
+/TODO_URGENT.md
+/NEXT_STEPS.md
+/DEPLOYMENT_PREREQS.md
+/TESTING_GUIDE.md
+/WIRE_PROTOCOL_TEST_GUIDE.md
+
+# Throwaway scripts
+.scratch*
+packages/server/scratch.*
+packages/server/generate_execute_redis.cjs
