@@ -74,6 +74,8 @@ const { OP_MSG, HEADER_SIZE, MAX_WIRE_VERSION, MIN_WIRE_VERSION } = WireProtocol
 /** Maximum allowed wire protocol message size (48MB, matching MongoDB) */
 const MAX_MESSAGE_SIZE = 48 * 1024 * 1024;
 
+let nextConnectionId = 1;
+
 interface MessageHeader {
     messageLength: number;
     requestID: number;
@@ -242,7 +244,9 @@ export function createWireServer(options: WireServerOptions): net.Server {
         metrics.connectionOpened('wire');
         let buffer = Buffer.alloc(0);
         let requestIdCounter = 1; // Per-connection counter for encapsulation
-        const connectionId = Math.floor(Math.random() * 1000000);
+        // Unique per process: authenticatedConnections and scramSessions are keyed
+        // by it, so a collision would hand one connection another's login.
+        const connectionId = nextConnectionId++;
 
         // Slowloris DoS protection: Destroy idle connections
         socket.setTimeout(60000);
