@@ -307,6 +307,14 @@ async function main() {
 }
 
 if (process.env.NODE_ENV !== 'test') {
+    // A rejection nobody awaits — typically from a library's background
+    // polling (ethers' block/receipt/event subscribers don't catch their own
+    // RPC errors) — would otherwise exit the process and take every protocol
+    // down with it over one failed RPC call. Log it and keep serving.
+    process.on('unhandledRejection', (reason) => {
+        console.error('[PlugPort] Unhandled promise rejection (process kept running):', reason);
+    });
+
     main().catch((err) => {
         console.error('Fatal error:', err);
         process.exit(1);

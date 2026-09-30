@@ -13,7 +13,7 @@
 //   - MONAD_PRIVATE_KEY (gas station wallet for the message broker)
 
 import { ethers } from 'ethers';
-import { sendContractTx } from './tx-sequencer.js';
+import { sendContractTx, confirmTx } from './tx-sequencer.js';
 
 // ---- ABI (PlugPortMessageBroker.sol) ----
 
@@ -220,12 +220,12 @@ export class MessageBrokerAdapter {
                 channel,
                 msgBytes,
             ));
-            await tx.wait();
+            await confirmTx(tx);
         } catch (err: any) {
             // Fallback to publish without name if publishWithName fails
             try {
                 const tx = await sendContractTx(this.wallet, () => this.writeContract.publish.populateTransaction(channelHash, msgBytes));
-                await tx.wait();
+                await confirmTx(tx);
             } catch (innerErr: any) {
                 throw new Error(`MessageBroker publish failed: ${innerErr.message}`);
             }

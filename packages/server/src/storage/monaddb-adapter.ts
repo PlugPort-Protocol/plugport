@@ -15,7 +15,7 @@
 //   - MONAD_CONTRACT_ADDRESS — Deployed PlugPortStore contract address
 
 import { ethers } from 'ethers';
-import { sendContractTx } from './tx-sequencer.js';
+import { sendContractTx, confirmTx } from './tx-sequencer.js';
 import type { KVAdapter, KVEntry, ScanOptions } from '@plugport/shared';
 import { PLUGPORT_STORE_ABI } from './contract-abi.js';
 
@@ -423,10 +423,10 @@ export class MonadAdapter implements KVAdapter {
                 [hexValue, ethers.hexlify(registryEntry.value)],
                 [],
             ));
-            await tx.wait();
+            await confirmTx(tx);
         } else {
             const tx = await sendContractTx(this.wallet, () => this.contract.put.populateTransaction(hash, hexValue));
-            await tx.wait();
+            await confirmTx(tx);
         }
 
         // Update local caches
@@ -442,7 +442,7 @@ export class MonadAdapter implements KVAdapter {
             if (!exists) return false;
 
             const tx = await sendContractTx(this.wallet, () => this.contract.del.populateTransaction(hash));
-            await tx.wait();
+            await confirmTx(tx);
 
             // Update local caches
             this.readCache.delete(key);
@@ -471,7 +471,7 @@ export class MonadAdapter implements KVAdapter {
             for (let i = 0; i < hashes.length; i += BATCH) {
                 const batch = hashes.slice(i, i + BATCH);
                 const tx = await sendContractTx(this.wallet, () => this.contract.batchWrite.populateTransaction([], [], batch));
-                await tx.wait();
+                await confirmTx(tx);
             }
         }
 
@@ -533,7 +533,7 @@ export class MonadAdapter implements KVAdapter {
 
             try {
                 const tx = await sendContractTx(this.wallet, () => this.contract.batchWrite.populateTransaction(batchPutKeys, batchPutValues, batchDeleteKeys));
-                await tx.wait();
+                await confirmTx(tx);
             } catch (err) {
                 // Revert local caches for the real (non-bookkeeping) puts in this chunk
                 for (let j = i; j < Math.min(i + BATCH, putOwners.length); j++) {

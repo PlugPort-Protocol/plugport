@@ -12,7 +12,7 @@
 //   - AUTH_GAS_STATION_PRIVATE_KEYS — Comma-separated list of 64-char hex private keys for gas station wallets
 
 import { ethers } from 'ethers';
-import { sendContractTx } from '../storage/tx-sequencer.js';
+import { sendContractTx, confirmTx } from '../storage/tx-sequencer.js';
 import { withRetry } from '../storage/monaddb-adapter.js';
 import { createRpcProvider } from '../storage/rpc-provider.js';
 
@@ -39,12 +39,8 @@ const PLUGPORT_AUTH_ABI = [
     'event KeyRevoked(address indexed keyOwner, uint8 keyIndex, uint256 timestamp)',
 ];
 
-/** Waits for a transaction to be mined; ethers types wait() as nullable. */
-async function confirmed(tx: ethers.TransactionResponse): Promise<ethers.TransactionReceipt> {
-    const receipt = await tx.wait();
-    if (!receipt) throw new Error(`Transaction ${tx.hash} was not confirmed`);
-    return receipt;
-}
+/** Waits for a transaction to be mined (see confirmTx for why not tx.wait()). */
+const confirmed = (tx: ethers.TransactionResponse): Promise<ethers.TransactionReceipt> => confirmTx(tx);
 
 // ---- Types ----
 

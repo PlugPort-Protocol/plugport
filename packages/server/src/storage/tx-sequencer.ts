@@ -12,7 +12,7 @@
 // so all subsystems sharing a key share one queue:
 //   - the lock covers nonce assignment + signing + broadcast only. Gas
 //     estimation happens BEFORE taking it (in sendContractTx) and confirmation
-//     happens after releasing it, so transactions still pipeline into
+//     happens after releasing it (confirmTx), so transactions still pipeline into
 //     consecutive blocks and slow RPC lookups never queue other senders;
 //   - the local counter never moves backwards, so a lagging RPC "pending"
 //     count can't hand out a nonce we've already used;
@@ -20,7 +20,7 @@
 //     so an external sender advancing the account is picked up too;
 //   - nonce-class rejections resync from the chain and retry.
 
-import type { ethers } from 'ethers';
+import { makeError, type ethers } from 'ethers';
 
 const DEFAULT_MAX_ATTEMPTS = 6;
 const DEFAULT_RETRY_DELAY_MS = 250;
@@ -101,7 +101,7 @@ const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
  * Broadcast a transaction from `signer` with a coordinated nonce.
  * `send` must pass the given nonce through to the underlying call, e.g.
  * `(nonce) => contract.put(hash, value, { nonce })`. Resolves as soon as the
- * transaction is accepted by the RPC; the caller awaits `tx.wait()` itself.
+ * transaction is accepted by the RPC; the caller awaits `confirmTx(tx)` itself.
  */
 export async function sendSequenced<T>(
     signer: ethers.Signer,
@@ -160,7 +160,7 @@ export async function sendSequenced<T>(
  * estimated up front, outside the lock, so concurrent callers estimate in
  * parallel and a reverting call fails without ever holding the queue. Only the
  * final nonce-assign + sign + broadcast is serialized. Resolves once the RPC
- * accepts the transaction; the caller awaits `tx.wait()` itself.
+ * accepts the transaction; the caller awaits `confirmTx(tx)` itself.
  */
 export async function sendContractTx(
     signer: ethers.Signer,
@@ -173,6 +173,72 @@ export async function sendContractTx(
     const prepared = await signer.populateTransaction({ ...base, nonce: 0 });
     delete (prepared as { from?: unknown }).from;
     return sendSequenced(signer, (nonce) => signer.sendTransaction({ ...prepared, nonce }), opts);
+}
+
+export interface ConfirmOptions {
+    /** Give up after this long without a receipt. */
+    timeoutMs?: number;
+    /** Delay between receipt polls while the RPC is healthy. */
+    pollIntervalMs?: number;
+    /** Upper bound for the backoff applied after failed polls. */
+    maxBackoffMs?: number;
+}
+
+const DEFAULT_CONFIRM_TIMEOUT_MS = 120_000;
+const DEFAULT_POLL_INTERVAL_MS = 500;
+const DEFAULT_MAX_BACKOFF_MS = 8_000;
+
+/**
+ * Wait for `tx` to be mined and return its receipt. Use this instead of
+ * `tx.wait()`.
+ *
+ * When the first receipt lookup comes back empty, ethers' `wait()` keeps
+ * polling from a per-block subscriber that never catches its own errors
+ * (ethers 6.16 `OnBlockSubscriber`). A single failed poll — e.g. the RPC's
+ * "50/second request limit reached" — then becomes an unhandled rejection
+ * that no caller can catch, and it kills the process. This polls the
+ * receipt directly instead: RPC errors back off and retry, and only a
+ * revert or the timeout rejects, into the caller's own `await`.
+ */
+export async function confirmTx(
+    tx: ethers.TransactionResponse,
+    opts: ConfirmOptions = {},
+): Promise<ethers.TransactionReceipt> {
+    const timeoutMs = opts.timeoutMs ?? DEFAULT_CONFIRM_TIMEOUT_MS;
+    const pollIntervalMs = opts.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
+    const maxBackoffMs = opts.maxBackoffMs ?? DEFAULT_MAX_BACKOFF_MS;
+    const deadline = Date.now() + timeoutMs;
+
+    let delay = pollIntervalMs;
+    let lastErr: unknown;
+    for (;;) {
+        try {
+            const receipt = await tx.provider.getTransactionReceipt(tx.hash);
+            if (receipt) {
+                if (receipt.status === 0) {
+                    throw makeError('transaction execution reverted', 'CALL_EXCEPTION', {
+                        action: 'sendTransaction',
+                        data: null, reason: null, invocation: null, revert: null,
+                        transaction: { to: receipt.to, from: receipt.from, data: '' },
+                        receipt,
+                    });
+                }
+                return receipt;
+            }
+            delay = pollIntervalMs;
+        } catch (err) {
+            if ((err as { code?: string }).code === 'CALL_EXCEPTION') throw err;
+            lastErr = err;
+            delay = Math.min(delay * 2, maxBackoffMs);
+            console.warn(`[TxSequencer] receipt poll for ${tx.hash} failed — retrying in ${delay}ms:`,
+                err instanceof Error ? err.message.slice(0, 200) : err);
+        }
+        if (Date.now() + delay > deadline) {
+            const detail = lastErr instanceof Error ? ` (last RPC error: ${lastErr.message.slice(0, 200)})` : '';
+            throw new Error(`Transaction ${tx.hash} was not confirmed within ${timeoutMs}ms${detail}`);
+        }
+        await sleep(delay);
+    }
 }
 
 /** Test hook: forget all per-wallet state. */
