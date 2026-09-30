@@ -1,0 +1,30 @@
+# Telegram message format for PlugPort alerts (used by contact-points.yml).
+#
+# Grafana's default dumps raw values, every label and localhost links. This
+# sends one short message per alert: what is wrong, what to do, since when,
+# and links that open from a phone. Resolved alerts get a one-line message.
+# Rendered as Telegram HTML, so alert text must not contain < > or &.
+# No `$` anywhere: Grafana expands $VAR in provisioning files.
+apiVersion: 1
+
+templates:
+  - orgId: 1
+    name: plugport
+    template: |
+      {{ define "plugport.icon" }}{{ if eq . "critical" }}🔴{{ else if eq . "warning" }}🟠{{ else }}🔵{{ end }}{{ end }}
+
+      {{ define "plugport.telegram" -}}
+      {{ range .Alerts.Firing -}}
+      {{ template "plugport.icon" .Labels.severity }} <b>{{ .Labels.alertname }}</b>
+      {{ .Annotations.summary }}
+      {{ if .Annotations.description }}👉 {{ .Annotations.description }}
+      {{ end -}}
+      <i>Since {{ .StartsAt.UTC.Format "15:04 UTC, Jan 2" }}</i> · <a href="{{ .GeneratorURL }}">details</a> · <a href="{{ .SilenceURL }}">silence</a>
+
+      {{ end -}}
+      {{ range .Alerts.Resolved -}}
+      ✅ <b>Resolved: {{ .Labels.alertname }}</b>
+      <i>{{ .StartsAt.UTC.Format "15:04" }} – {{ .EndsAt.UTC.Format "15:04 UTC, Jan 2" }}</i>
+
+      {{ end -}}
+      {{- end }}

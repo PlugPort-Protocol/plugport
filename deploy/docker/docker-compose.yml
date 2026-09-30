@@ -98,6 +98,9 @@ services:
       # placeholder keeps Grafana starting when it is unset — provisioning
       # rejects an empty bot token — and sends then fail with a logged error.
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-not-configured}
+      # Public URL, so the "details" and "silence" links in alerts open (they
+      # pointed at localhost:3000).
+      - GF_SERVER_ROOT_URL=https://${GRAFANA_DOMAIN:-localhost:3000}/
     volumes:
       - grafana-data:/var/lib/grafana
       - ./grafana/provisioning:/etc/grafana/provisioning

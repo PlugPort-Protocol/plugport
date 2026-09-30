@@ -18,4 +18,8 @@ contactPoints:
           # quoted) and provisioning failed, which stops Grafana from starting.
           # Not a secret — posting needs the bot token.
           chatid: "-1003597818341"
+          # Human-readable format from templates.yml.
+          message: '{{ template "plugport.telegram" . }}'
+          parse_mode: HTML
+          disable_web_page_preview: true
         disableResolveMessage: false

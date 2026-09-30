@@ -16,15 +16,15 @@ groups:
     interval: 1m
     rules:
       - uid: plugport-server-down
-        title: PlugPort server down
+        title: Server down
         condition: C
         for: 1m
         noDataState: Alerting
         execErrState: Error
         labels: { severity: critical }
         annotations:
-          summary: The PlugPort server is not answering Prometheus scrapes.
-          description: Nothing is served over HTTP or the wire protocols. Check `docker ps` and `docker logs plugport-server` on the VPS.
+          summary: 'The PlugPort server isn''t answering, so the API, dashboard and database ports are all down.'
+          description: 'It has been unreachable for over a minute. On the VPS, check docker ps and then docker logs plugport-server.'
         data:
           - refId: A
             relativeTimeRange: { from: 300, to: 0 }
@@ -39,15 +39,15 @@ groups:
               conditions: [{ evaluator: { type: lt, params: [1] } }]
 
       - uid: plugport-server-restarted
-        title: PlugPort server restarted
+        title: Server restarted
         condition: C
         for: 0s
         noDataState: OK
         execErrState: Error
         labels: { severity: info }
         annotations:
-          summary: The PlugPort server process restarted in the last 10 minutes.
-          description: Expected after a deploy. Otherwise it crashed and Docker restarted it — check `docker logs plugport-server` and /tmp for a Node diagnostic report.
+          summary: 'The PlugPort server restarted.'
+          description: 'Expected right after a deploy. If nobody deployed, it crashed and Docker restarted it: check docker logs plugport-server.'
         data:
           - refId: A
             relativeTimeRange: { from: 600, to: 0 }
@@ -62,15 +62,15 @@ groups:
               conditions: [{ evaluator: { type: gt, params: [0] } }]
 
       - uid: plugport-heap-high
-        title: PlugPort heap above 80%
+        title: Server memory high
         condition: C
         for: 2m
         noDataState: OK
         execErrState: Error
         labels: { severity: warning }
         annotations:
-          summary: The server's JavaScript heap has been above 80% of its limit for 2 minutes.
-          description: At the limit the process dies of OOM (as on 2026-09-27). Check the Grafana overview for which traffic grew.
+          summary: 'The server has used over 80% of its memory limit for 2 minutes.'
+          description: 'At 100% it crashes. Check the PlugPort Overview dashboard in Grafana to see which traffic grew.'
         data:
           - refId: A
             relativeTimeRange: { from: 300, to: 0 }
@@ -92,8 +92,8 @@ groups:
         execErrState: Error
         labels: { severity: critical }
         annotations:
-          summary: A gas-paying server wallet has less than 1 MON.
-          description: 'The {{ index .Labels "role" }} wallet {{ index .Labels "address" }} is below 1 MON. When it is empty, that role''s transactions fail (store = every document write). Send it testnet MON.'
+          summary: 'The {{ index .Labels "role" }} gas wallet has less than 1 MON left.'
+          description: 'Send testnet MON to {{ index .Labels "address" }}. When it runs out, its transactions fail (for the store wallet, that means every document write).'
         data:
           - refId: A
             relativeTimeRange: { from: 900, to: 0 }
@@ -108,15 +108,15 @@ groups:
               conditions: [{ evaluator: { type: lt, params: [1] } }]
 
       - uid: plugport-wallet-balances-missing
-        title: Gas wallet balances not reported
+        title: Gas wallet balances missing
         condition: C
         for: 30m
         noDataState: OK
         execErrState: Error
         labels: { severity: warning }
         annotations:
-          summary: The server has not reported gas wallet balances for 30 minutes.
-          description: The "Gas wallet low" alert cannot fire without them. Check the server log for "[Balances]" warnings.
+          summary: 'The server has stopped reporting gas wallet balances.'
+          description: 'Until this is fixed, the "Gas wallet low" alert cannot fire. Look for [Balances] warnings in docker logs plugport-server.'
         data:
           - refId: A
             relativeTimeRange: { from: 900, to: 0 }
@@ -138,8 +138,8 @@ groups:
         execErrState: Error
         labels: { severity: critical }
         annotations:
-          summary: More than 2 server transactions failed in the last 15 minutes.
-          description: 'Stage "send" usually means a wallet is out of MON or the RPC is refusing transactions; "confirm" means reverts or receipts timing out. Check `docker logs plugport-server`.'
+          summary: 'Server transactions are failing: more than 2 in the last 15 minutes, at the {{ index .Labels "stage" }} step.'
+          description: 'send usually means a wallet is out of MON or the RPC is refusing transactions. confirm means they revert or never confirm. Check docker logs plugport-server.'
         data:
           - refId: A
             relativeTimeRange: { from: 900, to: 0 }
@@ -154,15 +154,15 @@ groups:
               conditions: [{ evaluator: { type: gt, params: [2] } }]
 
       - uid: plugport-rpc-unstable
-        title: RPC endpoint unstable
+        title: RPC unstable
         condition: C
         for: 0s
         noDataState: OK
         execErrState: Error
         labels: { severity: warning }
         annotations:
-          summary: The server switched to the fallback RPC more than 10 times in 15 minutes.
-          description: A restart alone causes about 5 switches. Sustained switching means Monad's public RPC is rate-limiting or failing, and reads and writes are running on the Alchemy fallback's smaller budget.
+          summary: 'Monad''s public RPC keeps failing: the server switched to the Alchemy backup more than 10 times in 15 minutes.'
+          description: 'Requests still work, but on the backup''s smaller budget. Usually temporary. If it lasts for hours, lower RPC_MAX_REQUESTS_PER_SECOND.'
         data:
           - refId: A
             relativeTimeRange: { from: 900, to: 0 }
