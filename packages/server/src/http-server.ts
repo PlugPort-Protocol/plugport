@@ -17,6 +17,13 @@ import { ApiKeyManager, type ApiKeyPermission } from './auth/api-key-manager.js'
 import { AnalyticsRecorder } from './auth/analytics-recorder.js';
 import { getAuthContract, AuthReadError } from './auth/auth-contract.js';
 import { PrivacyManager } from './storage/privacy-manager.js';
+import type { PrivateStoreRegistry } from './storage/private-store-registry.js';
+import { CollectionBusyError, StoreDetachedError, type RoutingAdapter } from './storage/routing-adapter.js';
+import type { StoreMigrations } from './storage/store-migrations.js';
+import { CollectionClaims } from './storage/collection-claims.js';
+
+/** Largest collection (documents plus index entries) a privacy switch moves in one request. */
+const MAX_SYNC_MIGRATION_KEYS = 2000;
 import { SQLTranslator, executeAggregation } from './protocols/sql-translator.js';
 import type { TranslatedQuery, SQLDialect } from './protocols/sql-translator.js';
 import { JoinEngine } from './protocols/join-engine.js';
@@ -52,6 +59,10 @@ export interface HttpServerOptions {
     whitelistAddresses?: string[];
     /** Share with every other component that reads or claims collection privacy, so its cache stays coherent. */
     privacyManager?: PrivacyManager;
+    /** Per-customer private stores; omitted when the factory isn't configured. */
+    privateStores?: PrivateStoreRegistry;
+    /** Moves customers' private data into their own stores once linked. */
+    storeMigrations?: StoreMigrations;
     /** Allowed origin for CORS credentials (defaults to DASHBOARD_URL env var) */
     dashboardUrl?: string;
 }
@@ -64,6 +75,10 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
     const apiKeyManager = new ApiKeyManager(kvStore);
     const analyticsRecorder = new AnalyticsRecorder(kvStore);
     const privacyManager = options.privacyManager ?? new PrivacyManager(kvStore);
+    const privateStores = options.privateStores;
+    const storeMigrations = options.storeMigrations;
+    // New collections: private by default, in the owner's own store when active.
+    const collectionClaims = new CollectionClaims(privacyManager, privateStores);
     const joinEngine = new JoinEngine();
     if ('setPrivacyManager' in kvStore && typeof kvStore.setPrivacyManager === 'function') {
         kvStore.setPrivacyManager(privacyManager);
@@ -285,38 +300,46 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
         return metrics.getSnapshot();
     });
 
-    // The first wallet to write to an unowned collection becomes its owner, so it
-    // appears under that wallet's "My Collections" whichever protocol wrote it.
-    async function claimForWallet(req: FastifyRequest, collection: string): Promise<void> {
-        const address = req.user?.address;
-        if (!address) return;
-        try {
-            await privacyManager.claimIfUnowned(collection, address);
-        } catch (err) {
-            console.warn(`[Ownership] Could not record owner of "${collection}":`, err instanceof Error ? err.message : err);
-        }
-    }
-
     // ---- Access Control Helper ----
 
+    /**
+     * Reads: public collections are readable by anyone; private ones by their
+     * owner and granted wallets. Writes: only the owner and wallets granted
+     * write access. A wallet writing to a collection that doesn't exist yet
+     * claims it *before* the write, so it appears under that wallet's "My
+     * Collections" and a concurrent writer can't slip data into a collection
+     * it won't own. An existing collection with no owner (created before
+     * ownership existed) is read-only for wallets.
+     *
+     * The operator — the server's master API_KEY, or dev mode with no key
+     * configured — carries no wallet and may write to any non-private collection.
+     */
     async function checkAccess(req: FastifyRequest, reply: FastifyReply, collection: string, type: 'read' | 'write'): Promise<boolean> {
-        // If no user address is known (e.g., authMethod='none' or 'legacyKey'), we allow public access 
-        // OR we can strictly enforce it if privacy mode is private. 
-        // privacyManager.hasAccess handles public/private fallback.
-        const address = req.user?.address;
-        
-        let hasAccess = false;
-        if (type === 'read') {
-            hasAccess = await privacyManager.hasReadAccess(collection, address || '');
-        } else {
-            hasAccess = await privacyManager.hasWriteAccess(collection, address || '');
-        }
+        const address = req.user?.address?.toLowerCase() || '';
 
-        if (!hasAccess) {
-            reply.status(403).send({ ok: 0, errmsg: `Access denied: insufficient ${type} privileges for collection ${collection}` });
+        if (type === 'read') {
+            if (await privacyManager.hasReadAccess(collection, address)) return true;
+            reply.status(403).send({ ok: 0, errmsg: `Access denied: collection ${collection} is private` });
             return false;
         }
-        return true;
+
+        const operator = req.user?.authMethod === 'legacyKey' || (req.user?.authMethod === 'none' && !apiKey);
+        let privacy = await privacyManager.getCollectionPrivacy(collection);
+        if (operator) {
+            if (privacy?.mode !== 'private') return true;
+        } else if (address) {
+            if (!privacy && !(await store.getCollection(collection))) {
+                await collectionClaims.claim(collection, address);
+                privacy = await privacyManager.getCollectionPrivacy(collection);
+            }
+            if (await privacyManager.hasWriteAccess(collection, address)) return true;
+        }
+
+        const errmsg = !privacy
+            ? `Access denied: collection ${collection} has no owner and is read-only`
+            : `Access denied: collection ${collection} belongs to another wallet (only its owner and wallets it grants write access can write)`;
+        reply.status(403).send({ ok: 0, errmsg });
+        return false;
     }
 
     // ---- Collection Management ----
@@ -333,6 +356,10 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
             // because listing itself doesn't require auth.
             const readable = mode !== 'private' || await privacyManager.hasReadAccess(c.name, address);
             if (!readable) return null;
+            // Still listed when its store was cut off (metadata isn't in the store), flagged.
+            const storeDetached = privacy?.storeAddress && privateStores
+                ? !(await privateStores.checkWriter(privacy.storeAddress).catch(() => ({ ok: true }))).ok
+                : false;
             return {
                 name: c.name,
                 documentCount: c.documentCount,
@@ -340,6 +367,7 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
                 createdAt: c.options.createdAt,
                 ownerAddress: privacy?.ownerAddress,
                 mode,
+                ...(storeDetached ? { storeDetached: true } : {}),
             };
         }));
         return { collections: mappedCollections.filter((c): c is NonNullable<typeof c> => c !== null), ok: 1 };
@@ -360,7 +388,6 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
         if (!(await checkAccess(req, reply, req.params.name, 'write'))) return;
         try {
             const result = await store.insert(req.params.name, [req.body.document]);
-            await claimForWallet(req, req.params.name);
             return { ...result, ok: 1 };
         } catch (err) {
             return handleError(err, reply);
@@ -374,7 +401,6 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
         if (!(await checkAccess(req, reply, req.params.name, 'write'))) return;
         try {
             const result = await store.insert(req.params.name, req.body.documents);
-            await claimForWallet(req, req.params.name);
             return { ...result, ok: 1 };
         } catch (err) {
             return handleError(err, reply);
@@ -393,7 +419,8 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
         if (!(await checkAccess(req, reply, req.params.name, 'read'))) return;
         try {
             const { filter = {}, projection, sort, limit, skip } = req.body || {};
-            return store.find(req.params.name, filter, { projection, sort, limit, skip });
+            // awaited, so a rejection reaches the catch below (returned un-awaited, every error here became a 500)
+            return await store.find(req.params.name, filter, { projection, sort, limit, skip });
         } catch (err) {
             return handleError(err, reply);
         }
@@ -1501,7 +1528,7 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
     });
 
     app.post('/api/v1/collections/:name/privacy', async (
-        req: FastifyRequest<{ Params: { name: string }; Body: { mode: 'public' | 'private'; contractAddress?: string } }>,
+        req: FastifyRequest<{ Params: { name: string }; Body: { mode: 'public' | 'private'; confirm?: boolean } }>,
         reply: FastifyReply,
     ) => {
         if (!req.user?.address) {
@@ -1512,25 +1539,74 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
         if (existingPrivacy && existingPrivacy.ownerAddress && existingPrivacy.ownerAddress !== req.user.address.toLowerCase()) {
             return reply.status(403).send({ ok: 0, errmsg: 'Only the collection owner can change privacy mode' });
         }
-        const { mode, contractAddress } = req.body || {} as { mode: 'public' | 'private'; contractAddress?: string };
+        // Setting privacy on a name nobody owns claims it — fine for a new
+        // collection, but an existing unowned one (created before ownership
+        // existed) is read-only: claiming it here would let any wallet take it
+        // over and lock everyone else out by making it private.
+        if (!existingPrivacy && (await store.getCollection(req.params.name))) {
+            return reply.status(403).send({ ok: 0, errmsg: `Collection ${req.params.name} has no owner and is read-only` });
+        }
+        // A store address is never taken from the request: routing follows it,
+        // and PlugPort's writer is authorised on every customer store, so a
+        // caller could otherwise point their collection at someone else's store.
+        const { mode } = req.body || {} as { mode: 'public' | 'private' };
         if (!mode || !['public', 'private'].includes(mode)) {
             return reply.status(400).send({ ok: 0, errmsg: 'mode must be "public" or "private"' });
         }
-        const switchMode = async () => {
-            await privacyManager.setCollectionPrivacy(req.params.name, mode, req.user!.address!, contractAddress);
-        };
+        const name = req.params.name;
+        const owner = req.user.address.toLowerCase();
         const currentMode = existingPrivacy?.mode ?? 'public';
+        const routing = 'migrateCollection' in kvStore && typeof kvStore.migrateCollection === 'function'
+            ? kvStore as unknown as RoutingAdapter : null;
         try {
-            if (mode !== currentMode && 'migrateCollection' in kvStore && typeof kvStore.migrateCollection === 'function') {
-                // Reads route by mode, so the existing documents must move with it.
-                const moved = await kvStore.migrateCollection(req.params.name, mode === 'private', switchMode);
-                return { ok: 1, collection: req.params.name, mode, migrated: moved };
+            // Private data goes into the owner's own store when they have an
+            // active one, otherwise into the shared private store.
+            let ownStore: string | undefined;
+            if (mode === 'private' && privateStores) {
+                const linked = await privateStores.storeFor(owner);
+                if (linked && (await privateStores.verify(linked.address, owner)).ok) ownStore = linked.address;
             }
-            await switchMode();
+            const switchMode = async () => {
+                await privacyManager.setCollectionPrivacy(name, mode, owner);
+                if (ownStore) await privacyManager.setStoreAddress(name, ownStore);
+            };
+            if (mode === currentMode || !routing) {
+                await switchMode();
+                return { ok: 1, collection: name, mode };
+            }
+
+            // Changing mode moves the data (reads route by mode). Say what that
+            // costs before doing it, and require an explicit confirm.
+            const { documents, keys } = await routing.countCollectionKeys(name);
+            const transactions = Math.ceil((keys * 2) / 50) + Math.ceil(keys / 50);
+            const estimate = {
+                documents,
+                keys,
+                transactions,
+                estimatedSeconds: transactions * 3,
+                destination: mode === 'public' ? 'public store' : ownStore ? `your private store ${ownStore}` : 'shared private store',
+                // Switching to private can't erase what the chain already recorded.
+                historyRemainsPublic: mode === 'private',
+            };
+            if (keys > MAX_SYNC_MIGRATION_KEYS) {
+                return reply.status(413).send({ ok: 0, errmsg: `This collection has ${keys} documents and index entries; switching privacy moves up to ${MAX_SYNC_MIGRATION_KEYS} at a time. Copy the data into a new collection instead.`, estimate });
+            }
+            if (keys > 0 && req.body?.confirm !== true) {
+                return reply.status(409).send({
+                    ok: 0,
+                    confirmRequired: true,
+                    errmsg: `Switching ${name} to ${mode} moves ${documents} documents (${transactions} transactions, about ${estimate.estimatedSeconds}s); writes to it pause meanwhile.`
+                        + (mode === 'private' ? ' Data written while it was public stays readable in the chain history.' : '')
+                        + ' Resend with "confirm": true to proceed.',
+                    estimate,
+                });
+            }
+            const moved = await store.withCollectionMove(name, () =>
+                routing.migrateCollection(name, mode === 'public' ? 'public' : ownStore ? { store: ownStore } : 'shared', switchMode));
+            return { ok: 1, collection: name, mode, migrated: moved };
         } catch (err) {
             return handleError(err, reply);
         }
-        return { ok: 1, collection: req.params.name, mode };
     });
 
     app.get('/api/v1/collections/:name/roles', async (
@@ -1675,19 +1751,33 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
     // Contract Registration (Deployment Wizard)
     // ════════════════════════════════════════════════════════
 
-    app.get('/api/v1/deploy/system-gas-station', async (req: FastifyRequest, reply: FastifyReply) => {
+    // The gas station a customer's own private store must name: PlugPort's
+    // PrivateStore writer, which writes (and reads) private data. Used only by
+    // the dashboard's "Deploy Private Store" flow. It returned the Auth
+    // relayer before, so every server write to such a store would have reverted.
+    app.get('/api/v1/deploy/system-gas-station', async (_req: FastifyRequest, reply: FastifyReply) => {
+        if (!privateStores) {
+            return reply.status(503).send({ ok: 0, errmsg: 'Per-customer private stores are not enabled on this server.' });
+        }
+        return { ok: 1, address: privateStores.writerAddress };
+    });
+
+    // The caller's own private store, and whether it still accepts PlugPort's writer.
+    app.get('/api/v1/deploy/private-store', async (req: FastifyRequest, reply: FastifyReply) => {
+        if (!req.user?.address) {
+            return reply.status(401).send({ ok: 0, errmsg: 'Authentication required' });
+        }
+        if (!privateStores) return { ok: 1, enabled: false, store: null, status: 'none' };
+        const linked = await privateStores.storeFor(req.user.address);
+        if (!linked) return { ok: 1, enabled: true, store: null, status: 'none' };
+        const migration = storeMigrations?.status(req.user.address) ?? null;
         try {
-            const authContract = getAuthContract();
-            if (!authContract.isConfigured) {
-                return reply.status(503).send({ ok: 0, errmsg: 'System gas station not configured on backend.' });
-            }
-            const address = authContract.getSystemGasStationAddress();
-            if (!address) {
-                return reply.status(503).send({ ok: 0, errmsg: 'All system gas stations are depleted.' });
-            }
-            return { ok: 1, address };
+            const verification = await privateStores.verify(linked.address, req.user.address);
+            return verification.ok
+                ? { ok: 1, enabled: true, store: linked, status: 'active', migration }
+                : { ok: 1, enabled: true, store: linked, status: 'detached', reason: verification.reason, migration };
         } catch (err) {
-            return reply.status(500).send({ ok: 0, errmsg: err instanceof Error ? err.message : 'Internal error' });
+            return reply.status(503).send({ ok: 0, retryable: true, errmsg: `Could not check the store on-chain: ${err instanceof Error ? err.message : err}` });
         }
     });
 
@@ -1701,6 +1791,22 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
         const { contractAddress, contractType } = req.body || {} as any;
         if (!contractAddress || !contractType) {
             return reply.status(400).send({ ok: 0, errmsg: 'contractAddress and contractType are required' });
+        }
+        // A private store is checked on-chain and linked to the caller's wallet
+        // before anything is recorded; it used to accept any address unchecked.
+        if (contractType === 'privateStore') {
+            if (!privateStores) {
+                return reply.status(503).send({ ok: 0, errmsg: 'Per-customer private stores are not enabled on this server.' });
+            }
+            let result: Awaited<ReturnType<PrivateStoreRegistry['link']>>;
+            try {
+                result = await privateStores.link(req.user.address, contractAddress);
+            } catch (err) {
+                return reply.status(503).send({ ok: 0, retryable: true, errmsg: `Could not verify the store on-chain: ${err instanceof Error ? err.message : err}` });
+            }
+            if (!result.ok) return reply.status(400).send({ ok: 0, errmsg: `Store rejected: ${result.reason}` });
+            // Move the wallet's private collections out of the shared store, in the background.
+            void storeMigrations?.start(req.user.address);
         }
         // S4 fix: Always use the authenticated user's address — never accept ownerAddress from body
         const key = `meta:contract:${contractAddress.toLowerCase()}`;
@@ -1828,6 +1934,12 @@ function extractCollection(url: string): string | null {
 }
 
 function handleError(err: unknown, reply: FastifyReply) {
+    if (err instanceof CollectionBusyError) {
+        return reply.status(503).send({ ok: 0, retryable: true, errmsg: err.message });
+    }
+    if (err instanceof StoreDetachedError) {
+        return reply.status(423).send({ ok: 0, storeDetached: true, store: err.store, errmsg: err.message });
+    }
     if (err instanceof DocumentStoreError) {
         const status = err.code === 11000 ? 409 : 400;
         return reply.status(status).send({

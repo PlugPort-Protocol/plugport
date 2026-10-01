@@ -31,6 +31,8 @@ services:
       - MYSQL_ENABLED=${MYSQL_ENABLED:-false}
       - REDIS_ENABLED=${REDIS_ENABLED:-false}
       - API_KEY=${API_KEY:-}
+      # Key-index snapshots (a cache; restarts replay only newer log entries).
+      - KEY_INDEX_SNAPSHOT_DIR=/app/data/key-index
       - SQL_STATEMENT_TIMEOUT_MS=${SQL_STATEMENT_TIMEOUT_MS:-30000}
     healthcheck:
       test: wget --no-verbose --tries=1 --spider http://127.0.0.1:8080/health || exit 1
@@ -38,6 +40,9 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+    volumes:
+      # Survives container recreation (deploys), unlike the container filesystem.
+      - plugport-data:/app/data
     restart: unless-stopped
     networks:
       - plugport-net
@@ -53,6 +58,7 @@ services:
         - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://plugport-server:8080}
         - NEXT_PUBLIC_CHAIN_ID=${NEXT_PUBLIC_CHAIN_ID:-10143}
         - NEXT_PUBLIC_AUTH_CONTRACT_ADDRESS=${AUTH_CONTRACT_ADDRESS:-}
+        - NEXT_PUBLIC_FACTORY_ADDRESS=${PRIVATE_STORE_FACTORY:-}
     container_name: plugport-dashboard
     ports:
       - "${DASHBOARD_PORT:-3000}:3000"
@@ -115,5 +121,6 @@ networks:
     driver: bridge
 
 volumes:
+  plugport-data:
   prometheus-data:
   grafana-data:

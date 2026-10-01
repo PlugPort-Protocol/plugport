@@ -47,6 +47,8 @@ services:
       - PUBLIC_HOSTNAME=${WIRE_PROTOCOL_HOSTNAME}
       # ---- Optional: Private Store & PubSub ----
       - PRIVATE_STORE_CONTRACT=${PRIVATE_STORE_CONTRACT:-}
+      # Per-customer private stores (optional); the dashboard gets the same address at build time.
+      - PRIVATE_STORE_FACTORY=${PRIVATE_STORE_FACTORY:-}
       - MESSAGEBROKER_CONTRACT_ADDRESS=${MESSAGEBROKER_CONTRACT_ADDRESS:-}
       - MESSAGEBROKER_GAS_STATION=${MESSAGEBROKER_GAS_STATION:-}
       - MONAD_WS_URL=${MONAD_WS_URL:-}

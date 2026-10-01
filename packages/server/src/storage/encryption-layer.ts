@@ -306,6 +306,19 @@ export interface RegistryCodec {
     decode(stored: Buffer): Buffer;
 }
 
+/**
+ * The root key for one customer's own private store (option B): derived from
+ * ENCRYPTION_KEY and the store's address, so each store has its own AES key and
+ * registry codec — data copied out of one store can't be decrypted as another's.
+ * Returned as hex, the same shape as ENCRYPTION_KEY, for EncryptionLayer and
+ * createRegistryCodec.
+ */
+export function deriveStoreRootKey(rootKey: string, storeAddress: string): string {
+    return createHmac('sha256', Buffer.from(rootKey.replace(/^0x/, ''), 'hex'))
+        .update(`plugport-store-v1:${storeAddress.toLowerCase()}`)
+        .digest('hex');
+}
+
 export function createRegistryCodec(rootKey: string): RegistryCodec {
     const key = createHmac('sha256', deriveAESKey(rootKey)).update('registry-log-v1').digest();
     return {

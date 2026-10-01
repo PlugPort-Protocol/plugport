@@ -218,7 +218,7 @@ export interface WireServerOptions {
      * Called after a write by a connection that authenticated as a wallet, so the
      * collection can be recorded as that wallet's (and show up in its dashboard).
      */
-    claimCollection?: (collection: string, ownerAddress: string) => Promise<unknown>;
+    claimCollection?: (collection: string, ownerAddress: string, mode?: 'public' | 'private') => Promise<unknown>;
 }
 
 /** Per-connection ownership context passed to handleCommand. */
@@ -227,15 +227,23 @@ export interface WireOwnership {
     claim?: WireServerOptions['claimCollection'];
 }
 
-async function claimForConnection(ownership: WireOwnership | undefined, connectionId: number, collection: string): Promise<void> {
+/**
+ * Claim a collection nobody owns for this connection's wallet, *before* the
+ * first write: new collections are private by default and reads route by the
+ * privacy record, so data written first and claimed afterwards would land in
+ * the public store and then not be found. A failed claim fails the write
+ * (it used to be logged and the write went ahead, unowned and public).
+ */
+async function claimForConnection(ownership: WireOwnership | undefined, connectionId: number, collection: string, mode?: 'public' | 'private'): Promise<void> {
     const owner = ownership?.owners.get(connectionId);
     if (!owner || !ownership?.claim) return;
-    try {
-        await ownership.claim(collection, owner);
-    } catch (err) {
-        // Recording ownership must never fail the user's write.
-        console.warn(`[MongoDB] Could not record owner of "${collection}":`, err instanceof Error ? err.message : err);
-    }
+    await ownership.claim(collection, owner, mode);
+}
+
+/** `db.createCollection(name, { plugportMode: 'public' })` opts out of private-by-default. */
+function requestedMode(body: Record<string, unknown>): 'public' | 'private' | undefined {
+    const mode = body.plugportMode;
+    return mode === 'public' || mode === 'private' ? mode : undefined;
 }
 
 export function createWireServer(options: WireServerOptions): net.Server {
@@ -772,8 +780,8 @@ export async function handleCommand(
 
         case 'create': {
             const collName = body.create as string;
+            await claimForConnection(ownership, connectionId, collName, requestedMode(body));
             await store.getOrCreateCollection(collName);
-            await claimForConnection(ownership, connectionId, collName);
             return { ok: 1 };
         }
 
@@ -798,8 +806,8 @@ export async function handleCommand(
             documents = documents.map(normalizeDocument);
 
             try {
-                const result = await store.insert(collName, documents);
                 await claimForConnection(ownership, connectionId, collName);
+                const result = await store.insert(collName, documents);
                 return { n: result.insertedCount, ok: 1 };
             } catch (err) {
                 if (err instanceof DocumentStoreError) {
@@ -835,6 +843,7 @@ export async function handleCommand(
 
         case 'update': {
             const collName = body.update as string;
+            await claimForConnection(ownership, connectionId, collName); // an upsert can create it
             let updates: Record<string, unknown>[] = (body.updates as Record<string, unknown>[]) || [];
 
             for (const seq of docSequences) {
@@ -910,6 +919,7 @@ export async function handleCommand(
 
         case 'createIndexes': {
             const collName = body.createIndexes as string;
+            await claimForConnection(ownership, connectionId, collName);
             const indexes = body.indexes as Array<{ key: Record<string, number>; name?: string; unique?: boolean }>;
 
             for (const idx of indexes) {

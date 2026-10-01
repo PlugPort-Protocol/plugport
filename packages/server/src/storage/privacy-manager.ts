@@ -13,6 +13,10 @@
 //   }
 
 import type { KVAdapter } from '@plugport/shared';
+import type { MetadataCipher } from './metadata-cipher.js';
+
+/** Private collections' privacy records: `meta:pprivacy:<blinded name>`, value sealed (see metadata-cipher.ts). */
+const SEALED_PREFIX = 'meta:pprivacy:';
 
 // ---- Types ----
 
@@ -21,8 +25,17 @@ export interface CollectionPrivacy {
     mode: 'public' | 'private';
     /** Owner's wallet address (lowercase) */
     ownerAddress: string;
-    /** Deployed PlugPortPrivateStore contract address (for private collections) */
+    /**
+     * Legacy, client-supplied and never used for routing. Before 2026-09-30 the
+     * privacy endpoint accepted any value here from the request body.
+     */
     contractAddress?: string;
+    /**
+     * The customer's own private store holding this collection's data (option B).
+     * Set only by the server — after verifying the store and moving the data —
+     * never from a request. Unset: private data is in the shared private store.
+     */
+    storeAddress?: string;
     /** Granular access roles: address -> role (1 = read, 2 = write) */
     accessRoles: Record<string, number>;
     /** When privacy settings were first created */
@@ -47,9 +60,22 @@ export class PrivacyManager {
     // Concurrent first writes to the same new collection must not race two records into existence.
     private claims: Map<string, Promise<boolean>> = new Map();
 
-    constructor(kvStore: KVAdapter, options?: { prefix?: string }) {
+    /** Hides private collections' records on the public contract; without it, all records are plain. */
+    private cipher?: MetadataCipher;
+
+    constructor(kvStore: KVAdapter, options?: { prefix?: string; cipher?: MetadataCipher }) {
         this.kvStore = kvStore;
         this.prefix = options?.prefix || 'meta:privacy:';
+        this.cipher = options?.cipher;
+    }
+
+    private sealedKey(collection: string): string {
+        return `${SEALED_PREFIX}${this.cipher!.blind(collection)}`;
+    }
+
+    /** A sealed record's contents: the record plus the name, which the key no longer carries. */
+    private openSealed(value: Buffer): { collection: string; record: CollectionPrivacy } {
+        return JSON.parse(this.cipher!.open(value).toString()) as { collection: string; record: CollectionPrivacy };
     }
 
     /** Invalidate the cache for a specific collection. */
@@ -71,8 +97,18 @@ export class PrivacyManager {
         const key = `${this.prefix}${collection}`;
         const data = await this.kvStore.get(key);
         if (!data) {
-            this.cache.set(collection, { data: null, expires: Date.now() + PrivacyManager.CACHE_TTL_MS });
-            return null;
+            // A private collection's record is sealed under a blinded key.
+            const sealed = this.cipher ? await this.kvStore.get(this.sealedKey(collection)) : null;
+            let record: CollectionPrivacy | null = null;
+            if (sealed) {
+                try {
+                    record = this.openSealed(sealed).record;
+                } catch (err) {
+                    console.warn(`[PrivacyManager] Unreadable sealed privacy record for "${collection}":`, err instanceof Error ? err.message : err);
+                }
+            }
+            this.cache.set(collection, { data: record, expires: Date.now() + PrivacyManager.CACHE_TTL_MS });
+            return record;
         }
         try {
             const parsed = JSON.parse(data.toString()) as CollectionPrivacy;
@@ -106,6 +142,9 @@ export class PrivacyManager {
             mode,
             ownerAddress: ownerAddress.toLowerCase(),
             contractAddress: contractAddress || existing?.contractAddress,
+            // Where the data lives is changed only by setStoreAddress, after a
+            // move. Going public ends the link: public data is in the public store.
+            ...(mode === 'private' && existing?.storeAddress ? { storeAddress: existing.storeAddress } : {}),
             accessRoles: existing?.accessRoles || {},
             createdAt: existing?.createdAt || now,
             updatedAt: now,
@@ -116,19 +155,46 @@ export class PrivacyManager {
     }
 
     /**
+     * Record which customer store holds a collection's data (or clear it, for
+     * the shared private store). Server-side only: call it after the data is
+     * actually in that store, since reads route by this field.
+     */
+    async setStoreAddress(collection: string, storeAddress: string | undefined): Promise<void> {
+        const privacy = await this.getCollectionPrivacy(collection);
+        if (!privacy) throw new Error(`Collection "${collection}" has no privacy settings configured`);
+        const updated: CollectionPrivacy = { ...privacy, storeAddress, updatedAt: Date.now() };
+        if (!storeAddress) delete updated.storeAddress;
+        await this.putPrivacy(collection, updated);
+    }
+
+    /**
      * Record `ownerAddress` as the owner of `collection` if nobody owns it yet.
      * The first wallet to write to a collection — over any protocol — becomes its
      * owner, which is what lists it under "My Collections" in the dashboard. Only
      * ever creates a record (public mode); an existing owner or privacy setting is
      * never changed. Returns true when this call created the record.
      */
-    async claimIfUnowned(collection: string, ownerAddress: string): Promise<boolean> {
+    async claimIfUnowned(
+        collection: string,
+        ownerAddress: string,
+        options: { mode?: 'public' | 'private'; storeAddress?: string } = {},
+    ): Promise<boolean> {
         if (!ownerAddress) return false;
         const inFlight = this.claims.get(collection);
         if (inFlight) return inFlight;
         const claim = (async () => {
             if (await this.getCollectionPrivacy(collection)) return false;
-            await this.setCollectionPrivacy(collection, 'public', ownerAddress);
+            // One record, written once: mode and store are decided before any data exists.
+            const now = Date.now();
+            const mode = options.mode ?? 'public';
+            await this.putPrivacy(collection, {
+                mode,
+                ownerAddress: ownerAddress.toLowerCase(),
+                ...(mode === 'private' && options.storeAddress ? { storeAddress: options.storeAddress } : {}),
+                accessRoles: {},
+                createdAt: now,
+                updatedAt: now,
+            });
             return true;
         })().finally(() => this.claims.delete(collection));
         this.claims.set(collection, claim);
@@ -200,23 +266,19 @@ export class PrivacyManager {
     }
 
     /**
-     * Check if an address has write access to a private collection.
+     * Check if a wallet may write to a collection: its owner, or a wallet the
+     * owner granted write access. "Public" means anyone can read, not anyone
+     * can write — until 2026-09-30 any signed-in wallet could modify or drop
+     * every non-private collection. A collection with no owner yet is not
+     * writable here; the caller claims it first (see http-server checkAccess).
      */
     async hasWriteAccess(collection: string, address: string): Promise<boolean> {
-        const privacy = await this.getCollectionPrivacy(collection);
-
-        // Public collections can be written to by anyone if no SIWE is enforced at router level,
-        // but typically write requires ownership or role if it's private
-        if (!privacy) return true;
-        if (privacy.mode === 'public') return true;
-
         const normalized = address.toLowerCase();
-
-        // Owner always has access
+        if (!normalized) return false;
+        const privacy = await this.getCollectionPrivacy(collection);
+        if (!privacy) return false;
         if (privacy.ownerAddress === normalized) return true;
-
-        // Check granular access
-        return privacy.accessRoles[normalized] >= 2;
+        return (privacy.accessRoles[normalized] ?? 0) >= 2;
     }
 
     /**
@@ -237,6 +299,16 @@ export class PrivacyManager {
                 console.warn(`[PrivacyManager] Malformed privacy entry "${entry.key}":`, err instanceof Error ? err.message : 'parse error');
             }
         }
+        if (this.cipher) {
+            for (const entry of await this.kvStore.scan({ prefix: SEALED_PREFIX, limit: 10000 })) {
+                try {
+                    const { collection, record } = this.openSealed(Buffer.from(entry.value));
+                    if (record.ownerAddress === address && !owned.includes(collection)) owned.push(collection);
+                } catch (err) {
+                    console.warn(`[PrivacyManager] Unreadable sealed privacy entry "${entry.key}":`, err instanceof Error ? err.message : err);
+                }
+            }
+        }
 
         return owned;
     }
@@ -244,8 +316,17 @@ export class PrivacyManager {
     // ---- Internal ----
 
     private async putPrivacy(collection: string, privacy: CollectionPrivacy): Promise<void> {
-        const key = `${this.prefix}${collection}`;
-        await this.kvStore.put(key, Buffer.from(JSON.stringify(privacy)));
+        const plainKey = `${this.prefix}${collection}`;
+        if (this.cipher && privacy.mode === 'private') {
+            const sealed = this.cipher.seal(Buffer.from(JSON.stringify({ collection, record: privacy })));
+            await this.kvStore.put(this.sealedKey(collection), sealed);
+            // A record from while it was public (or from before P9) would keep the
+            // owner and access list readable; the sealed one replaces it.
+            if (await this.kvStore.has(plainKey)) await this.kvStore.delete(plainKey);
+        } else {
+            await this.kvStore.put(plainKey, Buffer.from(JSON.stringify(privacy)));
+            if (this.cipher && await this.kvStore.has(this.sealedKey(collection))) await this.kvStore.delete(this.sealedKey(collection));
+        }
         // I3: Invalidate cache on write so next read fetches fresh data
         this.invalidateCache(collection);
     }

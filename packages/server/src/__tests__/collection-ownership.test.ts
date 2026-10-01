@@ -46,7 +46,7 @@ describe('PrivacyManager.claimIfUnowned', () => {
 
     it('concurrent first writes share one claim and settle on one owner', async () => {
         const { privacy } = setup();
-        const spy = vi.spyOn(privacy, 'setCollectionPrivacy');
+        const spy = vi.spyOn(privacy as any, 'putPrivacy');
         await Promise.all([privacy.claimIfUnowned('race', ME), privacy.claimIfUnowned('race', OTHER)]);
         expect(spy).toHaveBeenCalledTimes(1);
         expect((await privacy.getCollectionPrivacy('race'))?.ownerAddress).toBe(ME);
@@ -79,11 +79,14 @@ describe('wire writes record the authenticated wallet as owner', () => {
         expect((await privacy.getCollectionPrivacy('theirs'))?.ownerAddress).toBe(ME);
     });
 
-    it('a failing ownership record does not fail the write', async () => {
+    // Reversed 2026-10-01 (P8): the claim decides whether the data is private,
+    // so it must succeed before anything is written — otherwise the document
+    // would land unowned and public.
+    it('a failing ownership record fails the write, and nothing is written', async () => {
         const { store, ownership } = setup(ME);
-        vi.spyOn(console, 'warn').mockImplementation(() => {});
         ownership.claim = async () => { throw new Error('kv down'); };
-        const res = await handleCommand(store, { $db: 'test', insert: 'x', documents: [{ a: 1 }] }, [], 1, true, undefined, new Set(), ownership);
-        expect(res).toMatchObject({ n: 1, ok: 1 });
+        await expect(handleCommand(store, { $db: 'test', insert: 'x', documents: [{ a: 1 }] }, [], 1, true, undefined, new Set(), ownership))
+            .rejects.toThrow('kv down');
+        expect(await store.getCollection('x')).toBeNull();
     });
 });

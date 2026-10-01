@@ -120,6 +120,15 @@ function stripOperators(filter: Filter): Record<string, unknown> {
     return result;
 }
 
+/** A write to a collection whose data is being moved. Retry shortly. */
+export class CollectionBusyError extends Error {
+    readonly retryable = true;
+    constructor(collection: string) {
+        super(`Collection ${collection} is being moved; writes are paused until it finishes. Retry shortly.`);
+        this.name = 'CollectionBusyError';
+    }
+}
+
 export class DocumentStoreError extends Error {
     constructor(
         public code: number,
@@ -159,6 +168,37 @@ export class DocumentStore {
         private maxDocumentSize: number = 1024 * 1024,
     ) {
         this.indexManager = new IndexManager(kv);
+    }
+
+    /** Collections whose data is being moved between stores (see withCollectionMove). */
+    private moving = new Set<string>();
+
+    /** The collection's write lock, unless its data is being moved. */
+    private async lockForWrite(collection: string): Promise<() => void> {
+        if (this.moving.has(collection)) throw new CollectionBusyError(collection);
+        return this.getCollectionLock(collection).lock();
+    }
+
+    /**
+     * Run `move` — copying a collection's data to another store — with its
+     * writes paused. New writes fail fast with CollectionBusyError (retryable)
+     * rather than queueing for the whole move; a write already in progress
+     * finishes completely first. Pausing per storage write instead could split
+     * one insert, leaving a document without its index entries.
+     */
+    async withCollectionMove<T>(collection: string, move: () => Promise<T>): Promise<T> {
+        if (this.moving.has(collection)) throw new CollectionBusyError(collection);
+        this.moving.add(collection);
+        try {
+            const unlock = await this.getCollectionLock(collection).lock();
+            try {
+                return await move();
+            } finally {
+                unlock();
+            }
+        } finally {
+            this.moving.delete(collection);
+        }
     }
 
     private getCollectionLock(collection: string): Mutex {
@@ -220,6 +260,7 @@ export class DocumentStore {
      * Drop a collection and all its data.
      */
     async dropCollection(name: string): Promise<boolean> {
+        if (this.moving.has(name)) throw new CollectionBusyError(name);
         const metadata = await this.getCollection(name);
         if (!metadata) return false;
 
@@ -275,7 +316,7 @@ export class DocumentStore {
             sanitizeDocument(doc as Record<string, unknown>);
         }
 
-        const unlock = await this.getCollectionLock(collection).lock();
+        const unlock = await this.lockForWrite(collection);
         try {
             return await this._insertInternal(collection, documents);
         } finally {
@@ -457,7 +498,7 @@ export class DocumentStore {
             sanitizeDocument(update.$unset as Record<string, unknown>);
         }
 
-        const unlock = await this.getCollectionLock(collection).lock();
+        const unlock = await this.lockForWrite(collection);
         try {
             const metadata = await this.getOrCreateCollection(collection);
 
@@ -559,7 +600,7 @@ export class DocumentStore {
         if (update.$inc) sanitizeDocument(update.$inc as Record<string, unknown>);
         if (update.$unset) sanitizeDocument(update.$unset as Record<string, unknown>);
 
-        const unlock = await this.getCollectionLock(collection).lock();
+        const unlock = await this.lockForWrite(collection);
         try {
             const metadata = await this.getCollection(collection);
             if (!metadata) {
@@ -676,7 +717,7 @@ export class DocumentStore {
         validateCollectionName(collection);
         sanitizeDocument(filter as Record<string, unknown>);
 
-        const unlock = await this.getCollectionLock(collection).lock();
+        const unlock = await this.lockForWrite(collection);
         try {
             const metadata = await this.getCollection(collection);
             if (!metadata) {
@@ -717,7 +758,7 @@ export class DocumentStore {
         validateCollectionName(collection);
         sanitizeDocument(filter as Record<string, unknown>);
 
-        const unlock = await this.getCollectionLock(collection).lock();
+        const unlock = await this.lockForWrite(collection);
         try {
             const metadata = await this.getCollection(collection);
             if (!metadata) {
@@ -777,7 +818,7 @@ export class DocumentStore {
         unique: boolean = false,
     ): Promise<CreateIndexResult> {
         validateCollectionName(collection);
-        const unlock = await this.getCollectionLock(collection).lock();
+        const unlock = await this.lockForWrite(collection);
 
         try {
             const metadata = await this.getOrCreateCollection(collection);
@@ -815,7 +856,7 @@ export class DocumentStore {
      */
     async dropIndex(collection: string, indexName: string): Promise<boolean> {
         validateCollectionName(collection);
-        const unlock = await this.getCollectionLock(collection).lock();
+        const unlock = await this.lockForWrite(collection);
 
         try {
             const metadata = await this.getCollection(collection);

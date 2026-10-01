@@ -12,13 +12,19 @@ import { ProtocolManager } from './protocols/protocol-manager.js';
 import { PGServer } from './protocols/pg-server.js';
 import { MySQLServer } from './protocols/mysql-server.js';
 import { RedisServer } from './protocols/redis-server.js';
-import { EncryptionLayer, createRegistryCodec } from './storage/encryption-layer.js';
+import { EncryptionLayer, createRegistryCodec, deriveStoreRootKey } from './storage/encryption-layer.js';
+import { StoreAdapterPool } from './storage/store-adapter-pool.js';
+import { StoreMigrations } from './storage/store-migrations.js';
+import { CollectionClaims } from './storage/collection-claims.js';
+import { createMetadataCipher } from './storage/metadata-cipher.js';
 import { RoutingAdapter } from './storage/routing-adapter.js';
 import { MessageBrokerAdapter } from './storage/message-broker-adapter.js';
 import { resolveKeys, logWalletRoles, describeRoles } from './keys.js';
 import { onRpcFailover, onTxFailed } from './storage/chain-events.js';
 import { createRpcProvider } from './storage/rpc-provider.js';
 import { startWalletBalanceMonitor } from './wallet-balance-monitor.js';
+import { PrivateStoreRegistry } from './storage/private-store-registry.js';
+import { Wallet } from 'ethers';
 import type { PlugPortConfig, KVAdapter, ProtocolType } from '@plugport/shared';
 import { DEFAULT_CONFIG } from '@plugport/shared';
 
@@ -84,6 +90,7 @@ export function createStorageAdapter(config: PlugPortConfig): KVAdapter & { getK
             chainId: config.monadChainId || 10143,
             privateKey,
             contractAddress,
+            snapshotDir: process.env.KEY_INDEX_SNAPSHOT_DIR,
         });
         console.log(`  [Storage] Chain: Monad Testnet (ID: ${config.monadChainId || 10143})`);
         console.log(`  [Storage] Writes cost MON gas. Reads are free.`);
@@ -116,9 +123,16 @@ export function createStorageAdapter(config: PlugPortConfig): KVAdapter & { getK
                 privateKey: keys.privateStore,
                 contractAddress: config.privateStoreContract,
                 registryCodec: createRegistryCodec(keys.encryption),
+                snapshotDir: process.env.KEY_INDEX_SNAPSHOT_DIR,
             });
             console.log(`  [Storage] Private Channel: Isolated contract (${config.privateStoreContract})`);
         } else if (rpcUrl && keys.privateStore) {
+            // "Private" data would then sit on the public contract (encrypted, but
+            // mixed with public data and with its key log unencrypted). Acceptable
+            // for local experiments, never for a real deployment.
+            if (process.env.NODE_ENV === 'production') {
+                throw new Error('PRIVATE_STORE_CONTRACT is not set: refusing to store private collections on the public contract in production');
+            }
             console.log('  [Storage] WARNING: PRIVATE_STORE_CONTRACT missing. Using public contract for encrypted data.');
         }
 
@@ -127,6 +141,8 @@ export function createStorageAdapter(config: PlugPortConfig): KVAdapter & { getK
             enabled: true,
         });
         const routingAdapter = new RoutingAdapter(baseAdapter, privateAdapter);
+        // Private collections' metadata is sealed under blinded keys (P9).
+        routingAdapter.setMetadataCipher(createMetadataCipher(keys.encryption));
 
         // B4 fix: Report combined metrics from both public and private channels
         return Object.assign(routingAdapter, {
@@ -163,7 +179,8 @@ async function main() {
     const metrics = new MetricsCollector();
     // One instance for the whole process: its cache (including "no settings")
     // is only invalidated by writes made through the same instance.
-    const privacyManager = new PrivacyManager(kvStore);
+    const metadataRoot = resolveKeys(process.env).encryption;
+    const privacyManager = new PrivacyManager(kvStore, { cipher: metadataRoot ? createMetadataCipher(metadataRoot) : undefined });
 
     // Initialize Protocol Manager
     const protocolManager = new ProtocolManager({
@@ -197,6 +214,46 @@ async function main() {
     const authKeysCsv = process.env.AUTH_GAS_STATION_PRIVATE_KEYS || process.env.AUTH_GAS_STATION_PRIVATE_KEY;
     logWalletRoles(walletKeys, authKeysCsv);
 
+    // Per-customer private stores (option B): enabled when the factory is set.
+    let privateStores: PrivateStoreRegistry | undefined;
+    let storeMigrations: StoreMigrations | undefined;
+    const factoryAddress = process.env.PRIVATE_STORE_FACTORY;
+    if (factoryAddress && config.monadRpcUrl && walletKeys.privateStore) {
+        const pk = walletKeys.privateStore.startsWith('0x') ? walletKeys.privateStore : `0x${walletKeys.privateStore}`;
+        privateStores = new PrivateStoreRegistry(
+            kvStore,
+            createRpcProvider(config.monadRpcUrl, config.monadChainId || 10143),
+            factoryAddress,
+            new Wallet(pk).address,
+        );
+        console.log(`  [PrivateStores] Per-customer stores ENABLED (factory ${factoryAddress})`);
+
+        // Customer stores are opened on first use, each with its own key derived
+        // from ENCRYPTION_KEY and the store address (see deriveStoreRootKey).
+        const rootKey = walletKeys.encryption;
+        const rpcUrl = config.monadRpcUrl;
+        if (rootKey && 'setStorePool' in kvStore && typeof kvStore.setStorePool === 'function') {
+            kvStore.setStorePool(new StoreAdapterPool((storeAddress) => {
+                const storeKey = deriveStoreRootKey(rootKey, storeAddress);
+                return new EncryptionLayer(createMonadAdapter({
+                    rpcUrl,
+                    chainId: config.monadChainId || 10143,
+                    privateKey: walletKeys.privateStore!,
+                    contractAddress: storeAddress,
+                    registryCodec: createRegistryCodec(storeKey),
+                    snapshotDir: process.env.KEY_INDEX_SNAPSHOT_DIR,
+                }), { privateKey: storeKey, enabled: true });
+            }));
+            storeMigrations = new StoreMigrations(kvStore as unknown as RoutingAdapter, privacyManager, privateStores, store);
+            // A store whose owner revoked PlugPort's writer gets a clear error instead of looking empty (P10).
+            const registry = privateStores;
+            (kvStore as unknown as RoutingAdapter).setStoreGuard((addr) => registry.checkWriter(addr), registry.writerAddress);
+        }
+    }
+
+    // New collections: private by default, in the owner's own store when active.
+    const collectionClaims = new CollectionClaims(privacyManager, privateStores);
+
     // Alerting signals: chain-layer failures become counters, and every
     // gas-paying wallet's balance is polled (see wallet-balance-monitor.ts).
     onRpcFailover(() => metrics.recordRpcFailover());
@@ -222,10 +279,16 @@ async function main() {
         kvStore,
         protocolManager,
         privacyManager,
+        privateStores,
+        storeMigrations,
     });
 
     await httpServer.listen({ port: config.httpPort, host: config.host });
     console.log(`  [HTTP] API server listening on http://${config.host}:${config.httpPort}`);
+    // Finish moving private data into customers' stores that a restart interrupted.
+    storeMigrations?.resumeAll().catch((err) => {
+        console.warn('  [StoreMigrations] Resume failed:', err instanceof Error ? err.message : err);
+    });
     console.log(`  [HTTP] Health: http://localhost:${config.httpPort}/health`);
     console.log(`  [HTTP] Metrics: http://localhost:${config.httpPort}/metrics`);
 
@@ -237,7 +300,7 @@ async function main() {
             apiKey: config.apiKey,
             store,
             metrics,
-            claimCollection: (collection, owner) => privacyManager.claimIfUnowned(collection, owner),
+            claimCollection: (collection, owner, mode) => collectionClaims.claim(collection, owner, mode),
         });
 
         wireServer.listen(config.protocols.mongodb.port, config.host, () => {
