@@ -18,6 +18,7 @@ import type { RegistryCodec } from './encryption-layer.js';
 import { ethers } from 'ethers';
 import { sendContractTx, confirmTx } from './tx-sequencer.js';
 import { createRpcProvider } from './rpc-provider.js';
+import { readKeyIndexSnapshot, writeKeyIndexSnapshot, snapshotPath } from './key-index-snapshot.js';
 import type { KVAdapter, KVEntry, ScanOptions } from '@plugport/shared';
 import { PLUGPORT_STORE_ABI } from './contract-abi.js';
 
@@ -38,7 +39,14 @@ export interface MonadConfig {
     privateKey: string;
     /** Deployed PlugPortStore contract address */
     contractAddress: string;
+    /**
+     * Directory for key-index snapshots (see key-index-snapshot.ts). Unset: no
+     * snapshots, so every start replays the whole key-registry log.
+     */
+    snapshotDir?: string;
 }
+
+const SNAPSHOT_INTERVAL_MS = 10 * 60 * 1000;
 
 // ---- Key Hashing ----
 
@@ -147,8 +155,20 @@ export class MonadAdapter implements KVAdapter {
     /** Serializes registry sequence-number allocation across concurrent writes */
     private registryMutex = new Mutex();
 
+    /** Where this contract's key-index snapshot lives, when snapshots are enabled. */
+    private snapshotFile?: string;
+    private contractAddress: string;
+    /** Log position the last saved (or loaded) snapshot covers; -1 = none. */
+    private snapshotUpTo = -1;
+
     constructor(config: MonadConfig) {
         this.registryCodec = config.registryCodec;
+        this.contractAddress = config.contractAddress;
+        if (config.snapshotDir) {
+            this.snapshotFile = snapshotPath(config.snapshotDir, config.chainId, config.contractAddress);
+            const timer = setInterval(() => { void this.saveKeyIndexSnapshot(); }, SNAPSHOT_INTERVAL_MS);
+            timer.unref?.();
+        }
         // Shares the process-wide RPC rate limit — see rpc-provider.ts.
         this.provider = createRpcProvider(config.rpcUrl, config.chainId, { name: 'monad-testnet' });
 
@@ -241,6 +261,22 @@ export class MonadAdapter implements KVAdapter {
     private async loadKeyIndexFromChain(): Promise<void> {
         try {
             const count = await this.findRegistryCount();
+
+            // Start from the snapshot when there is a usable one: only log entries
+            // written after it need replaying. One that claims more entries than
+            // the chain has belongs to something else and is ignored.
+            let first = 0;
+            if (this.snapshotFile) {
+                const snapshot = await readKeyIndexSnapshot(this.snapshotFile, this.contractAddress, this.registryCodec);
+                if (snapshot && snapshot.upTo <= count) {
+                    for (const key of snapshot.keys) this.keyIndex.set(key, hashKey(key));
+                    first = snapshot.upTo;
+                    this.snapshotUpTo = snapshot.upTo;
+                    console.log(`  [Monad] Key index snapshot loaded: ${snapshot.keys.length} keys, log entries 0-${snapshot.upTo - 1}`);
+                } else if (snapshot) {
+                    console.warn(`  [Monad] Ignoring key index snapshot: it covers ${snapshot.upTo} log entries but the chain has ${count}`);
+                }
+            }
             // testnet-rpc.monad.xyz is a shared public endpoint that rate-limits
             // under bursts of concurrent calls — a wide Promise.all here silently
             // dropped most entries (observed: 12/14 failed with "missing revert
@@ -257,7 +293,7 @@ export class MonadAdapter implements KVAdapter {
             const BASE_DELAY_MS = 500;
             let failedSeqs: number[] = [];
 
-            for (let start = 0; start < count; start += CONCURRENCY) {
+            for (let start = first; start < count; start += CONCURRENCY) {
                 const end = Math.min(start + CONCURRENCY, count);
                 const seqRange = Array.from({ length: end - start }, (_, i) => start + i);
 
@@ -286,7 +322,10 @@ export class MonadAdapter implements KVAdapter {
             if (failedSeqs.length > 0) {
                 console.warn(`  [Monad] Key registry replay: ${failedSeqs.length}/${count} entries failed after retries — those keys stay undiscoverable until next successful restart or a fresh write: [${failedSeqs.join(', ')}]`);
             }
-            console.log(`  [Monad] Key registry replayed: ${count} logged, ${this.keyIndex.size} live keys recovered`);
+            console.log(`  [Monad] Key registry replayed: ${count} logged, ${count - first} replayed, ${this.keyIndex.size} live keys recovered`);
+            // A snapshot after failed entries would mark them as covered and they
+            // would never be retried; the next start does a full replay instead.
+            if (failedSeqs.length === 0) await this.writeKeyIndexSnapshot();
         } catch (err) {
             console.warn('[MonadAdapter] Failed to load key registry (contract may not be deployed):', err instanceof Error ? err.message : 'unknown error');
         }
@@ -306,6 +345,11 @@ export class MonadAdapter implements KVAdapter {
         try {
             if (this.keyIndex.has(key)) return null; // lost the race, already registered
             const seq = this.registryCount++;
+            // Indexed as soon as its log entry is reserved, under the same lock: a
+            // snapshot covering entry `seq` must contain the key, and a second
+            // concurrent write of the same key must not reserve another entry.
+            // A failed write removes it again.
+            this.keyIndex.set(key, hashKey(key));
             const plain = Buffer.from(key, 'utf-8');
             return { key: registryEntryKey(seq), value: this.registryCodec ? this.registryCodec.encode(plain) : plain };
         } finally {
@@ -456,16 +500,21 @@ export class MonadAdapter implements KVAdapter {
         // what makes this key discoverable again after a restart.
         const registryEntry = await this.reserveRegistryEntry(key);
 
-        if (registryEntry) {
-            const tx = await sendContractTx(this.wallet, () => this.contract.batchWrite.populateTransaction(
-                [hash, hashKey(registryEntry.key)],
-                [hexValue, ethers.hexlify(registryEntry.value)],
-                [],
-            ));
-            await confirmTx(tx);
-        } else {
-            const tx = await sendContractTx(this.wallet, () => this.contract.put.populateTransaction(hash, hexValue));
-            await confirmTx(tx);
+        try {
+            if (registryEntry) {
+                const tx = await sendContractTx(this.wallet, () => this.contract.batchWrite.populateTransaction(
+                    [hash, hashKey(registryEntry.key)],
+                    [hexValue, ethers.hexlify(registryEntry.value)],
+                    [],
+                ));
+                await confirmTx(tx);
+            } else {
+                const tx = await sendContractTx(this.wallet, () => this.contract.put.populateTransaction(hash, hexValue));
+                await confirmTx(tx);
+            }
+        } catch (err) {
+            if (registryEntry) this.keyIndex.delete(key);
+            throw err;
         }
 
         // Update local caches
@@ -588,6 +637,35 @@ export class MonadAdapter implements KVAdapter {
                 }
                 throw err;
             }
+        }
+    }
+
+    // ---- Key-index snapshots ----
+
+    /**
+     * Save the key index and the log position it covers, if snapshots are
+     * enabled and anything was logged since the last one. Every key with a
+     * reserved log entry below that position is already in the index (see
+     * reserveRegistryEntry). A key whose write then fails may be in the
+     * snapshot; it costs one wasted lookup, never a lost key.
+     */
+    async saveKeyIndexSnapshot(): Promise<void> {
+        if (!this.snapshotFile || !this.indexLoadPromise) return;
+        await this.indexLoadPromise;
+        await this.writeKeyIndexSnapshot();
+    }
+
+    /** The write itself; during the load, called directly (awaiting the load would deadlock). */
+    private async writeKeyIndexSnapshot(): Promise<void> {
+        if (!this.snapshotFile) return;
+        const upTo = this.registryCount;
+        if (upTo === this.snapshotUpTo) return;
+        const keys = [...this.keyIndex.keys()].filter((k) => !(k.startsWith('0x') && k.length === 66));
+        try {
+            await writeKeyIndexSnapshot(this.snapshotFile, this.contractAddress, { upTo, keys }, this.registryCodec);
+            this.snapshotUpTo = upTo;
+        } catch (err) {
+            console.warn('[MonadAdapter] Could not save the key index snapshot:', err instanceof Error ? err.message : err);
         }
     }
 
