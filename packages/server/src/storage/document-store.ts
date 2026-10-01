@@ -261,6 +261,46 @@ export class DocumentStore {
      */
     async dropCollection(name: string): Promise<boolean> {
         if (this.moving.has(name)) throw new CollectionBusyError(name);
+        return this.dropCollectionData(name);
+    }
+
+    /**
+     * Copy a collection to a new name, with its writes paused, then remove the
+     * original (a namespace move; see namespace-migration.ts). `prepare` runs
+     * before anything is written to `to` — give it its privacy settings there,
+     * so its data lands in the same store. `switchOver` runs once the copy is
+     * complete: from then on, readers must use `to`. A copy left at `to` by an
+     * interrupted earlier run is discarded first; `from` stays authoritative
+     * until `switchOver`.
+     */
+    async renameCollection(from: string, to: string, hooks: { prepare(): Promise<void>; switchOver(): Promise<void> }): Promise<number> {
+        validateCollectionName(to);
+        return this.withCollectionMove(from, async () => {
+            const source = await this.getCollection(from);
+            if (await this.getCollection(to)) await this.dropCollectionData(to);
+            await hooks.prepare();
+            let copied = 0;
+            if (source) {
+                await this.getOrCreateCollection(to);
+                for (const index of source.indexes) {
+                    if (index.field !== '_id') await this.createIndex(to, index.field, index.unique);
+                }
+                const PAGE = 500;
+                for (;;) {
+                    // Scans run in key order, and writes are paused, so pages don't shift.
+                    const page = (await this.find(from, {}, { limit: PAGE, skip: copied })).cursor.firstBatch;
+                    if (page.length > 0) await this.insert(to, page);
+                    copied += page.length;
+                    if (page.length < PAGE) break;
+                }
+            }
+            await hooks.switchOver();
+            if (source) await this.dropCollectionData(from);
+            return copied;
+        });
+    }
+
+    private async dropCollectionData(name: string): Promise<boolean> {
         const metadata = await this.getCollection(name);
         if (!metadata) return false;
 

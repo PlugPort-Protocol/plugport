@@ -162,6 +162,8 @@ export function ApiKeysTab() {
     // uses) instead of hardcoding localhost, which would only ever work
     // against a local dev server, not this deployed instance.
     const [mongoConnectionHost, setMongoConnectionHost] = useState<string | null>(null);
+    // host:port of the other enabled wire protocols, for their login examples.
+    const [wireHosts, setWireHosts] = useState<Record<string, string>>({});
 
     // ---- Legacy Key Management ----
 
@@ -182,6 +184,11 @@ export function ApiKeysTab() {
                 // scheme so it can be re-composed with real credentials below.
                 setMongoConnectionHost(mongo.connectionString.replace(/^mongodb:\/\//, ''));
             }
+            const hosts: Record<string, string> = {};
+            for (const p of res.protocols ?? []) {
+                if (p.enabled && p.connectionString) hosts[p.name] = p.connectionString.replace(/^[a-z]+:\/\//, '').replace(/\/.*$/, '');
+            }
+            setWireHosts(hosts);
         } catch { /* ignore — falls back to localhost below */ }
     }, []);
 
@@ -975,6 +982,18 @@ curl -X POST ${getApiBase()}/api/v1/collections/users/find \\
 
 # Usage with MongoDB wire protocol (SCRAM-SHA-256), username = your wallet address:
 mongosh "mongodb://${address || '0xYourAddress'}:${generatedKey || '0x_your_key_here'}@${mongoConnectionHost || 'localhost:27017'}/?authSource=admin"`}
+{wireHosts.postgresql && `
+
+# PostgreSQL (SCRAM-SHA-256), user = your wallet address:
+psql "postgresql://${address || '0xYourAddress'}:${generatedKey || '0x_your_key_here'}@${wireHosts.postgresql}/plugport"`}
+{wireHosts.mysql && `
+
+# MySQL, user = your wallet address (TLS required: the key is sent to the server):
+mysql --ssl-mode=REQUIRED -h ${wireHosts.mysql.split(':')[0]} -P ${wireHosts.mysql.split(':')[1] || '3306'} -u ${address || '0xYourAddress'} -p`}
+{wireHosts.redis && `
+
+# Redis, user = your wallet address (TLS required); your own keyspace:
+redis-cli --tls -h ${wireHosts.redis.split(':')[0]} -p ${wireHosts.redis.split(':')[1] || '6379'} --user ${address || '0xYourAddress'} --pass ${generatedKey || '0x_your_key_here'}`}
                 </pre>
             </div>
         </div>

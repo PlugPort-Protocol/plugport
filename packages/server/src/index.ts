@@ -16,6 +16,10 @@ import { EncryptionLayer, createRegistryCodec, deriveStoreRootKey } from './stor
 import { StoreAdapterPool } from './storage/store-adapter-pool.js';
 import { StoreMigrations } from './storage/store-migrations.js';
 import { CollectionClaims } from './storage/collection-claims.js';
+import { CollectionAccess } from './storage/collection-access.js';
+import { Namespaces } from './storage/namespaces.js';
+import { NamespaceMigration } from './storage/namespace-migration.js';
+import { WireTls } from './protocols/wire-tls.js';
 import { createMetadataCipher } from './storage/metadata-cipher.js';
 import { RoutingAdapter } from './storage/routing-adapter.js';
 import { MessageBrokerAdapter } from './storage/message-broker-adapter.js';
@@ -253,6 +257,12 @@ async function main() {
 
     // New collections: private by default, in the owner's own store when active.
     const collectionClaims = new CollectionClaims(privacyManager, privateStores);
+    const collectionAccess = new CollectionAccess(privacyManager, store, collectionClaims);
+    // Per-wallet namespaces: find collections from before them, which resolve
+    // as if already moved, and move them in the background once serving.
+    const namespaces = new Namespaces(store, privacyManager);
+    await namespaces.load();
+    const namespaceMigration = new NamespaceMigration(store, privacyManager, namespaces);
 
     // Alerting signals: chain-layer failures become counters, and every
     // gas-paying wallet's balance is polled (see wallet-balance-monitor.ts).
@@ -281,6 +291,7 @@ async function main() {
         privacyManager,
         privateStores,
         storeMigrations,
+        namespaces,
     });
 
     await httpServer.listen({ port: config.httpPort, host: config.host });
@@ -289,8 +300,16 @@ async function main() {
     storeMigrations?.resumeAll().catch((err) => {
         console.warn('  [StoreMigrations] Resume failed:', err instanceof Error ? err.message : err);
     });
+    namespaceMigration.run().catch((err) => {
+        console.warn('  [Namespaces] Migration failed:', err instanceof Error ? err.message : err);
+    });
     console.log(`  [HTTP] Health: http://localhost:${config.httpPort}/health`);
     console.log(`  [HTTP] Metrics: http://localhost:${config.httpPort}/metrics`);
+
+    // TLS on the wire ports (see protocols/wire-tls.ts): plain clients keep
+    // working; MySQL and Redis wallet logins need it.
+    const wireTls = WireTls.fromFiles(process.env.TLS_CERT_FILE, process.env.TLS_KEY_FILE);
+    if (!wireTls) console.log('  [TLS] No TLS_CERT_FILE: wire ports are plain only');
 
     // Start Wire Protocol server (MongoDB)
     if (config.protocols.mongodb.enabled) {
@@ -301,6 +320,9 @@ async function main() {
             store,
             metrics,
             claimCollection: (collection, owner, mode) => collectionClaims.claim(collection, owner, mode),
+            access: collectionAccess,
+            namespaces,
+            tls: wireTls,
         });
 
         wireServer.listen(config.protocols.mongodb.port, config.host, () => {
@@ -329,6 +351,9 @@ async function main() {
             timeoutMs: config.sqlStatementTimeoutMs,
             apiKey: config.apiKey,
             metrics,
+            access: collectionAccess,
+            namespaces,
+            tls: wireTls,
         });
         protocolManager.register(pgServer);
         await pgServer.start();
@@ -344,6 +369,9 @@ async function main() {
             timeoutMs: config.sqlStatementTimeoutMs,
             apiKey: config.apiKey,
             metrics,
+            access: collectionAccess,
+            namespaces,
+            tls: wireTls,
         });
         protocolManager.register(mysqlServer);
         await mysqlServer.start();
@@ -360,6 +388,7 @@ async function main() {
             messageBroker,
             apiKey: config.apiKey,
             metrics,
+            tls: wireTls,
         });
         protocolManager.register(redisServer);
         await redisServer.start();

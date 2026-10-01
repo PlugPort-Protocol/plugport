@@ -1,6 +1,7 @@
 # PlugPort Docker Compose — Reverse Proxy (Caddy, automatic HTTPS)
 # Usage: add `-f docker-compose.proxy.yml` to the compose command.
-# Requires API_DOMAIN and DASHBOARD_DOMAIN in the env file.
+# Requires API_DOMAIN and DASHBOARD_DOMAIN in the env file; WIRE_PROTOCOL_HOSTNAME
+# also gets a certificate, which the server uses for TLS on the wire ports.
 
 services:
   caddy:
@@ -14,6 +15,7 @@ services:
       - API_DOMAIN=${API_DOMAIN}
       - DASHBOARD_DOMAIN=${DASHBOARD_DOMAIN}
       - GRAFANA_DOMAIN=${GRAFANA_DOMAIN}
+      - WIRE_PROTOCOL_HOSTNAME=${WIRE_PROTOCOL_HOSTNAME}
       - GRAFANA_USER=${GRAFANA_USER}
       - GRAFANA_BASIC_AUTH_HASH=${GRAFANA_BASIC_AUTH_HASH}
     volumes:
@@ -25,6 +27,16 @@ services:
       - plugport-dashboard
     networks:
       - plugport-net
+
+  # TLS on the wire ports with Caddy's certificate for WIRE_PROTOCOL_HOSTNAME,
+  # read from its data volume. Renewals are picked up without a restart; until
+  # the first certificate is issued, the wire ports stay plain-only.
+  plugport-server:
+    volumes:
+      - caddy-data:/caddy-data:ro
+    environment:
+      - TLS_CERT_FILE=/caddy-data/caddy/certificates/acme-v02.api.letsencrypt.org-directory/${WIRE_PROTOCOL_HOSTNAME}/${WIRE_PROTOCOL_HOSTNAME}.crt
+      - TLS_KEY_FILE=/caddy-data/caddy/certificates/acme-v02.api.letsencrypt.org-directory/${WIRE_PROTOCOL_HOSTNAME}/${WIRE_PROTOCOL_HOSTNAME}.key
 
 volumes:
   caddy-data:

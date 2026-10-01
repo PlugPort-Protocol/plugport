@@ -21,6 +21,8 @@ import type { PrivateStoreRegistry } from './storage/private-store-registry.js';
 import { CollectionBusyError, StoreDetachedError, type RoutingAdapter } from './storage/routing-adapter.js';
 import type { StoreMigrations } from './storage/store-migrations.js';
 import { CollectionClaims } from './storage/collection-claims.js';
+import { CollectionAccess, resolveQueryCollections, type Caller } from './storage/collection-access.js';
+import { Namespaces, namespaceOwner } from './storage/namespaces.js';
 
 /** Largest collection (documents plus index entries) a privacy switch moves in one request. */
 const MAX_SYNC_MIGRATION_KEYS = 2000;
@@ -63,6 +65,8 @@ export interface HttpServerOptions {
     privateStores?: PrivateStoreRegistry;
     /** Moves customers' private data into their own stores once linked. */
     storeMigrations?: StoreMigrations;
+    /** Per-wallet namespaces, loaded (see storage/namespaces.ts); shared with the wire servers. */
+    namespaces?: Namespaces;
     /** Allowed origin for CORS credentials (defaults to DASHBOARD_URL env var) */
     dashboardUrl?: string;
 }
@@ -79,6 +83,13 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
     const storeMigrations = options.storeMigrations;
     // New collections: private by default, in the owner's own store when active.
     const collectionClaims = new CollectionClaims(privacyManager, privateStores);
+    // One access rule for HTTP and the wire protocols (see collection-access.ts).
+    const collectionAccess = new CollectionAccess(privacyManager, store, collectionClaims);
+    let namespaces = options.namespaces;
+    if (!namespaces) {
+        namespaces = new Namespaces(store, privacyManager);
+        await namespaces.load();
+    }
     const joinEngine = new JoinEngine();
     if ('setPrivacyManager' in kvStore && typeof kvStore.setPrivacyManager === 'function') {
         kvStore.setPrivacyManager(privacyManager);
@@ -99,7 +110,10 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
         // `[{},{},…]` → 128 MB), so 50 MB bodies could exhaust the heap alone.
         // Documents are capped at 1 MB; 4 MB still allows sizeable batches.
         bodyLimit: 4 * 1024 * 1024,
-        logger: process.env.NODE_ENV === 'production'
+        // Tests: warnings only, and no pino-pretty — its worker thread per server
+        // made parallel test runs fail to start threads (EINVAL) on Windows.
+        logger: process.env.NODE_ENV === 'test' ? { level: 'warn' }
+            : process.env.NODE_ENV === 'production'
             ? { level: 'info' } // JSON logs for production (Railway, Docker, etc.)
             : {
                 level: 'info',
@@ -314,39 +328,36 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
      * The operator — the server's master API_KEY, or dev mode with no key
      * configured — carries no wallet and may write to any non-private collection.
      */
-    async function checkAccess(req: FastifyRequest, reply: FastifyReply, collection: string, type: 'read' | 'write'): Promise<boolean> {
-        const address = req.user?.address?.toLowerCase() || '';
-
-        if (type === 'read') {
-            if (await privacyManager.hasReadAccess(collection, address)) return true;
-            reply.status(403).send({ ok: 0, errmsg: `Access denied: collection ${collection} is private` });
-            return false;
-        }
-
+    function callerOf(req: FastifyRequest): Caller {
         const operator = req.user?.authMethod === 'legacyKey' || (req.user?.authMethod === 'none' && !apiKey);
-        let privacy = await privacyManager.getCollectionPrivacy(collection);
-        if (operator) {
-            if (privacy?.mode !== 'private') return true;
-        } else if (address) {
-            if (!privacy && !(await store.getCollection(collection))) {
-                await collectionClaims.claim(collection, address);
-                privacy = await privacyManager.getCollectionPrivacy(collection);
-            }
-            if (await privacyManager.hasWriteAccess(collection, address)) return true;
-        }
+        return { wallet: req.user?.address, operator };
+    }
 
-        const errmsg = !privacy
-            ? `Access denied: collection ${collection} has no owner and is read-only`
-            : `Access denied: collection ${collection} belongs to another wallet (only its owner and wallets it grants write access can write)`;
-        reply.status(403).send({ ok: 0, errmsg });
+    async function checkAccess(req: FastifyRequest, reply: FastifyReply, collection: string, type: 'read' | 'write'): Promise<boolean> {
+        const result = await collectionAccess.check(collection, callerOf(req), type);
+        if (result.ok) return true;
+        reply.status(403).send({ ok: 0, errmsg: result.errmsg });
         return false;
     }
 
     // ---- Collection Management ----
 
+    // Per-wallet namespaces: every /collections/:name route works on the
+    // physical collection the caller's name refers to (see storage/namespaces.ts).
+    const READ_ROUTES = /\/(find|findOne|count|distinct|aggregate)$/;
+    app.addHook('preHandler', async (req) => {
+        const route = req.routeOptions.url ?? '';
+        const params = req.params as { name?: string } | undefined;
+        if (!params?.name || !route.startsWith('/api/v1/collections/:name')) return;
+        const intent = req.method === 'GET' || READ_ROUTES.test(route) ? 'read' : 'write';
+        params.name = await namespaces.resolve(params.name, callerOf(req), intent);
+    });
+
     app.get('/api/v1/collections', async (req: FastifyRequest) => {
-        const collections = await store.listCollections();
+        const all = await store.listCollections();
         const address = req.user?.address || '';
+        const names = new Map(namespaces.view(all.map((c) => c.name), callerOf(req)).map((e) => [e.physical, e.name]));
+        const collections = all.filter((c) => names.has(c.name));
         const mappedCollections = await Promise.all(collections.map(async (c) => {
             const privacy = await privacyManager.getCollectionPrivacy(c.name);
             const mode = privacy?.mode || 'public';
@@ -361,7 +372,7 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
                 ? !(await privateStores.checkWriter(privacy.storeAddress).catch(() => ({ ok: true }))).ok
                 : false;
             return {
-                name: c.name,
+                name: names.get(c.name)!,
                 documentCount: c.documentCount,
                 indexCount: c.indexes.length,
                 createdAt: c.options.createdAt,
@@ -662,10 +673,13 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
                         const lookup = stage.$lookup as {
                             from: string; localField: string; foreignField: string; as: string;
                         };
+                        // The joined collection is read too: it needs read access of its own.
+                        const from = await namespaces.resolve(lookup.from, callerOf(req), 'read');
+                        if (!(await checkAccess(req, reply, from, 'read'))) return;
                         const localValues = docs.map(doc => (doc as any)[lookup.localField]).filter(v => v != null);
                         let foreignDocs: Record<string, unknown>[] = [];
                         if (localValues.length > 0) {
-                            const foreignResult = await store.find(lookup.from, {
+                            const foreignResult = await store.find(from, {
                                 [lookup.foreignField]: { $in: localValues },
                             });
                             foreignDocs = foreignResult.cursor.firstBatch as Record<string, unknown>[];
@@ -1001,6 +1015,7 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
 
             const translator = new SQLTranslator({ dialect });
             const translated = translator.translate(query) as TranslatedQuery;
+            await resolveQueryCollections(translated, namespaces, callerOf(req));
 
             if (translated.type === 'noop') {
                 return { ok: 1, message: translated.message };
@@ -1132,8 +1147,9 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
                 destroyed: false,
             };
 
-            // Already authenticated by this route's onRequest hook (session/API key) — skip the wire-level AUTH gate.
-            await redisServer.executeCommand(fakeSocket as any, command, true);
+            // Already authenticated by this route's onRequest hook (session/API key) — skip the
+            // wire-level AUTH gate. A wallet works in its own keyspace, as over the wire.
+            await redisServer.executeCommand(fakeSocket as any, command, true, req.user?.address);
 
             const parsed = parseRESP(outputBuffer);
             
@@ -1191,7 +1207,9 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
             get destroyed() { return destroyed; }
         };
 
-        await redisServer.executeCommand(fakeSocket as any, ['SUBSCRIBE', ...channels]);
+        // Authenticated by the onRequest hook; a wallet subscribes to its own channels.
+        const wallet = req.user?.address;
+        await redisServer.executeCommand(fakeSocket as any, ['SUBSCRIBE', ...channels], true, wallet);
 
         const heartbeatInterval = setInterval(() => {
             if (destroyed) {
@@ -1204,14 +1222,14 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
             } catch (err) {
                 destroyed = true;
                 clearInterval(heartbeatInterval);
-                redisServer.executeCommand(fakeSocket as any, ['UNSUBSCRIBE', ...channels]).catch(() => {});
+                redisServer.executeCommand(fakeSocket as any, ['UNSUBSCRIBE', ...channels], true, wallet).catch(() => {});
             }
         }, 15000);
 
         req.raw.on('close', () => {
             destroyed = true;
             clearInterval(heartbeatInterval);
-            redisServer.executeCommand(fakeSocket as any, ['UNSUBSCRIBE', ...channels]).catch(() => {});
+            redisServer.executeCommand(fakeSocket as any, ['UNSUBSCRIBE', ...channels], true, wallet).catch(() => {});
         });
         
         reply.hijack();
@@ -1546,6 +1564,10 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
         if (!existingPrivacy && (await store.getCollection(req.params.name))) {
             return reply.status(403).send({ ok: 0, errmsg: `Collection ${req.params.name} has no owner and is read-only` });
         }
+        // A new name is claimed only in the caller's own namespace.
+        if (!existingPrivacy && namespaceOwner(req.params.name) !== req.user.address.toLowerCase()) {
+            return reply.status(403).send({ ok: 0, errmsg: `Collection ${req.params.name} is not in your namespace` });
+        }
         // A store address is never taken from the request: routing follows it,
         // and PlugPort's writer is authorised on every customer store, so a
         // caller could otherwise point their collection at someone else's store.
@@ -1679,9 +1701,9 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
         const userCollections = [];
         for (const c of allCollections) {
             const privacy = await privacyManager.getCollectionPrivacy(c.name);
-            if (privacy?.ownerAddress === address) {
+            if (privacy?.ownerAddress === address && !privacy.movedTo) { // an old copy being removed isn't listed twice
                 userCollections.push({
-                    name: c.name,
+                    name: namespaces.display(c.name, { wallet: address, operator: false }),
                     documentCount: c.documentCount,
                     indexCount: c.indexes.length,
                     mode: privacy.mode,
@@ -1717,7 +1739,7 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
         let userDocuments = 0;
         for (const c of allCollections) {
             const privacy = await privacyManager.getCollectionPrivacy(c.name);
-            if (privacy?.ownerAddress === address) {
+            if (privacy?.ownerAddress === address && !privacy.movedTo) {
                 userCollections++;
                 userDocuments += c.documentCount;
             }

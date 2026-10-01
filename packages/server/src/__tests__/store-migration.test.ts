@@ -125,7 +125,7 @@ describe('privacy switch: estimate, confirm, cap, destination', () => {
         expect(preview.statusCode).toBe(409);
         expect(preview.json()).toMatchObject({ confirmRequired: true, estimate: { documents: 2, keys: 4, historyRemainsPublic: true, destination: 'shared private store' } });
         expect(preview.json().errmsg).toMatch(/stays readable in the chain history/);
-        expect((await ctx.privacy.getCollectionPrivacy('orders'))?.mode).toBe('public');   // nothing changed
+        expect((await ctx.privacy.getCollectionPrivacy(`${ALICE.toLowerCase()}.orders`))?.mode).toBe('public');   // nothing changed (in Alice's namespace)
 
         const done = await switchTo('orders', { mode: 'private', confirm: true });
         expect(done.json()).toMatchObject({ ok: 1, mode: 'private', migrated: 4 });
@@ -136,8 +136,9 @@ describe('privacy switch: estimate, confirm, cap, destination', () => {
     });
 
     it('refuses collections too large to move in one request', async () => {
-        await ctx.store.insert('huge', Array.from({ length: 1001 }, (_, i) => ({ i })));
-        await ctx.privacy.claimIfUnowned('huge', ALICE);
+        const huge = `${ALICE.toLowerCase()}.huge`;   // in Alice's namespace
+        await ctx.store.insert(huge, Array.from({ length: 1001 }, (_, i) => ({ i })));
+        await ctx.privacy.claimIfUnowned(huge, ALICE);
         const res = await switchTo('huge', { mode: 'private', confirm: true });
         expect(res.statusCode).toBe(413);
         expect(res.json().estimate.keys).toBe(2002);

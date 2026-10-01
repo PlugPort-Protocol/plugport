@@ -138,8 +138,14 @@ describe('private store HTTP endpoints', () => {
 
     it('does not let a wallet claim an existing unowned collection through the privacy endpoint', async () => {
         await docs.insert('legacy_demo', [{ seeded: true }]);
+        // The name is Bob's own (per-wallet namespaces); the shared collection stays unowned.
         const res = await app.inject({ method: 'POST', url: '/api/v1/collections/legacy_demo/privacy', headers: as(BOB), payload: { mode: 'private' } });
-        expect(res.statusCode).toBe(403);
-        expect(res.json().errmsg).toMatch(/no owner and is read-only/);
+        expect(res.json()).toMatchObject({ ok: 1, collection: `${BOB.toLowerCase()}.legacy_demo` });
+        const shared = await app.inject({ method: 'GET', url: '/api/v1/collections/legacy_demo/privacy' });
+        expect(shared.json().privacy).toBeNull();
+        // And another wallet's namespace can't be claimed through it either.
+        const other = await app.inject({ method: 'POST', url: `/api/v1/collections/${ALICE}.taken/privacy`, headers: as(BOB), payload: { mode: 'private' } });
+        expect(other.statusCode).toBe(403);
+        expect(other.json().errmsg).toMatch(/not in your namespace/);
     });
 });

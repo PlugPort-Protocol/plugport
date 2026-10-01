@@ -77,6 +77,17 @@ PG_PORT=5432
 psql postgresql://localhost:5432/plugport
 ```
 
+When the server has an `API_KEY`, logins use SCRAM-SHA-256 (the password never crosses the wire):
+
+- **As your wallet:** user `0xYourWallet`, password one of your API keys. If the wallet has several active keys, name the one you use: `0xYourWallet:2`. You then read and write exactly what that wallet may over HTTP — your own collections, public ones, and those shared with you.
+- **As the operator:** any other user name, password the server's `API_KEY`.
+
+```bash
+psql "postgresql://0xYourWallet@localhost:5432/plugport"   # prompts for the API key
+```
+
+Your own tables use plain names. Another wallet's table (public, or shared with you) has its owner's address as the schema, quoted because it starts with a digit: `SELECT * FROM "0x1a2b…".users`. See [collection names](../api-reference/http-api.md#collection-names).
+
 ### Supported SQL
 
 | Category | Statements |
@@ -150,9 +161,14 @@ MYSQL_PORT=3306
 mysql -h localhost -P 3306 -u root
 ```
 
+When the server has an `API_KEY`:
+
+- **As your wallet:** user `0xYourWallet` (or `0xYourWallet:2` if the wallet has several active keys), password one of your API keys. This needs TLS, because the key itself is sent to the server: `mysql --ssl-mode=REQUIRED -h db.example.com -u 0xYourWallet -p`. You then read and write what that wallet may over HTTP.
+- **As the operator:** any other user name, password the server's `API_KEY` (`mysql_native_password`, with or without TLS).
+
 ### Supported SQL
 
-Same as PostgreSQL (shared SQL translator). All standard SQL operations are supported.
+Same as PostgreSQL (shared SQL translator). All standard SQL operations are supported. Another wallet's table is `0x1a2b….users` (no quoting needed).
 
 ### Client Libraries
 
@@ -177,6 +193,11 @@ REDIS_PORT=6379
 ```bash
 redis-cli -p 6379
 ```
+
+When the server has an `API_KEY`:
+
+- **As your wallet:** `AUTH 0xYourWallet <api key>` (or `0xYourWallet:2` if the wallet has several active keys). This needs TLS, because the key itself is sent to the server: `redis-cli --tls -h db.example.com -p 6379 --user 0xYourWallet --pass <api key>`, or `rediss://0xYourWallet:<api key>@db.example.com:6379` in client libraries. Each wallet has its own keyspace and its own pub/sub channels, also through the HTTP `/api/v1/redis` endpoint, and `FLUSHDB` clears only those keys.
+- **As the operator:** `AUTH <API_KEY>`, with or without TLS, in the shared keyspace.
 
 ### Supported Commands
 
@@ -244,6 +265,10 @@ MONGODB_ENABLED=false
 ```bash
 mongosh mongodb://localhost:27017
 ```
+
+With TLS configured (`TLS_CERT_FILE`), connect with `mongosh "mongodb://db.example.com:27017/?tls=true"`; plain connections keep working on the same port.
+
+Your own collections use plain names in any database. Another wallet's collection (public, or shared with you) is in the database named after its owner's address: `db.getSiblingDB('0x1a2b…').users.find()`, and `show collections` there lists that wallet's collections you can read. See [collection names](../api-reference/http-api.md#collection-names).
 
 ### Full MongoDB wire protocol compatibility as documented in the main README.
 

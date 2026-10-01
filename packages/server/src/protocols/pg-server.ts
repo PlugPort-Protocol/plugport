@@ -12,31 +12,19 @@
 //   Server → RowDescription → DataRow(s) → CommandComplete → ReadyForQuery
 
 import net from 'net';
-import { timingSafeEqual } from 'node:crypto';
 import { DocumentStore } from '../storage/document-store.js';
 import { SQLTranslator, executeAggregation, type TranslatedQuery } from './sql-translator.js';
 import { JoinEngine } from './join-engine.js';
 import type { ProtocolServerInstance } from './protocol-manager.js';
+import { parseClientFirst, resolveScramCredentials, startScram, finishScram, type ScramSession } from '../auth/scram.js';
+import { authorizeSqlQuery, readableCollections, type Caller, type CollectionAccess } from '../storage/collection-access.js';
+import type { Namespaces } from '../storage/namespaces.js';
+import { upgradeToTls, type WireTls } from './wire-tls.js';
 import { PRE_AUTH_MAX_BYTES, SQL_WIRE_MAX_MESSAGE_BYTES, MAX_CONNECTIONS_PER_PROTOCOL, closeUnlessAuthenticatedWithin } from './connection-limits.js';
 import type { MetricsCollector } from '../metrics.js';
 import type { ProtocolType, DocumentWithId } from '@plugport/shared';
 
 const MAX_STARTUP_PACKET_LENGTH = 10_000;
-
-/** Constant-time string comparison to prevent timing attacks on the password. */
-function safeCompare(a: string, b: string): boolean {
-    try {
-        const bufA = Buffer.from(a, 'utf-8');
-        const bufB = Buffer.from(b, 'utf-8');
-        if (bufA.length !== bufB.length) {
-            timingSafeEqual(bufA, bufA);
-            return false;
-        }
-        return timingSafeEqual(bufA, bufB);
-    } catch {
-        return false;
-    }
-}
 
 // ---- PG Message Types ----
 
@@ -99,6 +87,13 @@ export class PGServer implements ProtocolServerInstance {
     private timeoutMs: number;
     private apiKey?: string;
     private authenticatedSockets: WeakSet<object> = new WeakSet();
+    private access?: CollectionAccess;
+    private namespaces?: Namespaces;
+    private tls?: WireTls;
+    /** SCRAM login in progress: the startup user, and the session once client-first arrived. */
+    private scramLogins: WeakMap<net.Socket, { user: string; session?: ScramSession }> = new WeakMap();
+    /** The wallet a connection logged in as (its on-chain key); absent for the master key. */
+    private wallets: WeakMap<net.Socket, string> = new WeakMap();
     private metrics?: MetricsCollector;
     // Per-connection Extended Query Protocol state (garbage-collected
     // automatically alongside the socket — no explicit cleanup needed).
@@ -112,8 +107,17 @@ export class PGServer implements ProtocolServerInstance {
         timeoutMs?: number;
         apiKey?: string;
         metrics?: MetricsCollector;
+        /** The collection access rule (same as HTTP); without it only login is checked. */
+        access?: CollectionAccess;
+        /** Per-wallet namespaces (see storage/namespaces.ts); without them, names are physical. */
+        namespaces?: Namespaces;
+        /** Accept SSLRequest and continue over TLS; without it, SSL is declined. */
+        tls?: WireTls;
     }) {
         this.store = options.store;
+        this.access = options.access;
+        this.namespaces = options.namespaces;
+        this.tls = options.tls;
         this.port = options.port || 5432;
         this.host = options.host || '0.0.0.0';
         this.timeoutMs = options.timeoutMs || 30000;
@@ -180,15 +184,17 @@ export class PGServer implements ProtocolServerInstance {
         let buffer = Buffer.alloc(0);
         let startupComplete = false;
 
-        const authenticated = () => !this.apiKey || this.authenticatedSockets.has(socket);
+        // The connection: the socket, or its TLS layer once the client asked for SSL.
+        let conn: net.Socket = socket;
+        const authenticated = () => !this.apiKey || this.authenticatedSockets.has(conn);
         // Parsed messages are far larger than their bytes (see connection-limits.ts).
         const messageLimit = () => (authenticated() ? SQL_WIRE_MAX_MESSAGE_BYTES : PRE_AUTH_MAX_BYTES);
         if (this.apiKey) closeUnlessAuthenticatedWithin(socket, authenticated);
 
-        socket.on('data', async (data) => {
+        const onData = async (data: Buffer) => {
             buffer = Buffer.concat([buffer, data]);
             if (buffer.length > messageLimit() + 5) {
-                socket.destroy();
+                conn.destroy();
                 buffer = Buffer.alloc(0);
                 return;
             }
@@ -202,30 +208,40 @@ export class PGServer implements ProtocolServerInstance {
 
                         // PostgreSQL itself rejects startup packets outside 8..10000 bytes.
                         if (length < 8 || length > MAX_STARTUP_PACKET_LENGTH) {
-                            socket.destroy();
+                            conn.destroy();
                             buffer = Buffer.alloc(0);
                             return;
                         }
 
-                        if (protocolVersion === 80877103) {
-                            // SSLRequest — decline with 'N'
-                            socket.write(Buffer.from('N'));
+                        if (protocolVersion === 80877103 || protocolVersion === 80877104) {
                             buffer = buffer.subarray(length);
+                            if (protocolVersion === 80877103 && this.tls?.ready && conn === socket) {
+                                // SSLRequest: accept, and read everything from here on through TLS.
+                                conn.write(Buffer.from('S'));
+                                socket.removeListener('data', onData);
+                                conn = upgradeToTls(socket, this.tls);
+                                conn.on('data', onData);
+                                return;
+                            }
+                            conn.write(Buffer.from('N')); // no TLS configured (or GSSAPI encryption, never supported)
                             return;
                         }
 
                         if (buffer.length >= length) {
-                            // Parse startup parameters (unused beyond auth negotiation, but must be consumed)
-                            this.parseStartupParams(buffer.subarray(8, length));
+                            const params = this.parseStartupParams(buffer.subarray(8, length));
                             buffer = buffer.subarray(length);
                             startupComplete = true;
 
                             if (this.apiKey) {
-                                this.sendAuthCleartextRequest(socket);
+                                // SCRAM-SHA-256: the password never crosses the wire. The user
+                                // is a wallet address (optionally 0xADDR:N) for an API key, or
+                                // anything else for the master key. It replaced cleartext.
+                                this.scramLogins.set(conn, { user: params.user || '' });
+                                this.sendAuthSASL(conn);
                             } else {
                                 // No API key configured — dev mode, no auth required
-                                this.authenticatedSockets.add(socket);
-                                this.sendStartupResponse(socket);
+                                this.authenticatedSockets.add(conn);
+                                this.sendStartupResponse(conn);
                             }
                         }
                     }
@@ -240,8 +256,8 @@ export class PGServer implements ProtocolServerInstance {
                     // The length counts itself, so anything under 4 is malformed —
                     // and a negative one would re-read the same bytes forever.
                     if (msgLength < 4 || msgLength > messageLimit()) {
-                        this.sendError(socket, `Invalid message length ${msgLength} (maximum ${messageLimit()} bytes)`);
-                        socket.destroy();
+                        this.sendError(conn, `Invalid message length ${msgLength} (maximum ${messageLimit()} bytes)`);
+                        conn.destroy();
                         buffer = Buffer.alloc(0);
                         return;
                     }
@@ -251,13 +267,14 @@ export class PGServer implements ProtocolServerInstance {
                     const msgBody = buffer.subarray(5, msgLength + 1);
                     buffer = buffer.subarray(msgLength + 1);
 
-                    await this.handleMessage(socket, msgType, msgBody);
+                    await this.handleMessage(conn, msgType, msgBody);
                 }
             } catch (err: any) {
-                this.sendError(socket, err.message);
-                this.sendReadyForQuery(socket);
+                this.sendError(conn, err.message);
+                this.sendReadyForQuery(conn);
             }
-        });
+        };
+        socket.on('data', onData);
 
         socket.on('close', onDisconnect);
         socket.on('error', onDisconnect);
@@ -267,13 +284,7 @@ export class PGServer implements ProtocolServerInstance {
 
     private async handleMessage(socket: net.Socket, msgType: number, body: Buffer): Promise<void> {
         if (msgType === PG_MSG.PASSWORD) {
-            const password = body.toString('utf-8').replace(/\0$/, '');
-            if (this.apiKey && safeCompare(password, this.apiKey)) {
-                this.authenticatedSockets.add(socket);
-                this.sendStartupResponse(socket);
-            } else {
-                this.sendAuthFailure(socket);
-            }
+            await this.handleScramMessage(socket, body);
             return;
         }
 
@@ -416,7 +427,41 @@ export class PGServer implements ProtocolServerInstance {
 
     // ---- SQL Execution ----
 
+    /** SASLInitialResponse (mechanism + client-first) or SASLResponse (client-final). */
+    private async handleScramMessage(socket: net.Socket, body: Buffer): Promise<void> {
+        const login = this.scramLogins.get(socket);
+        if (!login) return this.sendAuthFailure(socket);
+        if (!login.session) {
+            const nul = body.indexOf(0);
+            const mechanism = body.subarray(0, nul).toString('utf8');
+            if (mechanism !== 'SCRAM-SHA-256') return this.sendAuthFailure(socket, `unsupported SASL mechanism ${mechanism}`);
+            const len = body.readInt32BE(nul + 1);
+            const clientFirst = body.subarray(nul + 5, nul + 5 + Math.max(0, len)).toString('utf8');
+            // libpq leaves the SCRAM username empty and sends it in the startup message.
+            const user = login.user || parseClientFirst(clientFirst).username;
+            const resolved = await resolveScramCredentials(user, this.apiKey);
+            if (!resolved.ok) return this.sendAuthFailure(socket, resolved.errmsg);
+            login.session = startScram(clientFirst, resolved.credentials);
+            return this.sendAuthSASLMessage(socket, 11, login.session.serverFirstMessage); // AuthenticationSASLContinue
+        }
+        const result = finishScram(login.session, body.toString('utf8'));
+        this.scramLogins.delete(socket);
+        if (!result.ok) return this.sendAuthFailure(socket);
+        this.sendAuthSASLMessage(socket, 12, result.serverFinalMessage); // AuthenticationSASLFinal
+        this.authenticatedSockets.add(socket);
+        const wallet = login.session.credentials.wallet;
+        if (wallet) this.wallets.set(socket, wallet);
+        this.sendStartupResponse(socket);
+    }
+
+    /** A wallet login acts as that wallet; the master key (or no key configured) is the operator. */
+    private callerOf(socket: net.Socket): Caller {
+        const wallet = this.wallets.get(socket);
+        return { wallet, operator: !this.apiKey || !wallet };
+    }
+
     private async executeTranslated(socket: net.Socket, query: TranslatedQuery, originalSql: string): Promise<void> {
+        await authorizeSqlQuery(query, this.callerOf(socket), this.access, this.namespaces);
         switch (query.type) {
             case 'find': {
                 const result = await this.store.find(
@@ -481,10 +526,10 @@ export class PGServer implements ProtocolServerInstance {
             }
 
             case 'listCollections': {
-                const collections = await this.store.listCollections();
-                const docs = collections.map(c => ({
-                    _id: c.name,
-                    table_name: c.name,
+                const tables = await readableCollections(this.store, this.callerOf(socket), this.access, this.namespaces);
+                const docs = tables.map(({ name, metadata: c }) => ({
+                    _id: name,
+                    table_name: name,
                     document_count: c.documentCount,
                     index_count: c.indexes.length,
                 })) as any[];
@@ -676,20 +721,34 @@ export class PGServer implements ProtocolServerInstance {
         return params;
     }
 
-    private sendAuthCleartextRequest(socket: net.Socket): void {
-        const msg = Buffer.alloc(9);
+    /** AuthenticationSASL (10), offering SCRAM-SHA-256. */
+    private sendAuthSASL(socket: net.Socket): void {
+        const mechanisms = Buffer.from('SCRAM-SHA-256\0\0', 'utf8');
+        const msg = Buffer.alloc(9 + mechanisms.length);
         msg[0] = PG_MSG.AUTH;
-        msg.writeInt32BE(8, 1);
-        msg.writeInt32BE(3, 5); // AuthenticationCleartextPassword = 3
+        msg.writeInt32BE(8 + mechanisms.length, 1);
+        msg.writeInt32BE(10, 5);
+        mechanisms.copy(msg, 9);
         socket.write(msg);
     }
 
-    private sendAuthFailure(socket: net.Socket): void {
+    /** AuthenticationSASLContinue (11) or AuthenticationSASLFinal (12) with SCRAM data. */
+    private sendAuthSASLMessage(socket: net.Socket, code: 11 | 12, data: string): void {
+        const payload = Buffer.from(data, 'utf8');
+        const msg = Buffer.alloc(9 + payload.length);
+        msg[0] = PG_MSG.AUTH;
+        msg.writeInt32BE(8 + payload.length, 1);
+        msg.writeInt32BE(code, 5);
+        payload.copy(msg, 9);
+        socket.write(msg);
+    }
+
+    private sendAuthFailure(socket: net.Socket, message = 'password authentication failed'): void {
         // ErrorResponse: severity FATAL, code 28P01 (invalid_password), then close
         const fields = Buffer.concat([
             Buffer.from('S'), Buffer.from('FATAL\0'),
             Buffer.from('C'), Buffer.from('28P01\0'),
-            Buffer.from('M'), Buffer.from('password authentication failed\0'),
+            Buffer.from('M'), Buffer.from(`${message}\0`),
             Buffer.from([0]),
         ]);
         const msg = Buffer.alloc(5 + fields.length);

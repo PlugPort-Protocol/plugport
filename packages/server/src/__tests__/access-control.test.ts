@@ -35,6 +35,13 @@ describe('Access Control Integration', () => {
             privacyManager,
         };
 
+        // A private collection from before per-wallet namespaces (plain name, owned).
+        await privacyManager.setCollectionPrivacy(
+            'private_col',
+            'private',
+            '0x0e0e1234567890abcdef1234567890abcdef1234',
+        );
+
         app = await createHttpServer(options);
         await app.ready();
 
@@ -50,12 +57,6 @@ describe('Access Control Integration', () => {
             payload: { document: { name: 'Bob', age: 25 } },
         });
 
-        // Set up a private collection
-        await privacyManager.setCollectionPrivacy(
-            'private_col',
-            'private',
-            '0xowner1234567890abcdef1234567890abcdef1234',
-        );
     });
 
     afterAll(async () => {
@@ -160,8 +161,9 @@ describe('Access Control Integration', () => {
         it('should reject GET /roles for non-owner', async () => {
             const res = await app.inject({
                 method: 'GET',
-                url: '/api/v1/collections/private_col/roles',
-                headers: { 'x-test-wallet-address': '0xnottheowner' },
+                // The owner's collection, by its qualified name (per-wallet namespaces).
+                url: '/api/v1/collections/0x0e0e1234567890abcdef1234567890abcdef1234.private_col/roles',
+                headers: { 'x-test-wallet-address': '0xb2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2' },
             });
             expect(res.statusCode).toBe(403);
         });

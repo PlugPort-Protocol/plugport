@@ -78,7 +78,7 @@ export class StoreMigrations {
         const pending: string[] = [];
         for (const collection of await this.privacy.listOwnedCollections(wallet)) {
             const privacy = await this.privacy.getCollectionPrivacy(collection);
-            if (privacy?.mode === 'private' && !privacy.storeAddress) pending.push(collection);
+            if (privacy?.mode === 'private' && !privacy.storeAddress && !privacy.movedTo) pending.push(collection);
         }
         if (pending.length === 0 && this.jobs.has(wallet)) return; // nothing new; keep the last report
         const status: StoreMigrationStatus = { state: 'running', store: linked.address, total: pending.length, moved: 0, failed: [], startedAt: Date.now() };

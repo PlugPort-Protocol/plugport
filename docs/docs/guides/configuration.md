@@ -37,6 +37,8 @@ All PlugPort configuration is done via environment variables. No config files ar
 | `REDIS_ENABLED` | `boolean` | `false` | Enable Redis RESP protocol |
 | `REDIS_PORT` | `number` | `6379` | Redis port |
 | `SQL_STATEMENT_TIMEOUT_MS` | `number` | `30000` | Max execution time for SQL queries in ms |
+| `TLS_CERT_FILE` | `path` | none | Certificate (PEM) for TLS on the wire ports. Each port accepts both TLS and plain clients. Set together with `TLS_KEY_FILE`. The file is re-read when it changes (renewals), and the ports stay plain-only until it exists. The Docker proxy setup points this at Caddy's certificate for `WIRE_PROTOCOL_HOSTNAME`. |
+| `TLS_KEY_FILE` | `path` | none | Private key (PEM) for `TLS_CERT_FILE`. |
 
 ### Monad / MonadDb
 

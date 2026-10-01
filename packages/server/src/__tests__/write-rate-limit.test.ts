@@ -16,7 +16,7 @@ import type { FastifyInstance } from 'fastify';
 
 describe('Write-route rate limiting', () => {
     let app: FastifyInstance;
-    const headers = { 'x-test-wallet-address': '0xRateLimitTester' };
+    const headers = { 'x-test-wallet-address': '0x4a7e000000000000000000000000000000000004' };
 
     beforeAll(async () => {
         const kvStore = new InMemoryKVStore();

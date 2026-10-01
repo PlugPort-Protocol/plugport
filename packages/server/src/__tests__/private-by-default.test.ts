@@ -56,9 +56,11 @@ describe('private by default', () => {
         await app.ready();
         const res = await app.inject({ method: 'POST', url: '/api/v1/collections/notes/insertOne', headers: { 'x-test-wallet-address': BOB }, payload: { document: { x: 1 } } });
         expect(res.statusCode).toBe(200);
-        expect((await privacy.getCollectionPrivacy('notes'))?.mode).toBe('private');
-        expect(await docsIn(sharedKv, 'notes')).toBe(1);
-        expect(await docsIn(publicKv, 'notes')).toBe(0);
+        // Physically in Bob's namespace (per-wallet namespaces).
+        const notes = `${BOB.toLowerCase()}.notes`;
+        expect((await privacy.getCollectionPrivacy(notes))?.mode).toBe('private');
+        expect(await docsIn(sharedKv, notes)).toBe(1);
+        expect(await docsIn(publicKv, notes)).toBe(0);
         await app.close();
     });
 
@@ -102,5 +104,34 @@ describe('private by default', () => {
         await run({ insert: 'wire_public', documents: [{ s: 1 }] });
         expect((await privacy.getCollectionPrivacy('wire_public'))?.mode).toBe('public');
         expect(await docsIn(publicKv, 'wire_public')).toBe(1);
+    });
+});
+
+describe('moving private collections from before namespaces (item 2)', () => {
+    it('keeps their data private, in the same store, under the new name', async () => {
+        const { privacy, store, publicKv, sharedKv, storeKvs, docsIn } = setup();
+        const { Namespaces } = await import('../storage/namespaces.js');
+        const { NamespaceMigration } = await import('../storage/namespace-migration.js');
+        // Alice's private collection lives in her own store; Bob's in the shared private store.
+        await privacy.claimIfUnowned('vault', ALICE, { mode: 'private', storeAddress: STORE_A });
+        await store.insert('vault', [{ secret: 1 }, { secret: 2 }]);
+        await privacy.claimIfUnowned('ledger', BOB, { mode: 'private' });
+        await store.insert('ledger', [{ owed: 5 }]);
+
+        const namespaces = new Namespaces(store, privacy);
+        await namespaces.load();
+        expect(await new NamespaceMigration(store, privacy, namespaces, 1).run()).toMatchObject({ state: 'done', moved: 2 });
+
+        const vault = `${ALICE}.vault`;
+        const ledger = `${BOB}.ledger`;
+        const aliceStore = storeKvs.get(STORE_A.toLowerCase());
+        expect(await docsIn(aliceStore, vault)).toBe(2);
+        expect(await docsIn(aliceStore, 'vault')).toBe(0);
+        expect(await docsIn(sharedKv, ledger)).toBe(1);
+        expect(await docsIn(sharedKv, 'ledger')).toBe(0);
+        for (const name of [vault, ledger, 'vault', 'ledger']) expect(await docsIn(publicKv, name)).toBe(0);
+        expect(await privacy.getCollectionPrivacy(vault)).toMatchObject({ mode: 'private', ownerAddress: ALICE, storeAddress: STORE_A });
+        expect((await store.find(vault, {})).cursor.firstBatch.map((d) => d.secret).sort()).toEqual([1, 2]);
+        expect((await store.find(ledger, {})).cursor.firstBatch).toEqual([expect.objectContaining({ owed: 5 })]);
     });
 });

@@ -38,6 +38,12 @@ export interface CollectionPrivacy {
     storeAddress?: string;
     /** Granular access roles: address -> role (1 = read, 2 = write) */
     accessRoles: Record<string, number>;
+    /**
+     * A legacy collection (from before per-wallet namespaces) whose data has
+     * been copied to this name in its owner's namespace; its old copy is being
+     * removed (see namespace-migration.ts).
+     */
+    movedTo?: string;
     /** When privacy settings were first created */
     createdAt: number;
     /** Last update timestamp */
@@ -279,6 +285,52 @@ export class PrivacyManager {
         if (!privacy) return false;
         if (privacy.ownerAddress === normalized) return true;
         return (privacy.accessRoles[normalized] ?? 0) >= 2;
+    }
+
+    /** Every privacy record, plain and sealed. */
+    async listRecords(): Promise<{ collection: string; record: CollectionPrivacy }[]> {
+        const records: { collection: string; record: CollectionPrivacy }[] = [];
+        for (const entry of await this.kvStore.scan({ prefix: this.prefix, limit: 10000 })) {
+            try {
+                records.push({ collection: entry.key.substring(this.prefix.length), record: JSON.parse(entry.value.toString()) as CollectionPrivacy });
+            } catch (err) {
+                console.warn(`[PrivacyManager] Malformed privacy entry "${entry.key}":`, err instanceof Error ? err.message : 'parse error');
+            }
+        }
+        if (this.cipher) {
+            for (const entry of await this.kvStore.scan({ prefix: SEALED_PREFIX, limit: 10000 })) {
+                try {
+                    const opened = this.openSealed(Buffer.from(entry.value));
+                    if (!records.some((r) => r.collection === opened.collection)) records.push(opened);
+                } catch (err) {
+                    console.warn(`[PrivacyManager] Unreadable sealed privacy entry "${entry.key}":`, err instanceof Error ? err.message : err);
+                }
+            }
+        }
+        return records;
+    }
+
+    /** Give `to` the same settings as `from` — owner, mode, store, grants (a namespace move). */
+    async copyRecord(from: string, to: string): Promise<void> {
+        const record = await this.getCollectionPrivacy(from);
+        if (!record) throw new Error(`Collection "${from}" has no privacy settings configured`);
+        const copy: CollectionPrivacy = { ...record, accessRoles: { ...record.accessRoles }, updatedAt: Date.now() };
+        delete copy.movedTo;
+        await this.putPrivacy(to, copy);
+    }
+
+    /** Record that a legacy collection's data now lives at `to`. */
+    async markMoved(collection: string, to: string): Promise<void> {
+        const record = await this.getCollectionPrivacy(collection);
+        if (!record) throw new Error(`Collection "${collection}" has no privacy settings configured`);
+        await this.putPrivacy(collection, { ...record, movedTo: to, updatedAt: Date.now() });
+    }
+
+    /** Remove a collection's privacy record (after its data is gone). */
+    async deleteRecord(collection: string): Promise<void> {
+        await this.kvStore.delete(`${this.prefix}${collection}`);
+        if (this.cipher) await this.kvStore.delete(this.sealedKey(collection));
+        this.invalidateCache(collection);
     }
 
     /**

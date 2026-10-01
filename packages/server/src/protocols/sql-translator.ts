@@ -15,6 +15,17 @@ import { ErrorCodes } from '@plugport/shared';
 import { DocumentStoreError } from '../storage/document-store.js';
 import { matchesFilter } from '../storage/query-planner.js';
 
+/**
+ * Another wallet's table is addressed with its address as the schema —
+ * `"0xOwner".users` (PostgreSQL), `0xOwner.users` (MySQL) — and is the
+ * collection `0xowner.users` (see storage/namespaces.ts). Other schemas
+ * (`public.users`) are ignored, as before.
+ */
+function withNamespace(node: any, table: string): string {
+    const schema = typeof node?.db === 'string' ? node.db : '';
+    return /^0x[0-9a-f]{40}$/i.test(schema) ? `${schema.toLowerCase()}.${table}` : table;
+}
+
 // ---- Types ----
 
 export interface TranslatedQuery {
@@ -620,14 +631,14 @@ export class SQLTranslator {
         if (typeof node === 'string') return node.toLowerCase();
         if (Array.isArray(node)) {
             const first = node[0];
-            return (first?.table || first?.name || first?.value || 'unknown').toString().toLowerCase();
+            return withNamespace(first, (first?.table || first?.name || first?.value || 'unknown').toString().toLowerCase());
         }
-        return (node.table || node.name || node.value || 'unknown').toString().toLowerCase();
+        return withNamespace(node, (node.table || node.name || node.value || 'unknown').toString().toLowerCase());
     }
 
     private extractTableRef(node: any): string {
         if (typeof node === 'string') return node.toLowerCase();
-        return (node.table || node.name || 'unknown').toString().toLowerCase();
+        return withNamespace(node, (node.table || node.name || 'unknown').toString().toLowerCase());
     }
 
     private extractColumnName(node: any): string {

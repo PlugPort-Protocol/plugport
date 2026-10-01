@@ -15,7 +15,7 @@ import type { FastifyInstance } from 'fastify';
 
 describe('/api/v1/sql — CREATE TABLE / DROP TABLE / JOIN', () => {
     let app: FastifyInstance;
-    const headers = { 'x-test-wallet-address': '0xSqlEndpointTester' };
+    const headers = { 'x-test-wallet-address': '0x5e1e000000000000000000000000000000000001' };
 
     beforeAll(async () => {
         const kvStore = new InMemoryKVStore();
@@ -145,9 +145,10 @@ describe('/api/v1/sql — CREATE TABLE / DROP TABLE / JOIN', () => {
         const res = await app.inject({
             method: 'POST',
             url: '/api/v1/sql',
-            headers: { 'x-test-wallet-address': '0xUnrelatedWallet' },
+            headers: { 'x-test-wallet-address': '0x0e1a000000000000000000000000000000000002' },
             payload: {
-                query: 'SELECT * FROM sql_ep_join_users u INNER JOIN sql_ep_private_join_target o ON u.userId = o.userId',
+                // The owner's tables, by their qualified names (per-wallet namespaces).
+                query: 'SELECT * FROM "0x5e1e000000000000000000000000000000000001".sql_ep_join_users u INNER JOIN "0x5e1e000000000000000000000000000000000001".sql_ep_private_join_target o ON u.userId = o.userId',
                 dialect: 'postgresql',
             },
         });
@@ -187,7 +188,7 @@ describe('/api/v1/sql — CREATE TABLE / DROP TABLE / JOIN', () => {
 
 describe('POST /api/v1/collections/:name/createIndex — field validation', () => {
     let app: FastifyInstance;
-    const headers = { 'x-test-wallet-address': '0xCreateIndexTester' };
+    const headers = { 'x-test-wallet-address': '0xc1ea000000000000000000000000000000000003' };
 
     beforeAll(async () => {
         const kvStore = new InMemoryKVStore();

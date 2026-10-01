@@ -7,10 +7,13 @@
 import * as net from 'net';
 import { MONGO_MAX_MESSAGE_BYTES, PRE_AUTH_MAX_BYTES, MAX_CONNECTIONS_PER_PROTOCOL } from './protocols/connection-limits.js';
 import { BSON, ObjectId as BSONObjectId, Long } from 'bson';
-import { createHmac, pbkdf2Sync, randomBytes, timingSafeEqual, createHash } from 'crypto';
+import { timingSafeEqual } from 'crypto';
 import { DocumentStore, DocumentStoreError } from './storage/document-store.js';
 import { MetricsCollector } from './metrics.js';
-import { getAuthContract } from './auth/auth-contract.js';
+import type { CollectionAccess, Caller } from './storage/collection-access.js';
+import { isWalletAddress, type Namespaces } from './storage/namespaces.js';
+import { acceptMaybeTls, type WireTls } from './protocols/wire-tls.js';
+import { parseClientFirst, resolveScramCredentials, startScram, finishScram, type ScramSession } from './auth/scram.js';
 import { WireProtocol, VERSION } from '@plugport/shared';
 import type { DocumentWithId, Projection, SortSpec } from '@plugport/shared';
 
@@ -40,16 +43,9 @@ const sessionBuffers = new Map<string, BufferedWrite[]>();
 
 // ---- SCRAM-SHA-256 State ----
 interface ScramState {
-    clientFirstBare: string;
-    serverFirstMessage: string;
-    serverNonce: string;
-    salt: Buffer;
-    storedKey: Buffer;
-    serverKey: Buffer;
-    iterationCount: number;
+    /** credentials.wallet is set only for a verifier from the on-chain registry — the wallet is proven, not merely claimed. */
+    session: ScramSession;
     createdAt: number; // Unix timestamp for TTL cleanup
-    /** Set only when the verifier came from the on-chain registry — i.e. the wallet is proven, not merely claimed. */
-    walletAddress?: string;
 }
 const scramSessions = new Map<number, ScramState>();
 
@@ -219,12 +215,87 @@ export interface WireServerOptions {
      * collection can be recorded as that wallet's (and show up in its dashboard).
      */
     claimCollection?: (collection: string, ownerAddress: string, mode?: 'public' | 'private') => Promise<unknown>;
+    /** The collection access rule; without it the wire server checks nothing beyond login. */
+    access?: CollectionAccess;
+    /** Per-wallet namespaces (see storage/namespaces.ts); without them, names are physical. */
+    namespaces?: Namespaces;
+    /** Also accept TLS clients (tls=true) on the same port. */
+    tls?: WireTls;
 }
 
 /** Per-connection ownership context passed to handleCommand. */
 export interface WireOwnership {
     owners: Map<number, string>;
     claim?: WireServerOptions['claimCollection'];
+    /** Who may read and write which collection — the same rule as the HTTP API. */
+    access?: CollectionAccess;
+    namespaces?: Namespaces;
+}
+
+/** The connection's identity for access and namespaces. */
+function callerOf(connectionId: number, isAuthenticated: boolean, apiKey: string | undefined, ownership: WireOwnership | undefined): Caller {
+    const wallet = ownership?.owners.get(connectionId);
+    return { wallet, operator: !apiKey || (isAuthenticated && !wallet) };
+}
+
+/**
+ * The command with each collection it names replaced by the physical
+ * collection: a plain name is the connection's own, and a wallet address as
+ * the database is that wallet's namespace (see storage/namespaces.ts).
+ */
+async function resolveCommandNamespaces(command: string, body: Record<string, unknown>, db: string, caller: Caller, namespaces: Namespaces): Promise<Record<string, unknown>> {
+    const type = READ_COMMANDS.has(command) ? 'read' : WRITE_COMMANDS.has(command) ? 'write' : null;
+    if (!type || typeof body[command] !== 'string') return body;
+    const resolved: Record<string, unknown> = { ...body, [command]: await namespaces.resolveInDb(db, body[command] as string, caller, type) };
+    if (command === 'aggregate' && Array.isArray(body.pipeline)) {
+        resolved.pipeline = await Promise.all((body.pipeline as Record<string, unknown>[]).map(async (stage) => {
+            const lookup = stage?.$lookup as { from?: unknown } | undefined;
+            if (typeof lookup?.from !== 'string') return stage;
+            return { ...stage, $lookup: { ...lookup, from: await namespaces.resolveInDb(db, lookup.from, caller, 'read') } };
+        }));
+    }
+    return resolved;
+}
+
+const READ_COMMANDS = new Set(['find', 'count', 'distinct', 'aggregate']);
+const WRITE_COMMANDS = new Set(['create', 'drop', 'insert', 'update', 'delete', 'createIndexes']);
+
+/** Collections an aggregation reads besides its own: every $lookup source. */
+function lookupSources(body: Record<string, unknown>): string[] {
+    const pipeline = Array.isArray(body.pipeline) ? body.pipeline as Record<string, unknown>[] : [];
+    return pipeline
+        .map((stage) => (stage?.$lookup as { from?: unknown } | undefined)?.from)
+        .filter((from): from is string => typeof from === 'string');
+}
+
+/**
+ * Apply the collection access rule to a command. A connection logged in with
+ * a wallet's on-chain key acts as that wallet; one logged in with the server's
+ * master key (or any connection when no key is configured) is the operator.
+ * Returns the error response, or null to proceed.
+ */
+async function denyUnlessAllowed(
+    command: string,
+    body: Record<string, unknown>,
+    connectionId: number,
+    isAuthenticated: boolean,
+    apiKey: string | undefined,
+    ownership: WireOwnership | undefined,
+): Promise<Record<string, unknown> | null> {
+    const access = ownership?.access;
+    if (!access) return null;
+    const type = READ_COMMANDS.has(command) ? 'read' : WRITE_COMMANDS.has(command) ? 'write' : null;
+    if (!type) return null;
+    const collection = body[command];
+    if (typeof collection !== 'string') return null;
+    const caller = callerOf(connectionId, isAuthenticated, apiKey, ownership);
+    const targets: [string, 'read' | 'write'][] = [[collection, type]];
+    if (command === 'aggregate') for (const from of lookupSources(body)) targets.push([from, 'read']);
+    for (const [name, kind] of targets) {
+        const result = await access.check(name, caller, kind, command === 'create' ? requestedMode(body) : undefined);
+        if (!result.ok) return { ok: 0, errmsg: result.errmsg, code: 13, codeName: 'Unauthorized' };
+    }
+    return null;
 }
 
 /**
@@ -250,9 +321,9 @@ export function createWireServer(options: WireServerOptions): net.Server {
     const { store, metrics, apiKey } = options;
 
     const authenticatedConnections = new Set<number>();
-    const ownership: WireOwnership = { owners: new Map(), claim: options.claimCollection };
+    const ownership: WireOwnership = { owners: new Map(), claim: options.claimCollection, access: options.access, namespaces: options.namespaces };
 
-    const server = net.createServer((socket) => {
+    const server = net.createServer((raw) => acceptMaybeTls(raw, options.tls, (socket) => {
         metrics.connectionOpened('wire');
         let buffer = Buffer.alloc(0);
         let requestIdCounter = 1; // Per-connection counter for encapsulation
@@ -380,7 +451,7 @@ export function createWireServer(options: WireServerOptions): net.Server {
                 console.error('[Wire] Socket error:', err.message);
             }
         });
-    });
+    }));
 
     server.maxConnections = MAX_CONNECTIONS_PER_PROTOCOL;
     return server;
@@ -443,6 +514,16 @@ export async function handleCommand(
         };
     }
 
+    // Replies name collections as the client did, not by their physical names.
+    const requested = body;
+    if (isAuthenticated && ownership?.namespaces) {
+        body = await resolveCommandNamespaces(command, body, db, callerOf(connectionId, isAuthenticated, apiKey, ownership), ownership.namespaces);
+    }
+    const ns = (collection: string) => `${db}.${collection === body[command] ? requested[command] : collection}`;
+
+    const denied = await denyUnlessAllowed(command, body, connectionId, isAuthenticated, apiKey, ownership);
+    if (denied) return denied;
+
     switch (command) {
         case 'hello':
         case 'ismaster':
@@ -483,89 +564,13 @@ export async function handleCommand(
             // ---- SCRAM-SHA-256 authentication ----
             if (mechanism === 'SCRAM-SHA-256') {
                 try {
-                    const payloadBuf = extractPayloadBuffer(body.payload);
-                    const clientFirstMessage = payloadBuf.toString('utf8');
+                    const clientFirstMessage = extractPayloadBuffer(body.payload).toString('utf8');
+                    const resolved = await resolveScramCredentials(parseClientFirst(clientFirstMessage).username, apiKey);
+                    if (!resolved.ok) return { ok: 0, errmsg: resolved.errmsg, code: 18, codeName: 'AuthenticationFailed' };
+                    const session = startScram(clientFirstMessage, resolved.credentials);
 
-                    // Parse client-first-message: "n,,n=<user>,r=<clientNonce>"
-                    const clientFirstBare = clientFirstMessage.replace(/^[npy],,/, '');
-                    const clientFields = Object.fromEntries(
-                        clientFirstBare.split(',').map(f => [f[0], f.substring(2)])
-                    );
-                    const username = clientFields['n'] || '';
-                    const clientNonce = clientFields['r'] || '';
-
-                    // Generate server nonce
-                    const serverNonceBytes = randomBytes(24);
-                    const serverNonce = clientNonce + serverNonceBytes.toString('base64');
-
-                    // Derive SCRAM parameters — try on-chain first, then fall back to local
-                    let salt: Buffer;
-                    let storedKey: Buffer;
-                    let serverKey: Buffer;
-                    const iterationCount = 4096;
-                    let usedOnChain = false;
-                    let verifiedWallet: string | undefined;
-
-                    const authContract = getAuthContract();
-                    if (authContract.isReadable && username.startsWith('0x')) {
-                        // Username is a wallet address — try to read on-chain verifiers
-                        // Support format "0xAddress" (defaults to key 0) or "0xAddress:N" (specific key index)
-                        let walletAddress = username;
-                        let requestedKeyIndex = -1; // -1 = try all active keys
-                        const colonIdx = username.indexOf(':', 2);
-                        if (colonIdx > 0) {
-                            walletAddress = username.substring(0, colonIdx);
-                            requestedKeyIndex = parseInt(username.substring(colonIdx + 1), 10);
-                        }
-
-                        try {
-                            if (requestedKeyIndex >= 0) {
-                                // Specific key index requested
-                                const verifier = await authContract.getVerifier(walletAddress, requestedKeyIndex);
-                                if (verifier && verifier.active) {
-                                    salt = Buffer.from(verifier.salt.replace('0x', ''), 'hex').subarray(0, 16);
-                                    storedKey = Buffer.from(verifier.storedKey.replace('0x', ''), 'hex');
-                                    serverKey = Buffer.from(verifier.serverKey.replace('0x', ''), 'hex');
-                                    usedOnChain = true;
-                                    verifiedWallet = walletAddress.toLowerCase();
-                                }
-                            } else {
-                                // Try all active keys — find the first active one
-                                const activeKeys = await authContract.getActiveKeys(walletAddress);
-                                if (activeKeys.length > 0) {
-                                    // Use the first active key (index 0 is most common)
-                                    const firstKey = activeKeys[0];
-                                    const verifier = await authContract.getVerifier(walletAddress, firstKey.keyIndex);
-                                    if (verifier && verifier.active) {
-                                        salt = Buffer.from(verifier.salt.replace('0x', ''), 'hex').subarray(0, 16);
-                                        storedKey = Buffer.from(verifier.storedKey.replace('0x', ''), 'hex');
-                                        serverKey = Buffer.from(verifier.serverKey.replace('0x', ''), 'hex');
-                                        usedOnChain = true;
-                                        verifiedWallet = walletAddress.toLowerCase();
-                                    }
-                                }
-                            }
-                        } catch {
-                            // On-chain lookup failed — fall through to local derivation
-                        }
-                    }
-
-                    if (!usedOnChain) {
-                        // Fallback: derive from the legacy apiKey
-                        salt = createHash('sha256').update(`${apiKey || 'plugport'}:scram-salt`).digest().subarray(0, 16);
-                        const saltedPassword = pbkdf2Sync(apiKey || '', salt, iterationCount, 32, 'sha256');
-                        const clientKeyHmac = createHmac('sha256', saltedPassword).update('Client Key').digest();
-                        storedKey = createHash('sha256').update(clientKeyHmac).digest();
-                        serverKey = createHmac('sha256', saltedPassword).update('Server Key').digest();
-                    }
-
-                    // Build server-first-message
-                    const serverFirstMessage = `r=${serverNonce},s=${salt!.toString('base64')},i=${iterationCount}`;
-
-                    // Store SCRAM state for saslContinue
                     // Enforce max concurrent sessions to prevent memory abuse
                     if (scramSessions.size >= MAX_SCRAM_SESSIONS) {
-                        // Evict oldest session
                         let oldestId = -1;
                         let oldestTime = Infinity;
                         for (const [id, state] of scramSessions) {
@@ -576,22 +581,12 @@ export async function handleCommand(
                         }
                         if (oldestId >= 0) scramSessions.delete(oldestId);
                     }
-                    scramSessions.set(connectionId, {
-                        clientFirstBare,
-                        serverFirstMessage,
-                        serverNonce,
-                        salt: salt!,
-                        storedKey: storedKey!,
-                        serverKey: serverKey!,
-                        iterationCount,
-                        createdAt: Date.now(),
-                        walletAddress: usedOnChain ? verifiedWallet : undefined,
-                    });
+                    scramSessions.set(connectionId, { session, createdAt: Date.now() });
 
                     return {
                         conversationId: 1,
                         done: false,
-                        payload: Buffer.from(serverFirstMessage, 'utf8'),
+                        payload: Buffer.from(session.serverFirstMessage, 'utf8'),
                         ok: 1,
                     };
                 } catch {
@@ -644,55 +639,19 @@ export async function handleCommand(
             }
 
             try {
-                const payloadBuf = extractPayloadBuffer(body.payload);
-                const clientFinalMessage = payloadBuf.toString('utf8');
-
-                // Parse client-final-message: "c=<channelBinding>,r=<nonce>,p=<proof>"
-                const clientFields = Object.fromEntries(
-                    clientFinalMessage.split(',').map(f => {
-                        const eqIdx = f.indexOf('=');
-                        return [f.substring(0, eqIdx), f.substring(eqIdx + 1)];
-                    })
-                );
-                const clientProof = Buffer.from(clientFields['p'] || '', 'base64');
-                const clientNonce = clientFields['r'] || '';
-
-                // Verify nonce matches
-                if (clientNonce !== scramState.serverNonce) {
-                    scramSessions.delete(connectionId);
-                    return { ok: 0, errmsg: 'SCRAM nonce mismatch.', code: 18 };
-                }
-
-                // Compute AuthMessage
-                const clientFinalWithoutProof = clientFinalMessage.substring(0, clientFinalMessage.lastIndexOf(',p='));
-                const authMessage = `${scramState.clientFirstBare},${scramState.serverFirstMessage},${clientFinalWithoutProof}`;
-
-                // Verify ClientProof
-                const clientSignature = createHmac('sha256', scramState.storedKey).update(authMessage).digest();
-                const recoveredClientKey = Buffer.alloc(clientProof.length);
-                for (let i = 0; i < clientProof.length; i++) {
-                    recoveredClientKey[i] = clientProof[i] ^ clientSignature[i];
-                }
-                const recoveredStoredKey = createHash('sha256').update(recoveredClientKey).digest();
-
-                if (!timingSafeEqual(recoveredStoredKey, scramState.storedKey)) {
-                    scramSessions.delete(connectionId);
-                    return { ok: 0, errmsg: 'Authentication failed.', code: 18 };
-                }
-
-                // Compute ServerSignature for mutual authentication
-                const serverSignature = createHmac('sha256', scramState.serverKey).update(authMessage).digest();
-                const serverFinalMessage = `v=${serverSignature.toString('base64')}`;
-
-                // Mark connection as authenticated
-                authenticatedConnections.add(connectionId);
-                if (scramState.walletAddress) ownership?.owners.set(connectionId, scramState.walletAddress);
+                const result = finishScram(scramState.session, extractPayloadBuffer(body.payload).toString('utf8'));
                 scramSessions.delete(connectionId);
+                if (!result.ok) return { ok: 0, errmsg: result.errmsg, code: 18 };
+
+                // Mark connection as authenticated; a wallet key login acts as that wallet.
+                authenticatedConnections.add(connectionId);
+                const wallet = scramState.session.credentials.wallet;
+                if (wallet) ownership?.owners.set(connectionId, wallet);
 
                 return {
                     conversationId: 1,
                     done: true,
-                    payload: Buffer.from(serverFinalMessage, 'utf8'),
+                    payload: Buffer.from(result.serverFinalMessage, 'utf8'),
                     ok: 1,
                 };
             } catch {
@@ -761,11 +720,22 @@ export async function handleCommand(
             };
 
         case 'listCollections': {
-            const collections = await store.listCollections();
+            // Only collections this connection may read: a private collection's
+            // name is itself private (it is sealed on chain).
+            let collections = await store.listCollections();
+            const caller = callerOf(connectionId, isAuthenticated, apiKey, ownership);
+            if (ownership?.access) {
+                const readable = await Promise.all(collections.map((c) => ownership.access!.check(c.name, caller, 'read')));
+                collections = collections.filter((_, i) => readable[i].ok);
+            }
+            // With namespaces: in a wallet's database, that wallet's collections; otherwise the caller's view.
+            const names = ownership?.namespaces
+                ? ownership.namespaces.view(collections.map((c) => c.name), caller, isWalletAddress(db) ? db : undefined)
+                : collections.map((c) => ({ physical: c.name, name: c.name }));
             return {
                 cursor: {
-                    firstBatch: collections.map((c) => ({
-                        name: c.name,
+                    firstBatch: names.map(({ name }) => ({
+                        name,
                         type: 'collection',
                         options: {},
                         info: { readOnly: false },
@@ -835,7 +805,7 @@ export async function handleCommand(
                 cursor: {
                     firstBatch: result.cursor.firstBatch,
                     id: Long.fromNumber(0),
-                    ns: `${db}.${collName}`,
+                    ns: ns(collName),
                 },
                 ok: 1,
             };
@@ -1092,7 +1062,7 @@ export async function handleCommand(
                 cursor: {
                     firstBatch: docs,
                     id: Long.fromNumber(0),
-                    ns: `${db}.${collName}`,
+                    ns: ns(collName),
                 },
                 ok: 1,
             };

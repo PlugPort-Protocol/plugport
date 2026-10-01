@@ -18,6 +18,10 @@ import { DocumentStore } from '../storage/document-store.js';
 import { SQLTranslator, executeAggregation, type TranslatedQuery } from './sql-translator.js';
 import { JoinEngine } from './join-engine.js';
 import type { ProtocolServerInstance } from './protocol-manager.js';
+import { authorizeSqlQuery, readableCollections, type Caller, type CollectionAccess } from '../storage/collection-access.js';
+import type { Namespaces } from '../storage/namespaces.js';
+import { upgradeToTls, isSecure, type WireTls } from './wire-tls.js';
+import { resolveScramCredentials, verifyScramPassword, isWalletLogin } from '../auth/scram.js';
 import { PRE_AUTH_MAX_BYTES, SQL_WIRE_MAX_MESSAGE_BYTES, MAX_CONNECTIONS_PER_PROTOCOL, closeUnlessAuthenticatedWithin } from './connection-limits.js';
 import type { MetricsCollector } from '../metrics.js';
 import type { ProtocolType, DocumentWithId } from '@plugport/shared';
@@ -48,21 +52,25 @@ function safeCompareBuf(a: Buffer, b: Buffer): boolean {
 }
 
 /**
- * Extract the auth-response bytes from a HandshakeResponse41 packet
+ * The user name and auth-response bytes of a HandshakeResponse41 packet
  * (CLIENT_SECURE_CONNECTION format: 1-byte length prefix).
  */
-function parseHandshakeAuthResponse(payload: Buffer): Buffer | null {
+function parseHandshakeResponse(payload: Buffer): { username: string; authResponse: Buffer } | null {
     // client_flag(4) + max_packet_size(4) + charset(1) + reserved(23) = 32-byte fixed header
     let offset = 32;
     const usernameEnd = payload.indexOf(0, offset);
     if (usernameEnd === -1) return null;
+    const username = payload.subarray(offset, usernameEnd).toString('utf-8');
     offset = usernameEnd + 1;
     if (offset >= payload.length) return null;
     const authLen = payload[offset];
     offset += 1;
     if (offset + authLen > payload.length) return null;
-    return payload.subarray(offset, offset + authLen);
+    return { username, authResponse: payload.subarray(offset, offset + authLen) };
 }
+
+/** Capability flag: the client asks to continue over TLS (its SSLRequest packet). */
+const CLIENT_SSL = 0x0800;
 
 // ---- MySQL Command Codes ----
 
@@ -94,6 +102,11 @@ export class MySQLServer implements ProtocolServerInstance {
     private apiKey?: string;
     private authenticatedSockets: WeakSet<object> = new WeakSet();
     private metrics?: MetricsCollector;
+    private access?: CollectionAccess;
+    private namespaces?: Namespaces;
+    private tls?: WireTls;
+    /** The wallet a connection logged in as (with one of its API keys); absent for the master key. */
+    private wallets: WeakMap<net.Socket, string> = new WeakMap();
 
     constructor(options: {
         store: DocumentStore;
@@ -102,8 +115,17 @@ export class MySQLServer implements ProtocolServerInstance {
         timeoutMs?: number;
         apiKey?: string;
         metrics?: MetricsCollector;
+        /** The collection access rule (same as HTTP); without it only login is checked. */
+        access?: CollectionAccess;
+        /** Per-wallet namespaces (see storage/namespaces.ts); without them, names are physical. */
+        namespaces?: Namespaces;
+        /** Offer TLS (CLIENT_SSL); wallet logins require it. */
+        tls?: WireTls;
     }) {
         this.store = options.store;
+        this.access = options.access;
+        this.namespaces = options.namespaces;
+        this.tls = options.tls;
         this.port = options.port || 3306;
         this.host = options.host || '0.0.0.0';
         this.timeoutMs = options.timeoutMs || 30000;
@@ -172,23 +194,29 @@ export class MySQLServer implements ProtocolServerInstance {
 
         const connectionId = this.connectionIdCounter++;
         let buffer = Buffer.alloc(0);
-        let handshakeComplete = false;
-        let sequenceId = 0;
+                let sequenceId = 0;
 
         // Send initial handshake
         const authChallenge = crypto.randomBytes(20);
         this.sendHandshake(socket, connectionId, authChallenge);
         sequenceId = 1;
 
-        const authenticated = () => !this.apiKey || this.authenticatedSockets.has(socket);
+        // The connection: the socket, or its TLS layer once the client asked for SSL.
+        let conn: net.Socket = socket;
+        // Login: the handshake response, then for a wallet the caching_sha2_password
+        // exchange whose full authentication sends the API key — only over TLS.
+        let stage: 'handshake' | 'switched' | 'password' | 'ready' = 'handshake';
+        let loginUser = '';
+
+        const authenticated = () => !this.apiKey || this.authenticatedSockets.has(conn);
         // Parsed packets are far larger than their bytes (see connection-limits.ts).
         const packetLimit = () => (authenticated() ? SQL_WIRE_MAX_MESSAGE_BYTES : PRE_AUTH_MAX_BYTES);
         if (this.apiKey) closeUnlessAuthenticatedWithin(socket, authenticated);
 
-        socket.on('data', async (data) => {
+        const onData = async (data: Buffer) => {
             buffer = Buffer.concat([buffer, data]);
             if (buffer.length > packetLimit() + 4) {
-                socket.destroy();
+                conn.destroy();
                 buffer = Buffer.alloc(0);
                 return;
             }
@@ -200,8 +228,8 @@ export class MySQLServer implements ProtocolServerInstance {
                     const _seqId = buffer[3];
 
                     if (payloadLength > packetLimit()) {
-                        this.sendERR(socket, _seqId + 1, `Packet of ${payloadLength} bytes exceeds the maximum of ${packetLimit()}`);
-                        socket.destroy();
+                        this.sendERR(conn, _seqId + 1, `Packet of ${payloadLength} bytes exceeds the maximum of ${packetLimit()}`);
+                        conn.destroy();
                         buffer = Buffer.alloc(0);
                         return;
                     }
@@ -210,44 +238,91 @@ export class MySQLServer implements ProtocolServerInstance {
 
                     const payload = buffer.subarray(4, 4 + payloadLength);
                     buffer = buffer.subarray(4 + payloadLength);
+                    sequenceId = _seqId + 1;
 
-                    if (!handshakeComplete) {
-                        handshakeComplete = true;
-                        sequenceId = _seqId + 1;
+                    if (stage === 'handshake') {
+                        if (this.tls?.ready && conn === socket && payloadLength === 32 && (payload.readUInt32LE(0) & CLIENT_SSL)) {
+                            // SSLRequest: the client starts TLS right away, so bytes after it are TLS.
+                            socket.removeListener('data', onData);
+                            socket.pause();
+                            if (buffer.length > 0) socket.unshift(buffer);
+                            buffer = Buffer.alloc(0);
+                            conn = upgradeToTls(socket, this.tls);
+                            conn.on('data', onData);
+                            return;
+                        }
 
                         if (!this.apiKey) {
                             // No API key configured — dev mode, no auth required
-                            this.authenticatedSockets.add(socket);
-                            this.sendOK(socket, sequenceId);
+                            stage = 'ready';
+                            this.authenticatedSockets.add(conn);
+                            this.sendOK(conn, sequenceId);
                             continue;
                         }
 
-                        const clientAuthResponse = parseHandshakeAuthResponse(payload);
+                        const response = parseHandshakeResponse(payload);
+                        if (response && isWalletLogin(response.username)) {
+                            if (!isSecure(conn)) {
+                                this.sendERR(conn, sequenceId, 'Wallet logins need TLS, since the API key is sent to the server: connect with SSL (mysql --ssl-mode=REQUIRED).');
+                                conn.end();
+                                return;
+                            }
+                            loginUser = response.username;
+                            stage = 'switched';
+                            // AuthSwitchRequest to caching_sha2_password, with a fresh nonce.
+                            this.writePacket(conn, Buffer.concat([Buffer.from([0xfe]), Buffer.from('caching_sha2_password\0'), crypto.randomBytes(20), Buffer.from([0])]), sequenceId);
+                            continue;
+                        }
+
+                        // The master key: mysql_native_password, as before.
+                        stage = 'ready';
                         const expected = computeMysqlAuthResponse(this.apiKey, authChallenge);
-                        if (clientAuthResponse && safeCompareBuf(clientAuthResponse, expected)) {
-                            this.authenticatedSockets.add(socket);
-                            this.sendOK(socket, sequenceId);
+                        if (response && safeCompareBuf(response.authResponse, expected)) {
+                            this.authenticatedSockets.add(conn);
+                            this.sendOK(conn, sequenceId);
                         } else {
-                            this.sendERR(socket, sequenceId, 'Access denied: invalid password');
-                            socket.end();
+                            this.sendERR(conn, sequenceId, 'Access denied: invalid password');
+                            conn.end();
                         }
                         continue;
                     }
 
-                    if (this.apiKey && !this.authenticatedSockets.has(socket)) {
-                        sequenceId = _seqId + 1;
-                        this.sendERR(socket, sequenceId, 'Access denied: not authenticated');
-                        socket.end();
+                    if (stage === 'switched') {
+                        // The client's scramble; there is no cached key to check it against,
+                        // so ask for full authentication: over TLS, the key itself.
+                        stage = 'password';
+                        this.writePacket(conn, Buffer.from([0x01, 0x04]), sequenceId);
                         continue;
                     }
 
-                    sequenceId = _seqId + 1;
-                    await this.handleCommand(socket, payload, sequenceId);
+                    if (stage === 'password') {
+                        stage = 'ready';
+                        const password = payload.toString('utf-8').replace(/\0$/, '');
+                        const resolved = await resolveScramCredentials(loginUser, this.apiKey);
+                        if (resolved.ok && verifyScramPassword(resolved.credentials, password)) {
+                            this.authenticatedSockets.add(conn);
+                            if (resolved.credentials.wallet) this.wallets.set(conn, resolved.credentials.wallet);
+                            this.sendOK(conn, sequenceId);
+                        } else {
+                            this.sendERR(conn, sequenceId, resolved.ok ? 'Access denied: invalid API key' : resolved.errmsg);
+                            conn.end();
+                        }
+                        continue;
+                    }
+
+                    if (this.apiKey && !this.authenticatedSockets.has(conn)) {
+                        this.sendERR(conn, sequenceId, 'Access denied: not authenticated');
+                        conn.end();
+                        continue;
+                    }
+
+                    await this.handleCommand(conn, payload, sequenceId);
                 }
             } catch (err: any) {
-                this.sendERR(socket, sequenceId, err.message);
+                this.sendERR(conn, sequenceId, err.message);
             }
-        });
+        };
+        socket.on('data', onData);
 
         socket.on('close', onDisconnect);
         socket.on('error', onDisconnect);
@@ -314,6 +389,7 @@ export class MySQLServer implements ProtocolServerInstance {
     // ---- SQL Execution ----
 
     private async executeTranslated(socket: net.Socket, query: TranslatedQuery, seqId: number): Promise<void> {
+        await authorizeSqlQuery(query, this.callerOf(socket), this.access, this.namespaces);
         switch (query.type) {
             case 'find': {
                 const result = await this.store.find(
@@ -377,10 +453,10 @@ export class MySQLServer implements ProtocolServerInstance {
             }
 
             case 'listCollections': {
-                const collections = await this.store.listCollections();
-                const docs = collections.map(c => ({
-                    _id: c.name,
-                    Tables_in_plugport: c.name,
+                const tables = await readableCollections(this.store, this.callerOf(socket), this.access, this.namespaces);
+                const docs = tables.map(({ name }) => ({
+                    _id: name,
+                    Tables_in_plugport: name,
                 })) as any[];
                 this.sendResultSet(socket, docs, seqId);
                 break;
@@ -433,6 +509,12 @@ export class MySQLServer implements ProtocolServerInstance {
         socket.write(Buffer.concat([header, payload]));
     }
 
+    /** A wallet login acts as that wallet; the master key (or no key configured) is the operator. */
+    private callerOf(socket: net.Socket): Caller {
+        const wallet = this.wallets.get(socket);
+        return { wallet, operator: !wallet };
+    }
+
     private sendHandshake(socket: net.Socket, connectionId: number, authChallenge: Buffer): void {
         const serverVersion = Buffer.from('8.0.0-PlugPort\0', 'utf-8');
         const authPluginName = Buffer.from('mysql_native_password\0', 'utf-8');
@@ -450,8 +532,8 @@ export class MySQLServer implements ProtocolServerInstance {
         parts.push(authChallenge.subarray(0, 8));
         // Filler
         parts.push(Buffer.from([0x00]));
-        // Capability flags (lower 2 bytes)
-        parts.push(Buffer.from([0xff, 0xf7]));
+        // Capability flags (lower 2 bytes); CLIENT_SSL (0x0800) only with a certificate
+        parts.push(Buffer.from([0xff, this.tls?.ready ? 0xff : 0xf7]));
         // Character set (utf8mb4)
         parts.push(Buffer.from([0x2d]));
         // Status flags

@@ -186,9 +186,19 @@ JSON metrics snapshot for dashboard integration.
 
 ## Collection Management
 
+### Collection names
+
+Each wallet has its own collection namespace, so two customers can both have a `users` collection without ever seeing each other's.
+
+- **Your own collections** use plain names: `users`. A collection you write to that doesn't exist yet is created in your namespace (private by default).
+- **Another wallet's collection** (public, or shared with you through roles) uses its qualified name, `<owner address>.<name>`: `0x1a2b….users`. You can read it if it is public or you were granted access, and write to it only with a write grant. You can never create collections in another wallet's namespace.
+- **Shared data** (PlugPort's demo collections, which have no owner) is readable by its plain name as long as you have no collection of the same name; it is read-only for wallets.
+
+`GET /api/v1/collections` lists each collection under the name you use for it. The master API key works in the shared namespace and reaches a wallet's collections by their qualified names.
+
 ### `GET /api/v1/collections`
 
-List all collections with stats.
+List the collections you can read, with stats, by the names you use for them.
 
 **Response:**
 ```json

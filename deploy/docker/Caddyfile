@@ -20,6 +20,14 @@
     }
 }
 
+# The wire-protocol hostname (DNS-only, straight to this VPS). Caddy obtains
+# and renews its certificate, and the server uses it for TLS on the wire ports
+# (TLS_CERT_FILE / TLS_KEY_FILE in docker-compose.proxy.yml). Over HTTPS this
+# only says what the hostname is for.
+{$WIRE_PROTOCOL_HOSTNAME:localhost} {
+    respond "PlugPort database endpoint: connect MongoDB, PostgreSQL, MySQL or Redis clients here, with TLS." 200
+}
+
 # Grafana — no longer published directly on the host (was :3001, reachable
 # by anyone with the VPS IP and Grafana's own, previously-default, login).
 # Now only reachable through here: Caddy's HTTPS + an extra basic_auth gate
