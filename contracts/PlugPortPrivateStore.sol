@@ -82,24 +82,29 @@ contract PlugPortPrivateStore {
 
     /**
      * @notice Deploy a private database.
-     *         The deployer becomes the owner and is auto-whitelisted.
-     * @param _gasStation The address authorized for gas-subsidized writes.
-     *                    Pass address(0) to default to msg.sender.
+     *         The owner is auto-whitelisted with read/write access.
+     * @param _owner The owner. Pass address(0) to default to msg.sender. The
+     *               factory passes the customer, so the factory itself never
+     *               holds a role (it used to deploy as owner and then transfer,
+     *               which left it with permanent write access).
+     * @param _gasStation The address authorized for gas-subsidized writes
+     *                    (PlugPort's writer). Pass address(0) to default to the owner.
      */
-    constructor(address _gasStation) {
-        owner = msg.sender;
-        address station = _gasStation == address(0) ? msg.sender : _gasStation;
+    constructor(address _owner, address _gasStation) {
+        address initialOwner = _owner == address(0) ? msg.sender : _owner;
+        address station = _gasStation == address(0) ? initialOwner : _gasStation;
+        owner = initialOwner;
         gasStation = station;
-        
+
         // Owner always has full read/write access
-        accessRoles[msg.sender] = 2;
-        whitelistedAddresses.push(msg.sender);
-        whitelistIndex[msg.sender] = 0;
+        accessRoles[initialOwner] = 2;
+        whitelistedAddresses.push(initialOwner);
+        whitelistIndex[initialOwner] = 0;
         whitelistCount = 1;
-        
-        emit OwnershipTransferred(address(0), msg.sender);
+
+        emit OwnershipTransferred(address(0), initialOwner);
         emit GasStationTransferred(address(0), station);
-        emit AddressWhitelisted(msg.sender);
+        emit AddressWhitelisted(initialOwner);
     }
 
     // ---- Access Control ----

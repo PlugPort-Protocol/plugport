@@ -9,11 +9,13 @@ import "./PlugPortPrivateStore.sol";
  *         Each private collection gets its own contract for clean security isolation.
  *
  * @dev Usage flow:
- *   1. User calls createPrivateStore() from the PlugPort dashboard
- *   2. Factory deploys a new PlugPortPrivateStore with the user as owner
+ *   1. User calls createPrivateStore(plugportWriter) from the PlugPort dashboard
+ *   2. Factory deploys a new PlugPortPrivateStore owned by the user, with
+ *      PlugPort's writer as its gas station; the factory itself holds no role
  *   3. Factory records the deployment in an on-chain registry
- *   4. User configures the private store (whitelist, key shares) via the dashboard
- *   5. PlugPort server uses the store address for encrypted collection operations
+ *   4. The user registers the store with the PlugPort server, which verifies it
+ *      here (storeOwner) and on the store (owner, gasStation) before using it
+ *   5. The user can cut PlugPort off at any time with transferGasStation()
  *
  * On-chain registry enables:
  *   - Enumerating all private stores owned by an address
@@ -63,14 +65,8 @@ contract PlugPortPrivateStoreFactory {
      * @return storeAddress The address of the newly deployed private store
      */
     function createPrivateStore(address _gasStation) external returns (address storeAddress) {
-        // Deploy a new PlugPortPrivateStore
-        PlugPortPrivateStore newStore = new PlugPortPrivateStore(
-            _gasStation == address(0) ? msg.sender : _gasStation
-        );
-
-        // Transfer ownership to the caller (factory deploys as owner initially)
-        newStore.transferOwnership(msg.sender);
-
+        // Owned by the caller from the start, so the factory never holds a role.
+        PlugPortPrivateStore newStore = new PlugPortPrivateStore(msg.sender, _gasStation);
         storeAddress = address(newStore);
 
         // Register in the on-chain registry
@@ -79,7 +75,7 @@ contract PlugPortPrivateStoreFactory {
         storeOwner[storeAddress] = msg.sender;
         totalStoresDeployed++;
 
-        emit PrivateStoreCreated(msg.sender, storeAddress, index, _gasStation);
+        emit PrivateStoreCreated(msg.sender, storeAddress, index, newStore.gasStation());
 
         return storeAddress;
     }

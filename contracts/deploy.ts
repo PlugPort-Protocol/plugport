@@ -59,9 +59,11 @@ function getConstructorArgs(name: string): unknown[] {
         // These take a gas station address; address(0) defaults to the deployer.
         case 'PlugPortStore':
         case 'PlugPortAuth':
-        case 'PlugPortPrivateStore':
         case 'PlugPortMessageBroker':
             return [ethers.ZeroAddress];
+        // (owner, gasStation); address(0) defaults both to the deployer.
+        case 'PlugPortPrivateStore':
+            return [ethers.ZeroAddress, ethers.ZeroAddress];
         // Wraps an existing PlugPortStore — needs its address.
         case 'PlugPortRelational': {
             const storeAddress = env.MONAD_CONTRACT_ADDRESS;

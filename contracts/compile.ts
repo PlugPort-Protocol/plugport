@@ -29,7 +29,15 @@ export function compileContract(contractName: string): CompiledContract {
         },
     };
 
-    const output = JSON.parse(solc.compile(JSON.stringify(input)));
+    // Resolve `import "./X.sol"` from this directory (the factory imports the store).
+    const findImports = (path: string) => {
+        try {
+            return { contents: readFileSync(join(__dirname, path.replace(/^\.\//, '')), 'utf8') };
+        } catch {
+            return { error: `File not found: ${path}` };
+        }
+    };
+    const output = JSON.parse(solc.compile(JSON.stringify(input), { import: findImports }));
 
     if (output.errors) {
         const fatal = output.errors.filter((e: { severity: string }) => e.severity === 'error');
