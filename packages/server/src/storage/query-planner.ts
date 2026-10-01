@@ -157,7 +157,13 @@ export async function executeQuery(
         let lastKey: string | undefined = plan.startKey;
 
         while (true) {
+            // The prefix is required, not just an optimisation: MonadAdapter.scan
+            // finds keys by prefix in its key index and returns nothing without
+            // one, and RoutingAdapter picks the collection's store from it. Until
+            // 2026-09-30 it was missing, so every query on an indexed field
+            // (including _id) returned no documents on the live server.
             const indexEntries = await kv.scan({
+                prefix: idxPrefix(collection, plan.indexField!),
                 startKey: lastKey,
                 endKey: plan.endKey,
                 limit: BATCH_LIMIT,
