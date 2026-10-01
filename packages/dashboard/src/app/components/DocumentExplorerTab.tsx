@@ -6,6 +6,7 @@ import { useAuth } from '@/lib/auth-context';
 import { Icon } from '@/lib/icons';
 import type { CollectionInfo, ScopeState } from '../types';
 import { ScopeToggle } from './ScopeToggle';
+import { ownsCollection } from '@/lib/private-store';
 
 export function DocumentExplorerTab({ collections }: { collections: CollectionInfo[] }) {
     const { address, isAuthenticated } = useAuth();
@@ -16,6 +17,10 @@ export function DocumentExplorerTab({ collections }: { collections: CollectionIn
     const [editMode, setEditMode] = useState(false);
     const [editJson, setEditJson] = useState('');
     const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+    // Edit/Delete only where the server would accept them (it enforces this regardless).
+    const current = collections.find(c => c.name === collection);
+    const canWrite = !!current && ownsCollection(current, address);
 
     const visibleCollections = scope === 'my' && isAuthenticated
         ? collections.filter(c => c.ownerAddress === address)
@@ -118,7 +123,10 @@ export function DocumentExplorerTab({ collections }: { collections: CollectionIn
                 <div className="card">
                     <div className="card-header">
                         <div className="card-title">Document Detail</div>
-                        {selectedDoc && !editMode && (
+                        {selectedDoc && !editMode && !canWrite && (
+                            <span className="status-text" style={{ fontSize: 12 }} title="Only the collection's owner (or wallets it grants write access) can change it.">read-only</span>
+                        )}
+                        {selectedDoc && !editMode && canWrite && (
                             <div style={{ display: 'flex', gap: 8 }}>
                                 <button className="btn btn-sm btn-secondary" onClick={() => { setEditMode(true); const { _id, ...rest } = selectedDoc; setEditJson(JSON.stringify(rest, null, 2)); }}>Edit</button>
                                 <button className="btn btn-sm btn-danger" onClick={() => handleDelete(String(selectedDoc._id))}>Delete</button>

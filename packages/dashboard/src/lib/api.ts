@@ -111,7 +111,8 @@ export function useApi<T>(path: string, options?: { autoFetch?: boolean }) {
 
 /** An API failure; `status` is the HTTP status (0 when no response arrived). */
 export class ApiError extends Error {
-    constructor(message: string, readonly status: number) {
+    /** The JSON error body, when there was one (e.g. a privacy switch's estimate). */
+    constructor(message: string, readonly status: number, readonly body?: Record<string, unknown>) {
         super(message);
     }
 }
@@ -125,7 +126,7 @@ async function readJson(res: Response): Promise<unknown> {
     const json = await res.json().catch(() => null) as Record<string, unknown> | null;
     if (!res.ok) {
         const errmsg = typeof json?.errmsg === 'string' && json.errmsg ? json.errmsg : `HTTP ${res.status}`;
-        throw new ApiError(errmsg, res.status);
+        throw new ApiError(errmsg, res.status, json ?? undefined);
     }
     if (json === null) throw new ApiError(`HTTP ${res.status}: response was not JSON`, res.status);
     return json;

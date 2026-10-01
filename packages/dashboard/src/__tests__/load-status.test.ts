@@ -40,7 +40,7 @@ describe('load status', () => {
 describe('apiGet errors', () => {
     it('reports the HTTP status of a proxy error page instead of a JSON parse error', async () => {
         vi.stubGlobal('fetch', vi.fn(async () => new Response('<html>502 Bad Gateway</html>', { status: 502 })));
-        const err = await apiGet('/api/v1/collections').catch((e) => e);
+        const err = (await apiGet('/api/v1/collections').catch((e: unknown) => e)) as ApiError;
         expect(err).toBeInstanceOf(ApiError);
         expect(err.status).toBe(502);
         expect(describeLoadError(err)).toBe('the server is unavailable (HTTP 502)');
@@ -48,7 +48,7 @@ describe('apiGet errors', () => {
 
     it("keeps the server's own error message", async () => {
         vi.stubGlobal('fetch', vi.fn(async () => Response.json({ ok: 0, errmsg: 'Authentication required' }, { status: 401 })));
-        const err = await apiGet('/api/v1/keys').catch((e) => e);
+        const err = (await apiGet('/api/v1/keys').catch((e: unknown) => e)) as ApiError;
         expect(err.message).toBe('Authentication required');
         expect(err.status).toBe(401);
     });

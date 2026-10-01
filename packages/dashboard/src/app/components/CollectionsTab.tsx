@@ -6,6 +6,7 @@ import { useAuth } from '@/lib/auth-context';
 import { Icon } from '@/lib/icons';
 import type { CollectionInfo, ScopeState } from '../types';
 import { ScopeToggle } from './ScopeToggle';
+import { ownsCollection } from '@/lib/private-store';
 
 export function CollectionsTab({ collections, onRefresh }: { collections: CollectionInfo[]; onRefresh: () => void }) {
     const { address, isAuthenticated } = useAuth();
@@ -13,7 +14,8 @@ export function CollectionsTab({ collections, onRefresh }: { collections: Collec
     const [showInsert, setShowInsert] = useState(false);
     const [insertCollection, setInsertCollection] = useState('');
     const [insertDoc, setInsertDoc] = useState('{\n  "name": "Alice",\n  "email": "alice@example.com"\n}');
-    const [insertVisibility, setInsertVisibility] = useState<'public' | 'private'>('public');
+    // New collections are private unless the creator chooses public (server default too).
+    const [insertVisibility, setInsertVisibility] = useState<'public' | 'private'>('private');
     const [insertResult, setInsertResult] = useState<string | null>(null);
     const [inserting, setInserting] = useState(false);
     const fileInputRef = useRef<HTMLInputElement>(null);
@@ -24,6 +26,10 @@ export function CollectionsTab({ collections, onRefresh }: { collections: Collec
     const isNewCollection = isAuthenticated
         && insertCollection.trim() !== ''
         && !collections.some(c => c.name === insertCollection.trim());
+    // An existing collection someone else owns: the server refuses the insert
+    // unless its owner granted this wallet write access.
+    const existingTarget = collections.find(c => c.name === insertCollection.trim());
+    const notMine = isAuthenticated && !!existingTarget && !ownsCollection(existingTarget, address);
 
     const handleInsert = async () => {
         const targetCollection = insertCollection;
@@ -32,18 +38,14 @@ export function CollectionsTab({ collections, onRefresh }: { collections: Collec
         setInsertResult(null);
         try {
             const doc = JSON.parse(insertDoc);
+            // Visibility is set *before* the first write: the first write decides
+            // where the data goes, and switching afterwards means moving it.
+            if (claimingOwnership) {
+                await apiPost(`/api/v1/collections/${targetCollection}/privacy`, { mode: insertVisibility });
+            }
             const result = await apiPost(`/api/v1/collections/${targetCollection}/insertOne`, { document: doc });
             let resultText = JSON.stringify(result, null, 2);
-
-            if (claimingOwnership) {
-                try {
-                    await apiPost(`/api/v1/collections/${targetCollection}/privacy`, { mode: insertVisibility });
-                    resultText += `\n\n✓ "${targetCollection}" created as ${insertVisibility} — you're now its owner.`;
-                } catch (privacyErr) {
-                    resultText += `\n\n⚠ Document inserted, but setting visibility failed: ${privacyErr instanceof Error ? privacyErr.message : 'Unknown error'}. The collection is currently unowned — set it from the Privacy tab.`;
-                }
-            }
-
+            if (claimingOwnership) resultText += `\n\n✓ "${targetCollection}" created as ${insertVisibility}, with you as its owner.`;
             setInsertResult(resultText);
             onRefresh();
         } catch (err) {
@@ -121,8 +123,13 @@ export function CollectionsTab({ collections, onRefresh }: { collections: Collec
                     {isNewCollection && (
                         <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginTop: -8, marginBottom: 16 }}>
                             {insertVisibility === 'public'
-                                ? `"${insertCollection}" doesn't exist yet — it'll be created as public (world-readable) and you'll be recorded as its owner, so it shows under "My Data".`
-                                : `"${insertCollection}" doesn't exist yet — it'll be created as private (AES-256-GCM encrypted, only you + addresses you whitelist can access) with you as owner.`}
+                                ? `"${insertCollection}" doesn't exist yet. It will be created as public: anyone can read it, and what you write stays in the chain history.`
+                                : `"${insertCollection}" doesn't exist yet. It will be created as private: encrypted, in your own private store if you have one (otherwise the shared private store), readable only by you and wallets you grant.`}
+                        </div>
+                    )}
+                    {notMine && (
+                        <div className="alert alert-info" style={{ marginBottom: 16 }}>
+                            You don&apos;t own &ldquo;{insertCollection}&rdquo;. The insert will be refused unless its owner granted your wallet write access.
                         </div>
                     )}
                     <div className="input-group">
@@ -208,6 +215,7 @@ export function CollectionsTab({ collections, onRefresh }: { collections: Collec
                                 <span>{c.indexCount} indexes</span>
                                 <span>Created {new Date(c.createdAt).toLocaleDateString()}</span>
                                 {c.mode && <span style={{ color: c.mode === 'private' ? 'var(--accent-tertiary)' : 'var(--accent-secondary)' }}>{c.mode}</span>}
+                                {c.storeDetached && <span style={{ color: 'var(--accent-error)' }} title="Its owner cut PlugPort off from the store holding it; see the Deploy tab.">store cut off</span>}
                             </div>
                         </div>
                     ))}

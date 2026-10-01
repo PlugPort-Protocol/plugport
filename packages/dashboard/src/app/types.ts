@@ -8,6 +8,8 @@ export interface CollectionInfo {
     createdAt: number;
     ownerAddress?: string;
     mode?: string;
+    /** Its data is in the owner's own store, and the owner has cut PlugPort off. */
+    storeDetached?: boolean;
 }
 
 export interface IndexInfo {

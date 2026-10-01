@@ -34,15 +34,25 @@ const FACTORY_ABI = [
 
 // ---- Types ----
 
-export type DeploymentStep = 'idle' | 'estimating' | 'deploying' | 'confirming' | 'registering' | 'done' | 'error';
+export type DeploymentStep = 'idle' | 'estimating' | 'deploying' | 'confirming' | 'registering' | 'done' | 'error' | 'unlinked';
 
 export interface DeploymentState {
     step: DeploymentStep;
     txHash?: string;
     contractAddress?: string;
     error?: string;
-    gasEstimate?: string;
 }
+
+/** What deploying a store will cost the customer, at the current gas price. */
+export interface DeployCostEstimate {
+    gasLimit: bigint;
+    /** Monad charges for the gas limit, not the gas used. */
+    costWei: bigint;
+    costMon: string;
+}
+
+/** Gas limit = estimate + 20%; the cost estimate and the transaction use the same one. */
+const withBuffer = (gas: bigint) => gas + gas / 5n;
 
 export interface GasStationInfo {
     address: string;
@@ -63,9 +73,43 @@ export function useContractDeployer(factoryAddress?: string) {
     const { data: walletClient } = useWalletClient();
     const [state, setState] = useState<DeploymentState>({ step: 'idle' });
 
+    const fetchWriter = async (): Promise<string> => {
+        const res = await apiGet<{ address: string }>('/api/v1/deploy/system-gas-station');
+        if (!res.address) throw new Error('The server did not return PlugPort\'s writer address');
+        return res.address;
+    };
+
+    /** The customer's cost to deploy, at the current gas price. */
+    const estimateDeployCost = useCallback(async (): Promise<DeployCostEstimate | null> => {
+        if (!walletClient || !publicClient || !factoryAddress) return null;
+        const writer = await fetchWriter();
+        const gasLimit = withBuffer(await publicClient.estimateContractGas({
+            address: factoryAddress as Address,
+            abi: FACTORY_ABI,
+            functionName: 'createPrivateStore',
+            args: [writer as Address],
+            account: walletClient.account,
+        }));
+        const costWei = gasLimit * await publicClient.getGasPrice();
+        return { gasLimit, costWei, costMon: Number(formatEther(costWei)).toFixed(3) };
+    }, [walletClient, publicClient, factoryAddress]);
+
+    /** Retry linking a deployed store to this wallet (after a failed registration). */
+    const linkStore = useCallback(async (contractAddress: string) => {
+        setState((prev) => ({ ...prev, step: 'registering', error: undefined }));
+        try {
+            await apiPost('/api/v1/deploy/register', { contractAddress, contractType: 'privateStore' });
+            setState((prev) => ({ ...prev, step: 'done', contractAddress }));
+            return true;
+        } catch (err) {
+            setState((prev) => ({ ...prev, step: 'unlinked', contractAddress, error: err instanceof Error ? err.message : 'Linking failed' }));
+            return false;
+        }
+    }, []);
+
     /**
-     * Deploy a new PlugPortPrivateStore via the factory contract.
-     * Uses PlugPort's system gas station automatically.
+     * Deploy a new PlugPortPrivateStore via the factory contract, owned by the
+     * connected wallet, and link it to that wallet on the server.
      */
     const deployPrivateStore = useCallback(async () => {
         if (!walletClient || !publicClient || !factoryAddress) {
@@ -74,68 +118,40 @@ export function useContractDeployer(factoryAddress?: string) {
         }
 
         try {
-
-            // Step 1: Fetch system gas station
+            // PlugPort's writer becomes the store's gas station: it writes (and
+            // reads) the customer's private data, and PlugPort pays its gas.
             setState({ step: 'estimating' });
-            let gasStationAddress: string;
-            try {
-                const res = await apiGet<{ address: string }>('/api/v1/deploy/system-gas-station');
-                if (!res.address) throw new Error('No gas station provided by backend');
-                gasStationAddress = res.address;
-            } catch (err) {
-                setState({ step: 'error', error: 'Failed to fetch PlugPort system gas station' });
-                return null;
-            }
+            const writer = await fetchWriter();
+            const gasLimit = withBuffer(await publicClient.estimateContractGas({
+                address: factoryAddress as Address,
+                abi: FACTORY_ABI,
+                functionName: 'createPrivateStore',
+                args: [writer as Address],
+                account: walletClient.account,
+            }));
 
-            // Step 2: Estimate gas
-            let gasEstimate: bigint;
-            try {
-                gasEstimate = await publicClient.estimateContractGas({
-                    address: factoryAddress as Address,
-                    abi: FACTORY_ABI,
-                    functionName: 'createPrivateStore',
-                    args: [gasStationAddress as Address],
-                    account: walletClient.account,
-                });
-            } catch {
-                // Fallback gas estimate if estimation fails
-                gasEstimate = 500_000n;
-            }
-
-            setState({
-                step: 'estimating',
-                gasEstimate: formatEther(gasEstimate * 50_000_000n), // rough cost at ~50 gwei
-            });
-
-            // Step 3: Send deploy transaction
-            setState(prev => ({ ...prev, step: 'deploying' }));
+            setState({ step: 'deploying' });
             const txHash = await walletClient.writeContract({
                 address: factoryAddress as Address,
                 abi: FACTORY_ABI,
                 functionName: 'createPrivateStore',
-                args: [gasStationAddress as Address],
-                gas: gasEstimate + (gasEstimate / 5n), // 20% buffer
+                args: [writer as Address],
+                gas: gasLimit,
             });
 
-            setState(prev => ({ ...prev, step: 'confirming', txHash }));
-
-            // Step 4: Wait for confirmation
+            setState({ step: 'confirming', txHash });
             const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash });
+            if (receipt.status !== 'success') throw new Error(`The deploy transaction reverted (${txHash})`);
 
-            // Extract deployed contract address from logs
-            // The PrivateStoreCreated event: topic0 = keccak256("PrivateStoreCreated(address,address,uint256)")
-            // The store address is in the second indexed topic
+            // PrivateStoreCreated(owner indexed, store indexed, storeIndex indexed, gasStation)
             let deployedAddress: string | undefined;
             for (const log of receipt.logs) {
                 if (log.address.toLowerCase() === factoryAddress.toLowerCase() && log.topics.length >= 3) {
-                    // Second indexed param is the store address
                     deployedAddress = '0x' + log.topics[2]!.slice(26);
                     break;
                 }
             }
-
             if (!deployedAddress) {
-                // Fallback: query the factory for the latest store
                 const stores = await publicClient.readContract({
                     address: factoryAddress as Address,
                     abi: FACTORY_ABI,
@@ -145,25 +161,17 @@ export function useContractDeployer(factoryAddress?: string) {
                 deployedAddress = stores[stores.length - 1] as string;
             }
 
-            // Step 4: Register with the server
-            setState(prev => ({ ...prev, step: 'registering', contractAddress: deployedAddress }));
+            // Link it to this wallet. If that fails the store exists but is unused,
+            // so say so and offer a retry instead of reporting success.
+            setState({ step: 'registering', txHash, contractAddress: deployedAddress });
             try {
-                await apiPost('/api/v1/deploy/register', {
-                    contractAddress: deployedAddress,
-                    contractType: 'privateStore',
-                    ownerAddress: walletClient.account.address,
-                });
-            } catch {
-                // Non-fatal: contract is deployed even if server registration fails
-                console.warn('Server registration failed, contract is still deployed');
+                await apiPost('/api/v1/deploy/register', { contractAddress: deployedAddress, contractType: 'privateStore' });
+            } catch (err) {
+                setState({ step: 'unlinked', txHash, contractAddress: deployedAddress, error: err instanceof Error ? err.message : 'Linking failed' });
+                return deployedAddress;
             }
 
-            setState({
-                step: 'done',
-                txHash,
-                contractAddress: deployedAddress,
-            });
-
+            setState({ step: 'done', txHash, contractAddress: deployedAddress });
             return deployedAddress;
         } catch (err) {
             setState({
@@ -229,6 +237,8 @@ export function useContractDeployer(factoryAddress?: string) {
     return {
         state,
         deployPrivateStore,
+        estimateDeployCost,
+        linkStore,
         getGasStationInfo,
         getDeployedStores,
         reset,
