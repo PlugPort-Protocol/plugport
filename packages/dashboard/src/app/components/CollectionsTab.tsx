@@ -8,6 +8,9 @@ import type { CollectionInfo, ScopeState } from '../types';
 import { ScopeToggle } from './ScopeToggle';
 import { ownsCollection } from '@/lib/private-store';
 
+// Another wallet's collection is listed by its qualified name, "0xOwner.name".
+const QUALIFIED = /^(0x[0-9a-fA-F]{40})\.(.+)$/;
+
 export function CollectionsTab({ collections, onRefresh }: { collections: CollectionInfo[]; onRefresh: () => void }) {
     const { address, isAuthenticated } = useAuth();
     const [scope, setScope] = useState<ScopeState>(isAuthenticated ? 'my' : 'all');
@@ -209,7 +212,15 @@ export function CollectionsTab({ collections, onRefresh }: { collections: Collec
                 <div className="collection-grid">
                     {visibleCollections.map(c => (
                         <div className="collection-card" key={c.name}>
-                            <div className="collection-name">{c.name}</div>
+                            {(() => {
+                                const m = QUALIFIED.exec(c.name);
+                                return m ? (
+                                    <>
+                                        <div className="collection-owner" title={`Owned by ${m[1]}`}>{m[1].slice(0, 6)}…{m[1].slice(-4)}</div>
+                                        <div className="collection-name" title={c.name}>{m[2]}</div>
+                                    </>
+                                ) : <div className="collection-name" title={c.name}>{c.name}</div>;
+                            })()}
                             <div className="collection-meta">
                                 <span>{c.documentCount.toLocaleString()} docs</span>
                                 <span>{c.indexCount} indexes</span>
