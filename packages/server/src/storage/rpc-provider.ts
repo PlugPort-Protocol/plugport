@@ -23,12 +23,14 @@
 // under RPC_MAX_REQUESTS_PER_SECOND (default 40, leaving headroom for the
 // WebSocket subscription, which does not go through here).
 //
-// Fallback: when MONAD_RPC_FALLBACK_URL is set, a call the primary endpoint
-// rejects for endpoint reasons (rate limit, HTTP 429/5xx, timeout, network
-// error) is re-sent there, and every provider routes straight to the fallback
-// for a cooldown before trying the primary again. Contract reverts and other
-// genuine errors are returned as-is — they would fail on any endpoint. The
-// fallback has its own limiter (RPC_FALLBACK_MAX_REQUESTS_PER_SECOND).
+// Fallback: MONAD_RPC_FALLBACK_URL is an ordered, comma-separated list of
+// endpoints. A call an endpoint rejects for endpoint reasons (rate limit,
+// HTTP 429/5xx, timeout, network error) is re-sent to the next one in the
+// list, and every provider skips the failed endpoint for a cooldown before
+// trying it again. Contract reverts and other genuine errors are returned
+// as-is — they would fail on any endpoint. Each fallback has its own limiter;
+// RPC_FALLBACK_MAX_REQUESTS_PER_SECOND is a matching comma-separated list (a
+// single value, or the last value, covers the rest).
 
 import { ethers } from 'ethers';
 import { emitRpcFailover } from './chain-events.js';
@@ -64,12 +66,15 @@ export class RpcRateLimiter {
 
 const limiters = new Map<string, RpcRateLimiter>();
 
-function limiterFromEnv(envVar: string, fallbackPerSecond: number): RpcRateLimiter {
-    let limiter = limiters.get(envVar);
+/** The `index`th value of a comma-separated env var; the last value covers any index past the end. */
+function limiterFromEnv(envVar: string, fallbackPerSecond: number, index = 0): RpcRateLimiter {
+    const key = `${envVar}#${index}`;
+    let limiter = limiters.get(key);
     if (!limiter) {
-        const configured = Number(process.env[envVar]);
+        const values = (process.env[envVar] ?? '').split(',').map((v) => v.trim()).filter(Boolean);
+        const configured = Number(values[Math.min(index, values.length - 1)]);
         limiter = new RpcRateLimiter(configured > 0 ? configured : fallbackPerSecond);
-        limiters.set(envVar, limiter);
+        limiters.set(key, limiter);
     }
     return limiter;
 }
@@ -79,17 +84,22 @@ export function getRpcRateLimiter(): RpcRateLimiter {
     return limiterFromEnv('RPC_MAX_REQUESTS_PER_SECOND', DEFAULT_MAX_REQUESTS_PER_SECOND);
 }
 
-/** The process-wide limiter for the fallback endpoint, from RPC_FALLBACK_MAX_REQUESTS_PER_SECOND. */
-export function getFallbackRpcRateLimiter(): RpcRateLimiter {
-    return limiterFromEnv('RPC_FALLBACK_MAX_REQUESTS_PER_SECOND', DEFAULT_FALLBACK_MAX_REQUESTS_PER_SECOND);
+/** The process-wide limiter for the `index`th fallback endpoint, from RPC_FALLBACK_MAX_REQUESTS_PER_SECOND. */
+export function getFallbackRpcRateLimiter(index = 0): RpcRateLimiter {
+    return limiterFromEnv('RPC_FALLBACK_MAX_REQUESTS_PER_SECOND', DEFAULT_FALLBACK_MAX_REQUESTS_PER_SECOND, index);
+}
+
+/** Splits a comma-separated URL list, dropping blanks. */
+export function parseRpcUrlList(value: string | undefined): string[] {
+    return (value ?? '').split(',').map((u) => u.trim()).filter(Boolean);
 }
 
 // ---- Failover ----
 
-/** How long every provider skips a primary endpoint after it failed for endpoint reasons. */
+/** How long every provider skips an endpoint after it failed for endpoint reasons. */
 export const FAILOVER_COOLDOWN_MS = 30_000;
 
-/** Primary URL → time until which it is skipped. Shared, so one provider's discovery spares the rest. */
+/** Endpoint URL → time until which it is skipped. Shared, so one provider's discovery spares the rest. */
 const primaryOutages = new Map<string, number>();
 
 /** Test hook: forget every recorded outage. */
@@ -130,7 +140,7 @@ function describeFailure(err: unknown): string {
     return e?.code !== undefined ? `${e.code}: ${text}` : text;
 }
 
-/** Timeout for a request to a primary endpoint that has a fallback (ethers' default is 5 minutes). */
+/** Timeout for a request to an endpoint that has a fallback after it (ethers' default is 5 minutes). */
 export const PRIMARY_TIMEOUT_MS = 15_000;
 
 /**
@@ -152,6 +162,8 @@ function failFastRequest(url: string): ethers.FetchRequest {
 class ThrottledJsonRpcProvider extends ethers.JsonRpcProvider {
     constructor(
         private readonly url: string,
+        /** For logs: "primary", "fallback 1", … — never the URL, which may hold an API key. */
+        private readonly label: string,
         network: ethers.Network,
         options: ethers.JsonRpcApiProviderOptions,
         private readonly limiter: RpcRateLimiter,
@@ -185,7 +197,7 @@ class ThrottledJsonRpcProvider extends ethers.JsonRpcProvider {
             return this.fallback._send(payload);
         }
         if (primaryOutages.delete(this.url)) {
-            console.log('[RPC] Primary endpoint answering again — switched back from fallback');
+            console.log(`[RPC] ${this.label} endpoint answering again — switched back to it`);
         }
         return results;
     }
@@ -194,8 +206,8 @@ class ThrottledJsonRpcProvider extends ethers.JsonRpcProvider {
         const alreadyDown = Date.now() < (primaryOutages.get(this.url) ?? 0);
         primaryOutages.set(this.url, Date.now() + FAILOVER_COOLDOWN_MS);
         if (!alreadyDown) {
-            console.warn(`[RPC] Primary endpoint failed (${describeFailure(reason)}) — using fallback for ${FAILOVER_COOLDOWN_MS / 1000}s`);
-            emitRpcFailover(describeFailure(reason));
+            console.warn(`[RPC] ${this.label} endpoint failed (${describeFailure(reason)}) — using ${this.fallback!.label} for ${FAILOVER_COOLDOWN_MS / 1000}s`);
+            emitRpcFailover(`${this.label}: ${describeFailure(reason)}`);
         }
     }
 }
@@ -205,19 +217,29 @@ export interface RpcProviderOptions {
     name?: string;
     /** Limiter for the primary endpoint. Default: the process-wide one. */
     limiter?: RpcRateLimiter;
-    /** Endpoint to re-send to when the primary fails. Default: MONAD_RPC_FALLBACK_URL. Pass null for none. */
-    fallbackUrl?: string | null;
-    /** Limiter for the fallback endpoint. Default: the process-wide fallback one. */
-    fallbackLimiter?: RpcRateLimiter;
+    /**
+     * Endpoints to re-send to, in order, when the one before fails. A string may
+     * be a comma-separated list. Default: MONAD_RPC_FALLBACK_URL. Pass null for none.
+     */
+    fallbackUrl?: string | string[] | null;
+    /** Limiter(s) for the fallback endpoints, matched by position. Default: the process-wide ones. */
+    fallbackLimiter?: RpcRateLimiter | RpcRateLimiter[];
 }
 
 export function createRpcProvider(rpcUrl: string, chainId: number, options: RpcProviderOptions = {}): ethers.JsonRpcProvider {
     const network = ethers.Network.from({ chainId, name: options.name ?? 'monad' });
     // staticNetwork also skips the eth_chainId probe ethers otherwise repeats.
     const providerOptions = { staticNetwork: network, batchMaxCount: 1 };
-    const fallbackUrl = options.fallbackUrl === undefined ? process.env.MONAD_RPC_FALLBACK_URL : options.fallbackUrl;
-    const fallback = fallbackUrl && fallbackUrl !== rpcUrl
-        ? new ThrottledJsonRpcProvider(fallbackUrl, network, providerOptions, options.fallbackLimiter ?? getFallbackRpcRateLimiter())
-        : undefined;
-    return new ThrottledJsonRpcProvider(rpcUrl, network, providerOptions, options.limiter ?? getRpcRateLimiter(), fallback);
+    const configured = options.fallbackUrl === undefined ? process.env.MONAD_RPC_FALLBACK_URL : options.fallbackUrl;
+    const fallbackUrls = (Array.isArray(configured) ? configured : parseRpcUrlList(configured ?? undefined))
+        .filter((u, i, all) => u !== rpcUrl && all.indexOf(u) === i);
+    const fallbackLimiters = options.fallbackLimiter === undefined ? [] : [options.fallbackLimiter].flat();
+
+    // Build the chain back to front so each endpoint knows the one after it.
+    let fallback: ThrottledJsonRpcProvider | undefined;
+    for (let i = fallbackUrls.length - 1; i >= 0; i--) {
+        const limiter = fallbackLimiters[Math.min(i, fallbackLimiters.length - 1)] ?? getFallbackRpcRateLimiter(i);
+        fallback = new ThrottledJsonRpcProvider(fallbackUrls[i], `fallback ${i + 1}`, network, providerOptions, limiter, fallback);
+    }
+    return new ThrottledJsonRpcProvider(rpcUrl, 'primary', network, providerOptions, options.limiter ?? getRpcRateLimiter(), fallback);
 }

@@ -8,7 +8,7 @@ import { EventEmitter } from 'node:events';
 
 export const chainEvents = new EventEmitter();
 
-/** Every provider switched from the primary RPC endpoint to the fallback. */
+/** Every provider switched from an RPC endpoint to the next one in the fallback chain. */
 export function emitRpcFailover(reason: string): void {
     chainEvents.emit('rpcFailover', reason);
 }

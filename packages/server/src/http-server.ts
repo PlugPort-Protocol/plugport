@@ -16,6 +16,7 @@ import { getSessionOptions, type SessionData } from './auth/session.js';
 import { ApiKeyManager, type ApiKeyPermission } from './auth/api-key-manager.js';
 import { AnalyticsRecorder } from './auth/analytics-recorder.js';
 import { getAuthContract, AuthReadError } from './auth/auth-contract.js';
+import { createRpcProvider } from './storage/rpc-provider.js';
 import { PrivacyManager } from './storage/privacy-manager.js';
 import type { PrivateStoreRegistry } from './storage/private-store-registry.js';
 import { CollectionBusyError, StoreDetachedError, type RoutingAdapter } from './storage/routing-adapter.js';
@@ -1868,6 +1869,7 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
     // Gas Station Balance Check
     // ════════════════════════════════════════════════════════
 
+    let balanceProvider: ReturnType<typeof createRpcProvider> | undefined;
     app.get('/api/v1/deploy/gas-station/:address/balance', async (
         req: FastifyRequest<{ Params: { address: string } }>,
         reply: FastifyReply,
@@ -1881,25 +1883,14 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
         if (!/^0x[0-9a-fA-F]{40}$/.test(address)) {
             return reply.status(400).send({ ok: 0, errmsg: 'Invalid Ethereum address format' });
         }
-        const rpcUrl = process.env.MONAD_RPC_URL || 'https://testnet-rpc.monad.xyz';
+        // Through the shared provider, so this read is rate-limited and fails over like the rest.
+        balanceProvider ??= createRpcProvider(
+            process.env.MONAD_RPC_URL || 'https://testnet-rpc.monad.xyz',
+            Number(process.env.MONAD_CHAIN_ID || 10143),
+        );
 
         try {
-            const response = await fetch(rpcUrl, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    jsonrpc: '2.0',
-                    id: 1,
-                    method: 'eth_getBalance',
-                    params: [address, 'latest'],
-                }),
-            });
-            const json = await response.json() as { result?: string; error?: { message: string } };
-            if (json.error) {
-                return { ok: 0, errmsg: json.error.message };
-            }
-
-            const balanceWei = BigInt(json.result || '0x0');
+            const balanceWei = await balanceProvider.getBalance(address);
             // N6 fix: Pure BigInt string arithmetic — no Number() precision loss at any scale
             const wholePart = balanceWei / (10n ** 18n);
             const fracPart = (balanceWei % (10n ** 18n)).toString().padStart(18, '0').slice(0, 6);
@@ -1920,7 +1911,9 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
                 ok: 1,
             };
         } catch (err) {
-            return { ok: 0, errmsg: err instanceof Error ? err.message : 'RPC request failed' };
+            // shortMessage only: ethers' full message can quote the request URL, which may hold an API key.
+            const shortMessage = (err as { shortMessage?: unknown })?.shortMessage;
+            return { ok: 0, errmsg: typeof shortMessage === 'string' ? shortMessage : 'RPC request failed' };
         }
     });
 

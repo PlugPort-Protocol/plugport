@@ -270,6 +270,24 @@ describe('createRpcProvider failover', () => {
         p.destroy();
     });
 
+    it('walks an ordered fallback list until an endpoint answers', async () => {
+        primaryMode = 'http-503';
+        const p = createRpcProvider('http://127.0.0.1:1', 10143, {
+            limiter: new RpcRateLimiter(1000),
+            fallbackUrl: `${primaryUrl}, ${fallbackUrl}`,
+            fallbackLimiter: new RpcRateLimiter(1000),
+        });
+        expect(await p.getBalance(ADDR)).toBe(32n);
+        expect(hits.primary).toEqual(['eth_getBalance']);
+        expect(hits.fallback).toEqual(['eth_getBalance']);
+
+        // Both failed endpoints are now skipped, not retried, during the cooldown.
+        hits.primary.length = 0;
+        expect(await p.getBalance('0x' + '2'.repeat(40))).toBe(32n);
+        expect(hits.primary).toEqual([]);
+        p.destroy();
+    });
+
     it('without a fallback behaves exactly as before', async () => {
         primaryMode = 'rate-limited-body';
         const p = createRpcProvider(primaryUrl, 10143, { limiter: new RpcRateLimiter(1000), fallbackUrl: null });
