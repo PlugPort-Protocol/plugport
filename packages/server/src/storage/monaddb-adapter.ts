@@ -181,7 +181,8 @@ export class MonadAdapter implements KVAdapter {
             this.wallet,
         );
 
-        console.log(`  [Monad] Connected to ${config.rpcUrl} (chain ${config.chainId})`);
+        // Host only: provider URLs carry the API key in the path.
+        console.log(`  [Monad] Connected to ${new URL(config.rpcUrl).host} (chain ${config.chainId})`);
         console.log(`  [Monad] Wallet: ${this.wallet.address}`);
         console.log(`  [Monad] Contract: ${config.contractAddress}`);
 
