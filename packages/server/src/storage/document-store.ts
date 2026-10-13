@@ -376,6 +376,29 @@ export class DocumentStore {
             const chunk = documents.slice(i, i + BATCH_LIMIT);
             const puts: { key: string; value: Buffer }[] = [];
             const chunkInsertedIds: string[] = [];
+            // This chunk's documents whose index entries are already written.
+            const chunkDocs: DocumentWithId[] = [];
+
+            // A document in this chunk was rejected, or the batch write
+            // failed. With batchWrite, none of the chunk's documents were
+            // stored, so their index entries must go too: left behind, a
+            // unique _id entry with no document makes that _id impossible to
+            // insert ever again. Without batchWrite each document was put as
+            // it went, so those are stored and count as inserted.
+            const abortChunk = async () => {
+                if (this.kv.batchWrite) {
+                    for (const written of chunkDocs) {
+                        await this.indexManager.onDelete(collection, metadata.indexes, written, written._id).catch(() => { });
+                    }
+                } else {
+                    insertedIds.push(...chunkInsertedIds);
+                }
+                // Preserve the count for documents that did reach storage.
+                if (insertedIds.length > 0) {
+                    metadata.documentCount += insertedIds.length;
+                    await this.saveMetadata(metadata);
+                }
+            };
 
             for (const doc of chunk) {
                 // Generate _id if not present
@@ -387,18 +410,15 @@ export class DocumentStore {
                 // Validate document size
                 const serialized = JSON.stringify(docWithId);
                 if (serialized.length > this.maxDocumentSize) {
-                    // Update count for already-inserted docs before throwing
-                    if (insertedIds.length > 0) {
-                        metadata.documentCount += insertedIds.length;
-                        await this.saveMetadata(metadata);
-                    }
+                    await abortChunk();
                     throw new DocumentStoreError(
                         ErrorCodes.DocumentTooLarge,
                         `Document exceeds maximum size of ${this.maxDocumentSize} bytes`,
                     );
                 }
 
-                // Maintain indexes (will throw on unique violation)
+                // Maintain indexes (will throw on unique violation, having
+                // checked every unique index before writing any entry)
                 try {
                     await this.indexManager.onInsert(
                         collection,
@@ -407,16 +427,13 @@ export class DocumentStore {
                         docWithId._id,
                     );
                 } catch (err) {
-                    // Update count for already-inserted docs before throwing
-                    if (insertedIds.length > 0) {
-                        metadata.documentCount += insertedIds.length;
-                        await this.saveMetadata(metadata);
-                    }
+                    await abortChunk();
                     if (err instanceof IndexError) {
                         throw new DocumentStoreError(err.code, err.message);
                     }
                     throw err;
                 }
+                chunkDocs.push(docWithId);
 
                 // Store document
                 const docKey = encodeDocKey(collection, docWithId._id);
@@ -433,27 +450,8 @@ export class DocumentStore {
                 try {
                     await this.kv.batchWrite(puts, []);
                 } catch (err) {
-                    // If the batch fails at the very end we must roll back the index manager additions.
                     // In production, proper ACID transactions apply here.
-                    for (const docWithId of chunk as DocumentWithId[]) {
-                        if (!chunkInsertedIds.includes(docWithId._id)) continue;
-
-                        await this.indexManager.onDelete(
-                            collection,
-                            metadata.indexes,
-                            docWithId,
-                            docWithId._id
-                        ).catch(() => { });
-                    }
-                    // Preserve the count for earlier chunks that already
-                    // committed successfully — same as the other two
-                    // early-exit paths above. Only insertedIds (prior
-                    // chunks) counts here; this chunk's rows were just
-                    // rolled back above and never made it into storage.
-                    if (insertedIds.length > 0) {
-                        metadata.documentCount += insertedIds.length;
-                        await this.saveMetadata(metadata);
-                    }
+                    await abortChunk();
                     throw err;
                 }
             }
