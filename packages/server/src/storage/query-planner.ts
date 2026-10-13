@@ -60,7 +60,8 @@ export function planQuery(
 
             if (hasComparison) {
                 const range = computeIndexRange(collection, field, ops);
-                const otherFields = Object.keys(filter).filter((f) => f !== field && !f.startsWith('$'));
+                // Any other condition, $or/$and included, is checked per document.
+                const otherFields = Object.keys(filter).filter((f) => f !== field);
 
                 return {
                     type: 'indexScan',
@@ -75,7 +76,8 @@ export function planQuery(
         } else {
             // Exact match: { field: value }
             const range = computeIndexRange(collection, field, { $eq: condition });
-            const otherFields = Object.keys(filter).filter((f) => f !== field && !f.startsWith('$'));
+            // Any other condition, $or/$and included, is checked per document.
+            const otherFields = Object.keys(filter).filter((f) => f !== field);
 
             return {
                 type: 'indexScan',
@@ -100,16 +102,8 @@ export function planQuery(
         }
     }
 
-    // Handle $or operator: check if any branch can use an index
-    if (filter.$or && Array.isArray(filter.$or)) {
-        for (const subFilter of filter.$or) {
-            const plan = planQuery(subFilter, indexes, collection);
-            if (plan.type === 'indexScan') {
-                plan.needsPostFilter = true; // Full post-filtering required for $or
-                return plan;
-            }
-        }
-    }
+    // $or can't use an index: scanning one branch's index range would miss
+    // documents that match only the other branches.
 
     // No index available, fall back to collection scan
     return {
