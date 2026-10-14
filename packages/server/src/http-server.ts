@@ -126,9 +126,17 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Fast
     });
 
     // Security Middleware
-    const allowedOrigin = options.dashboardUrl
-        || process.env.DASHBOARD_URL
-        || (process.env.NODE_ENV === 'production' ? undefined : true);
+    // Build allowed origins: dashboard, mcp-site, and localhost in dev
+    const buildAllowedOrigins = (): string[] | true => {
+        if (process.env.NODE_ENV !== 'production') return true; // allow all in dev
+        const origins: string[] = [];
+        const dashboard = options.dashboardUrl || process.env.DASHBOARD_URL;
+        if (dashboard) origins.push(dashboard);
+        const mcpSite = process.env.MCP_SITE_URL || 'https://mcp.plugport.wtf';
+        if (!origins.includes(mcpSite)) origins.push(mcpSite);
+        return origins.length ? origins : true;
+    };
+    const allowedOrigin = buildAllowedOrigins();
     await app.register(cors, {
         origin: allowedOrigin,
         credentials: true,
