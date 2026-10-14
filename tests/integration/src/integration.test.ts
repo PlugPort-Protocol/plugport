@@ -21,10 +21,16 @@ async function get(path: string, headers: Record<string, string> = {}) {
 
 describe('HTTP API Integration Tests', () => {
     const testCollection = `test_integration_${Date.now()}`;
+    // For privacy/roles tests: must be in the test wallet's namespace so
+    // namespaceOwner() returns the owner address and ownership checks pass.
+    // Must be a valid 40-hex-char Ethereum address for the QUALIFIED regex to match.
+    const TEST_WALLET = '0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266'; // Hardhat/Anvil account #0
+    const ownedCollection = `${TEST_WALLET.toLowerCase()}.test_priv_${Date.now()}`;
 
     afterAll(async () => {
         // N5 fix: Pass owner auth header so cleanup succeeds even for private collections
-        await post(`/api/v1/collections/${testCollection}/drop`, {}, { 'x-test-wallet-address': '0xTestOwner' });
+        await post(`/api/v1/collections/${testCollection}/drop`, {}, { 'x-test-wallet-address': TEST_WALLET });
+        await post(`/api/v1/collections/${ownedCollection}/drop`, {}, { 'x-test-wallet-address': TEST_WALLET });
     });
 
     describe('Health', () => {
@@ -205,6 +211,7 @@ describe('HTTP API Integration Tests', () => {
 
     describe('Privacy & Whitelist', () => {
         it('should get default privacy (null or public)', async () => {
+            // Use the shared testCollection — no ownership needed for a GET
             const { status, data } = await get(`/api/v1/collections/${testCollection}/privacy`);
             expect(status).toBe(200);
             expect(data.ok).toBe(1);
@@ -216,36 +223,37 @@ describe('HTTP API Integration Tests', () => {
         });
 
         it('should require authentication to set privacy', async () => {
-            const { status, data } = await post(`/api/v1/collections/${testCollection}/privacy`, {
+            // Must use a collection in the test wallet's namespace (0xtestowner.*)
+            const { status, data } = await post(`/api/v1/collections/${ownedCollection}/privacy`, {
                 mode: 'private',
-            }, { 'x-test-wallet-address': '0xTestOwner' });
+            }, { 'x-test-wallet-address': TEST_WALLET });
             expect(status).toBe(200);
             expect(data.mode).toBe('private');
         });
 
         it('should allow granting access role', async () => {
-            const { status, data } = await post(`/api/v1/collections/${testCollection}/roles`, {
+            const { status, data } = await post(`/api/v1/collections/${ownedCollection}/roles`, {
                 address: '0x123',
                 action: 'grant',
                 role: 1,
-            }, { 'x-test-wallet-address': '0xTestOwner' });
+            }, { 'x-test-wallet-address': TEST_WALLET });
             expect(status).toBe(200);
             expect(data.ok).toBe(1);
 
-            const getRes = await get(`/api/v1/collections/${testCollection}/roles`, { 'x-test-wallet-address': '0xTestOwner' });
+            const getRes = await get(`/api/v1/collections/${ownedCollection}/roles`, { 'x-test-wallet-address': TEST_WALLET });
             expect(getRes.data.accessRoles['0x123']).toBe(1);
         });
 
         it('should allow revoking access role', async () => {
-            const { status, data } = await post(`/api/v1/collections/${testCollection}/roles`, {
+            const { status, data } = await post(`/api/v1/collections/${ownedCollection}/roles`, {
                 address: '0x123',
                 action: 'revoke',
-            }, { 'x-test-wallet-address': '0xTestOwner' });
+            }, { 'x-test-wallet-address': TEST_WALLET });
             expect(status).toBe(200);
             expect(data.ok).toBe(1);
 
             // Verify it was removed
-            const getRes = await get(`/api/v1/collections/${testCollection}/roles`, { 'x-test-wallet-address': '0xTestOwner' });
+            const getRes = await get(`/api/v1/collections/${ownedCollection}/roles`, { 'x-test-wallet-address': TEST_WALLET });
             expect(getRes.data.accessRoles['0x123']).toBeUndefined();
         });
     });
